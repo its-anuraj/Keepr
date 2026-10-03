@@ -1,0 +1,308 @@
+[
+  {
+    "id": "apple_bkc",
+    "imageFile": "apple_receipt.jpg",
+    "description": "Apple Store BKC MacBook Air M4 Tax Invoice",
+    "category": "Mobile & Laptop",
+    "format": "tax_invoice_a4",
+    "groundTruth": {
+      "merchantName": "Apple Store BKC",
+      "merchantAddress": "Jio World Drive, Bandra Kurla Complex, Mumbai, Maharashtra 400051",
+      "merchantPhone": null,
+      "gstin": "27AABC1234D1Z2",
+      "invoiceNumber": "INV-BKC-99214",
+      "invoiceDate": "2026-09-15",
+      "currency": "INR",
+      "subtotal": 114900,
+      "tax": 20682,
+      "discount": null,
+      "total": 135582,
+      "paymentMethod": null,
+      "items": [
+        {
+          "name": "MacBook Air M4 13-inch (8GB/256GB), Space Grey",
+          "quantity": 1,
+          "unitPrice": 114900,
+          "totalPrice": 114900
+        }
+      ],
+      "modelNumber": "MQK53HN/A",
+      "serialNumber": null,
+      "warrantyText": null
+    }
+  },
+  {
+    "id": "croma_headphones",
+    "imageFile": "croma_receipt.jpg",
+    "description": "Croma Infiniti Retail Sony WH-1000XM5 Retail Invoice",
+    "category": "Electronics",
+    "format": "retail_pos_thermal",
+    "groundTruth": {
+      "merchantName": "CROMA - INFINITI RETAIL LTD.",
+      "merchantAddress": null,
+      "merchantPhone": null,
+      "gstin": null,
+      "invoiceNumber": "CR-IND-88214",
+      "invoiceDate": "2026-08-18",
+      "currency": "INR",
+      "subtotal": 26990,
+      "tax": 4858.20,
+      "discount": null,
+      "total": 31848.20,
+      "paymentMethod": null,
+      "items": [
+        {
+          "name": "Sony WH-1000XM5 Headphones Silver",
+          "quantity": 1,
+          "unitPrice": 26990,
+          "totalPrice": 26990
+        }
+      ],
+      "modelNumber": "WH-1000XM5",
+      "serialNumber": null,
+      "warrantyText": null
+    }
+  },
+  {
+    "id": "zara_apparel",
+    "imageFile": "zara_receipt.jpg",
+    "description": "Zara Retail India Puffer Jacket Till Receipt",
+    "category": "Fashion",
+    "format": "thermal_till_receipt",
+    "groundTruth": {
+      "merchantName": "ZARA RETAIL INDIA",
+      "merchantAddress": null,
+      "merchantPhone": "+91 22 1234 5678",
+      "gstin": "27ABCT1234F1ZA",
+      "invoiceNumber": "ZR-MUM-44910",
+      "invoiceDate": "2026-09-22",
+      "currency": "INR",
+      "subtotal": 7131.20,
+      "tax": 958.80,
+      "discount": null,
+      "total": 7990,
+      "paymentMethod": null,
+      "items": [
+        {
+          "name": "Water-Repellent Puffer Jacket Black L",
+          "quantity": 1,
+          "unitPrice": 7990,
+          "totalPrice": 7990
+        }
+      ],
+      "modelNumber": "3491/213/80006L",
+      "serialNumber": null,
+      "warrantyText": null
+    }
+  },
+  {
+    "id": "swiss_alpine",
+    "imageFile": "grocery_receipt.jpg",
+    "description": "Berghotel Grosse Scheidegg Alpine Multi-Item Invoice",
+    "category": "Other",
+    "format": "multi_item_thermal",
+    "groundTruth": {
+      "merchantName": "Berghotel Grosse Scheidegg",
+      "merchantAddress": "3818 Grindelwald",
+      "merchantPhone": "033 853 67 16",
+      "gstin": null,
+      "invoiceNumber": "4572",
+      "invoiceDate": "2007-07-30",
+      "currency": "CHF",
+      "subtotal": null,
+      "tax": 3.85,
+      "discount": null,
+      "total": 54.50,
+      "paymentMethod": null,
+      "items": [
+        { "name": "Latte Macchiato", "quantity": 2, "unitPrice": 4.50, "totalPrice": 9.00 },
+        { "name": "Gloki", "quantity": 1, "unitPrice": 5.00, "totalPrice": 5.00 },
+        { "name": "Schweinschnitzel", "quantity": 1, "unitPrice": 22.00, "totalPrice": 22.00 },
+        { "name": "Chässpätzli", "quantity": 1, "unitPrice": 18.50, "totalPrice": 18.50 }
+      ],
+      "modelNumber": null,
+      "serialNumber": null,
+      "warrantyText": null
+    }
+  },
+  {
+    "id": "umami_tapas",
+    "imageFile": "restaurant_receipt.jpg",
+    "description": "Umami Tapas Bar Multi-Item Receipt with Taxes",
+    "category": "Other",
+    "format": "multi_item_restaurant",
+    "groundTruth": {
+      "merchantName": "Umami Tapas Bar",
+      "merchantAddress": null,
+      "merchantPhone": null,
+      "gstin": "RT889810602",
+      "invoiceNumber": "12",
+      "invoiceDate": "2005-07-11",
+      "currency": null,
+      "subtotal": 89.00,
+      "tax": 8.23,
+      "discount": null,
+      "total": 97.23,
+      "paymentMethod": null,
+      "items": [
+        { "name": "CARPACCIO", "quantity": 1, "unitPrice": 10.00, "totalPrice": 10.00 },
+        { "name": "SPARKLING DR.", "quantity": 1, "unitPrice": 6.00, "totalPrice": 6.00 },
+        { "name": "SUMMERH CIPES", "quantity": 1, "unitPrice": 9.00, "totalPrice": 9.00 },
+        { "name": "SPRING ROLL", "quantity": 1, "unitPrice": 10.00, "totalPrice": 10.00 },
+        { "name": "MUSHR+SP SALAD", "quantity": 1, "unitPrice": 8.00, "totalPrice": 8.00 },
+        { "name": "SABLE FISH", "quantity": 1, "unitPrice": 12.00, "totalPrice": 12.00 },
+        { "name": "CHICKEN WINGS", "quantity": 1, "unitPrice": 8.00, "totalPrice": 8.00 },
+        { "name": "EEL & FOIE GRA", "quantity": 1, "unitPrice": 15.00, "totalPrice": 15.00 },
+        { "name": "NATURE LAND", "quantity": 1, "unitPrice": 5.00, "totalPrice": 5.00 },
+        { "name": "CREME BRULEE", "quantity": 1, "unitPrice": 6.00, "totalPrice": 6.00 }
+      ],
+      "modelNumber": null,
+      "serialNumber": null,
+      "warrantyText": null
+    }
+  },
+  {
+    "id": "samsung_galaxy",
+    "imageFile": "samsung_galaxy_receipt.jpg",
+    "description": "Samsung Smart Plaza Galaxy S24 Ultra Tax Invoice with IMEI & Serial",
+    "category": "Mobile & Laptop",
+    "format": "retail_tax_invoice",
+    "groundTruth": {
+      "merchantName": "SAMSUNG SMART PLAZA",
+      "merchantAddress": "Shop 14, High Street Phoenix, Senapati Bapat Marg, Lower Parel, Mumbai 400013",
+      "merchantPhone": "+91 22 6655 4433",
+      "gstin": "27AABCS1429B1Z8",
+      "invoiceNumber": "INV-SP-2026-0811",
+      "invoiceDate": "2026-09-10",
+      "currency": "INR",
+      "subtotal": 110000,
+      "tax": 19800,
+      "discount": 5000,
+      "total": 124800,
+      "paymentMethod": "UPI / HDFC NetBanking",
+      "items": [
+        {
+          "name": "Samsung Galaxy S24 Ultra 512GB Titanium Black",
+          "quantity": 1,
+          "unitPrice": 110000,
+          "totalPrice": 110000
+        }
+      ],
+      "modelNumber": "SM-S928B/DS",
+      "serialNumber": "R5CW1098XKV",
+      "warrantyText": "24 Months Official Samsung Warranty valid across India.",
+      "imei": "359871234567890"
+    }
+  },
+  {
+    "id": "lg_split_ac",
+    "imageFile": "lg_appliance_receipt.jpg",
+    "description": "Reliance Digital LG Dual Inverter Split AC Tax Invoice with Compressor Warranty",
+    "category": "Home Appliance",
+    "format": "retail_appliance_invoice",
+    "groundTruth": {
+      "merchantName": "RELIANCE DIGITAL",
+      "merchantAddress": "Ground Floor, Inorbit Mall, Malad West, Mumbai, Maharashtra 400064",
+      "merchantPhone": "+91 22 4000 8899",
+      "gstin": "27AAACR1254A1Z7",
+      "invoiceNumber": "RD-APPL-2026-4421",
+      "invoiceDate": "2026-08-20",
+      "currency": "INR",
+      "subtotal": 42500,
+      "tax": 7650,
+      "discount": 2150,
+      "total": 48000,
+      "paymentMethod": "Credit Card (ICICI Visa)",
+      "items": [
+        {
+          "name": "LG AI Dual Inverter Split AC 1.5 Ton 5 Star Copper",
+          "quantity": 1,
+          "unitPrice": 42500,
+          "totalPrice": 42500
+        }
+      ],
+      "modelNumber": "TS-Q19YNZE",
+      "serialNumber": "SN-LGA8910482",
+      "warrantyText": "1 Year Comprehensive + 10 Years on Inverter Compressor"
+    }
+  },
+  {
+    "id": "honda_elevate",
+    "imageFile": "honda_vehicle_invoice.jpg",
+    "description": "Arya Honda Elevate ZX Tax Invoice with Reg, VIN & Engine Number",
+    "category": "Vehicle",
+    "format": "automotive_dealership_invoice",
+    "groundTruth": {
+      "merchantName": "ARYA HONDA",
+      "merchantAddress": "C-12, CST Road, Kalina, Santacruz East, Mumbai 400098",
+      "merchantPhone": "+91 22 2665 1100",
+      "gstin": "27AAACP9923M1Z4",
+      "invoiceNumber": "HONDA-MUM-2026-1092",
+      "invoiceDate": "2026-07-15",
+      "currency": "INR",
+      "subtotal": 1450000,
+      "tax": 406000,
+      "discount": 35000,
+      "total": 1821000,
+      "paymentMethod": null,
+      "items": [
+        {
+          "name": "Honda Elevate 1.5L i-VTEC ZX CVT Petrol",
+          "quantity": 1,
+          "unitPrice": 1450000,
+          "totalPrice": 1450000
+        }
+      ],
+      "modelNumber": "Honda Elevate ZX CVT Petrol",
+      "serialNumber": null,
+      "registrationNumber": "MH-02-FE-8819",
+      "vin": "MA3EFE12S00123456",
+      "engineNumber": "L15B2987654",
+      "warrantyText": "3 Years / 100,000 km Standard Manufacturer Warranty"
+    }
+  },
+  {
+    "id": "ikea_furniture",
+    "imageFile": "ikea_furniture_receipt.jpg",
+    "description": "IKEA India Furniture Tax Invoice with Multi-Item & 10-Yr Guarantee",
+    "category": "Furniture",
+    "format": "furniture_multi_item_invoice",
+    "groundTruth": {
+      "merchantName": "IKEA INDIA PRIVATE LIMITED",
+      "merchantAddress": "Turbhe MIDC, TTC Industrial Area, Navi Mumbai, Maharashtra 400705",
+      "merchantPhone": "1800 419 4532",
+      "gstin": "27AABCI4821F1ZX",
+      "invoiceNumber": "IKEA-WR-2026-7821",
+      "invoiceDate": "2026-09-02",
+      "currency": "INR",
+      "subtotal": 50490,
+      "tax": 8548.20,
+      "discount": 3000,
+      "total": 56038.20,
+      "paymentMethod": "Credit Card (Mastercard)",
+      "items": [
+        {
+          "name": "INGATORP Extendable Dining Table White",
+          "quantity": 1,
+          "unitPrice": 29990,
+          "totalPrice": 29990
+        },
+        {
+          "name": "INGOLF Chair White",
+          "quantity": 4,
+          "unitPrice": 4500,
+          "totalPrice": 18000
+        },
+        {
+          "name": "Home Delivery & Assembly Service",
+          "quantity": 1,
+          "unitPrice": 2500,
+          "totalPrice": 2500
+        }
+      ],
+      "modelNumber": null,
+      "serialNumber": null,
+      "warrantyText": "10-Year Limited Guarantee on Dining Table structure."
+    }
+  }
+]
