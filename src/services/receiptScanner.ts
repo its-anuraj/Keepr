@@ -39,8 +39,9 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   if (typeof btoa !== 'undefined') {
     return btoa(binary);
   }
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(bytes).toString('base64');
+  const maybeBuffer = (globalThis as any).Buffer;
+  if (typeof maybeBuffer !== 'undefined') {
+    return maybeBuffer.from(bytes).toString('base64');
   }
   return '';
 }

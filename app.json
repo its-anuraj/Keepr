@@ -18,7 +18,8 @@
           "image": "./assets/splash.png",
           "resizeMode": "cover"
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "ios": {
       "supportsTablet": true,
@@ -42,6 +43,12 @@
     "web": {
       "bundler": "metro",
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "dc321b60-8f64-4d22-83fa-5f44be128d50"
+      }
     }
   }
 }

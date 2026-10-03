@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 // ==============================================================================
 // KEEPR DIGITAL OWNERSHIP VAULT: Quantitative Benchmark Harness
 // Evaluates full end-to-end receipt extraction (Image -> Backend -> Parser -> Reconciler)

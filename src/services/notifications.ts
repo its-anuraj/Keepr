@@ -99,7 +99,7 @@ export class NotificationService {
    */
   static async getNotificationPreferences(): Promise<NotificationPreferences> {
     try {
-      if (typeof window !== 'undefined' || typeof (global as any).nativePerformanceNow !== 'undefined') {
+      if (typeof window !== 'undefined' || typeof (globalThis as any).nativePerformanceNow !== 'undefined') {
         const raw = await AsyncStorage.getItem(NOTIFICATION_PREFS_KEY);
         if (raw) {
           return { ...DEFAULT_PREFERENCES, ...JSON.parse(raw) };
