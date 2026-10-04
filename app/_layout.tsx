@@ -32,12 +32,14 @@ export default function RootLayout() {
   const notificationHandledRef = useRef(false);
 
   useEffect(() => {
+    // Immediately dismiss native OS splash so the full Keepr startup artwork is revealed
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
+  useEffect(() => {
     async function prepare() {
       try {
-        await Promise.all([
-          initializeAuth(),
-          new Promise((resolve) => setTimeout(resolve, 1200)),
-        ]);
+        await initializeAuth();
       } catch (e) {
         console.warn('App initialization error:', e);
       } finally {
@@ -50,8 +52,6 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (appReady) {
-      SplashScreen.hideAsync().catch(() => {});
-
       Animated.timing(splashFadeAnim, {
         toValue: 0,
         duration: 450,

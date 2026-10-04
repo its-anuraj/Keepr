@@ -15,8 +15,9 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#FCF9F1",
-          "image": "./assets/splash.png",
-          "resizeMode": "cover"
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain"
         }
       ],
       "expo-sharing"
@@ -36,7 +37,8 @@
       ],
       "adaptiveIcon": {
         "backgroundColor": "#FCF9F1",
-        "foregroundImage": "./assets/android-icon-foreground.png"
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false
     },
