@@ -2906,7 +2906,7 @@ export default function AIReceiptScannerScreen() {
             ) : null}
             <View className="flex-row items-center justify-between py-1">
               <Text className="text-xs text-serene-on-surface-variant">Receipt</Text>
-              <Text className="text-xs font-semibold text-serene-on-surface">Attached (Encrypted)</Text>
+              <Text className="text-xs font-semibold text-serene-on-surface">Attached</Text>
             </View>
           </View>
 
@@ -2922,7 +2922,7 @@ export default function AIReceiptScannerScreen() {
           <View className="flex-row items-center gap-2 bg-serene-surface-container-low p-3 rounded-serene-md mb-4">
             <MaterialIcons name="verified-user" size={16} color={SereneColors.primary} />
             <Text className="text-[11px] text-serene-on-surface-variant flex-1 leading-4">
-              Receipt image and serial records are secured with AES-256 encryption.
+              Receipt image and serial records are stored in your private vault.
             </Text>
           </View>
         </ScrollView>

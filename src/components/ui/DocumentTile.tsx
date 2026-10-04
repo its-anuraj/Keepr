@@ -23,16 +23,16 @@ export const DocumentTile: React.FC<DocumentTileProps> = ({
         await Sharing.shareAsync(document.fileUrl);
       } else {
         Alert.alert(
-          'Encrypted Vault Document',
+          'Private Vault Document',
           `Document: ${document.name || document.title || 'Document'}\nSize: ${Math.round(
             document.fileSizeBytes / 1024
-          )} KB\nArchived with AES-256 Vault Protection.`
+          )} KB\nArchived in your private vault.`
         );
       }
     } else {
       Alert.alert(
-        'Encrypted Vault Document',
-        `Document: ${document.name || document.title || 'Document'}\nStatus: Safely encrypted in local storage.`
+        'Private Vault Document',
+        `Document: ${document.name || document.title || 'Document'}\nStatus: Stored in your private vault.`
       );
     }
   };

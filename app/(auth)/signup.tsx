@@ -78,7 +78,7 @@ export default function SignupScreen() {
             <KeeprLogo size={52} />
             <Text className="text-[24px] font-bold text-serene-on-surface mt-3">Create Digital Vault</Text>
             <Text className="text-[13px] text-serene-on-surface-variant text-center mt-1 max-w-[280px]">
-              Secure all your physical & digital assets in one encrypted space.
+              Secure all your physical & digital assets in one private space.
             </Text>
           </View>
 

@@ -129,7 +129,7 @@ Keepr enforces strict data protection and credential isolation standards:
 | **Backend & Database** | Supabase / PostgreSQL | Managed relational database with Row Level Security |
 | **Cloud Functions** | Supabase Edge Functions (Deno) | Authenticated serverless execution for AI scanning & account deletion |
 | **AI / OCR Engine** | Google Gemini | Multimodal document parsing executed securely server-side |
-| **Cloud Storage** | Supabase Storage | Encrypted private storage for photos and PDF/image documents |
+| **Cloud Storage** | Supabase Storage | Isolated private storage for photos and PDF/image documents |
 | **Notifications** | Expo Notifications `~57.0.0` | Deterministic local device notification scheduling |
 | **Build & Release** | EAS (Expo Application Services) | Cloud-based preview APK and production AAB compilation |
 

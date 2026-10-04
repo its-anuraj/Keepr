@@ -28,7 +28,7 @@ export default function WelcomeScreen() {
         <View className="flex-row items-center gap-[6px] bg-serene-tertiary-fixed px-[10px] py-1 rounded-full mt-3">
           <MaterialIcons name="lock" size={14} color={SereneColors.tertiary} />
           <Text className="text-[10px] font-bold text-serene-on-tertiary-fixed tracking-[0.8px]">
-            ENCRYPTED AES-256 VAULT
+            PRIVATE & PROTECTED VAULT
           </Text>
         </View>
       </View>

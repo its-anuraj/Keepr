@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import '../global.css';
-import { Stack, router, useSegments } from 'expo-router';
+import { Stack, router, useSegments, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, StyleSheet, Platform, Image, Animated } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
@@ -22,6 +22,7 @@ export default function RootLayout() {
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const isRecoveryMode = useAuthStore((s) => s.isRecoveryMode);
   const segments = useSegments();
+  const pathname = usePathname();
 
   const [appReady, setAppReady] = useState(false);
   const [showSplashOverlay, setShowSplashOverlay] = useState(true);
@@ -64,11 +65,21 @@ export default function RootLayout() {
 
   // Auth Routing Guard: Keep unauthenticated users in (auth), send authenticated users to (tabs)
   useEffect(() => {
-    if (!appReady || !isInitialized) return;
+    const segs = (segments as unknown as string[]) || [];
+    if (!appReady || !isInitialized || segs.length === 0) return;
 
-    const segs = segments as unknown as string[];
-    const inAuthGroup = segs[0] === '(auth)';
-    const isResetPasswordScreen = inAuthGroup && segs[1] === 'reset-password';
+    const authScreens = ['welcome', 'login', 'signup', 'forgot-password', 'reset-password'];
+    const authPaths = ['/welcome', '/login', '/signup', '/forgot-password', '/reset-password'];
+
+    const inAuthGroup =
+      segs[0] === '(auth)' ||
+      segs.includes('(auth)') ||
+      authScreens.some((screen) => segs.includes(screen)) ||
+      authPaths.some((authPath) => pathname === authPath || pathname.startsWith(authPath)) ||
+      pathname.startsWith('/(auth)');
+
+    const isResetPasswordScreen =
+      inAuthGroup && (segs.includes('reset-password') || pathname.includes('reset-password'));
 
     // CRITICAL: If user is in password recovery mode or actively on reset-password screen,
     // do NOT redirect them to (tabs), even though they technically have an active recovery session.
@@ -81,7 +92,7 @@ export default function RootLayout() {
     } else if (session && inAuthGroup) {
       router.replace('/(tabs)');
     }
-  }, [session, isInitialized, appReady, segments, isRecoveryMode]);
+  }, [session, isInitialized, appReady, segments, pathname, isRecoveryMode]);
 
   useEffect(() => {
     let isMounted = true;

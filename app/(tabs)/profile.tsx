@@ -30,7 +30,7 @@ export default function ProfileScreen() {
   const handleSignOut = () => {
     Alert.alert(
       'Sign Out of Vault',
-      'Are you sure you want to sign out? Your stored items and receipts will remain safely encrypted in your vault.',
+      'Are you sure you want to sign out? Your stored items and receipts remain in your private vault.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -48,7 +48,7 @@ export default function ProfileScreen() {
   const handleDeleteAccount = () => {
     Alert.alert(
       'Delete Vault Account',
-      'Are you sure you want to permanently delete your vault account? All cryptographic records, receipts, and item history will be permanently deleted and cannot be recovered.',
+      'Are you sure you want to permanently delete your vault account? All vault records, receipts, and item history will be permanently deleted and cannot be recovered.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
