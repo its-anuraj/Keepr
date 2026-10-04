@@ -9,6 +9,7 @@ import {
   Alert,
   Share,
   BackHandler,
+  Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -307,11 +308,7 @@ export default function ItemsCatalogScreen() {
     }
   }, [activeCanonicalItems]);
 
-  useEffect(() => {
-    if (isSelectionMode && selectedItemIds.size === 0) {
-      exitSelectionMode();
-    }
-  }, [selectedItemIds.size, isSelectionMode]);
+
 
   // ── Android Back Button: exit selection first ──────────────────────────────
   useFocusEffect(
@@ -408,27 +405,21 @@ export default function ItemsCatalogScreen() {
     if (selectedItemIds.size === 0) return;
 
     const count = selectedItemIds.size;
-    const singleItem = count === 1
-      ? activeCanonicalItems.find((i) => selectedItemIds.has(i.id))
-      : null;
+    const title = 'Delete permanently?';
+    const message = count === 1
+      ? 'This item will be permanently deleted and cannot be recovered.'
+      : 'These items will be permanently deleted and cannot be recovered.';
 
     Alert.alert(
-      count === 1
-        ? `Delete ${singleItem?.name || '1 item'}?`
-        : `Delete ${count} items?`,
-      count === 1
-        ? 'This will permanently remove this purchase record and all associated data.'
-        : `This will permanently remove ${count} purchase records and all associated data.`,
+      title,
+      message,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: count === 1 ? 'Delete' : `Delete ${count}`,
+          text: 'Delete Permanently',
           style: 'destructive',
           onPress: async () => {
             const idsToDelete = [...selectedItemIds];
-            exitSelectionMode();
-
-            // Cancel reminders then delete each item
             for (const itemId of idsToDelete) {
               try {
                 await NotificationService.cancelItemReminders(itemId);
@@ -440,11 +431,17 @@ export default function ItemsCatalogScreen() {
                 console.warn('[ItemsCatalog] Failed to delete item:', itemId, err?.message);
               }
             }
+            setSelectedItemIds((prev) => {
+              const next = new Set(prev);
+              for (const id of idsToDelete) next.delete(id);
+              return next;
+            });
+            exitSelectionMode();
           },
         },
       ]
     );
-  }, [selectedItemIds, activeCanonicalItems, deleteItem, exitSelectionMode]);
+  }, [selectedItemIds, deleteItem, exitSelectionMode]);
 
   const handleApplyFilters = useCallback((newFilters: FilterState) => {
     setFilters(newFilters);
@@ -499,68 +496,64 @@ export default function ItemsCatalogScreen() {
         </View>
       )}
 
-      {!isSelectionMode && (
-        <View className="flex-row items-center bg-serene-surface-container-lowest rounded-serene-lg border border-serene-subtle-border h-11 px-3">
-          <MaterialIcons name="search" size={20} color={SereneColors.outline} style={{ marginRight: 8 }} />
-          <TextInput
-            className="flex-1 text-[13px] text-serene-on-surface"
-            placeholder="Search items, brands, models or stores"
-            placeholderTextColor={SereneColors.outline}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-          />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery('')} className="p-1" accessibilityLabel="Clear search">
-              <MaterialIcons name="close" size={18} color={SereneColors.outline} />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      )}
-
-      {!isSelectionMode && (
-        <View className="flex-row items-center justify-between gap-2.5">
-          <TouchableOpacity
-            className="flex-1 flex-row items-center justify-between bg-serene-surface-container-lowest border border-serene-subtle-border px-3 py-2 rounded-serene-lg"
-            onPress={() => setShowSortModal(true)}
-            activeOpacity={0.8}
-            accessibilityLabel="Sort options"
-          >
-            <View className="flex-row items-center gap-1.5 flex-1 pr-1">
-              <MaterialIcons name="sort" size={17} color={SereneColors.primary} />
-              <Text className="text-[12px] font-medium text-serene-on-surface" numberOfLines={1}>
-                Sorted by:{' '}
-                <Text className="font-bold text-serene-primary">{SORT_LABELS[selectedSort]}</Text>
-              </Text>
-            </View>
-            <MaterialIcons name="expand-more" size={18} color={SereneColors.onSurfaceVariant} />
+      <View className="flex-row items-center bg-serene-surface-container-lowest rounded-serene-lg border border-serene-subtle-border h-11 px-3">
+        <MaterialIcons name="search" size={20} color={SereneColors.outline} style={{ marginRight: 8 }} />
+        <TextInput
+          className="flex-1 text-[13px] text-serene-on-surface"
+          placeholder="Search items, brands, models or stores"
+          placeholderTextColor={SereneColors.outline}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+        />
+        {searchQuery ? (
+          <TouchableOpacity onPress={() => setSearchQuery('')} className="p-1" accessibilityLabel="Clear search">
+            <MaterialIcons name="close" size={18} color={SereneColors.outline} />
           </TouchableOpacity>
+        ) : null}
+      </View>
 
-          <TouchableOpacity
-            className={`flex-row items-center gap-1.5 px-3.5 py-2 rounded-serene-lg border ${
-              activeFilterCount > 0
-                ? 'bg-serene-surface-container-highest border-serene-primary'
-                : 'bg-serene-surface-container-lowest border-serene-subtle-border'
-            }`}
-            onPress={() => setShowFilterModal(true)}
-            activeOpacity={0.8}
-            accessibilityLabel="Filter options"
-          >
-            <MaterialIcons
-              name="tune"
-              size={18}
-              color={activeFilterCount > 0 ? SereneColors.primary : SereneColors.onSurfaceVariant}
-            />
-            <Text className={`text-[12px] ${activeFilterCount > 0 ? 'font-bold text-serene-primary' : 'font-semibold text-serene-on-surface'}`}>
-              {activeFilterCount > 0 ? `Filter · ${activeFilterCount}` : 'Filters'}
+      <View className="flex-row items-center justify-between gap-2.5">
+        <TouchableOpacity
+          className="flex-1 flex-row items-center justify-between bg-serene-surface-container-lowest border border-serene-subtle-border px-3 py-2 rounded-serene-lg"
+          onPress={() => setShowSortModal(true)}
+          activeOpacity={0.8}
+          accessibilityLabel="Sort options"
+        >
+          <View className="flex-row items-center gap-1.5 flex-1 pr-1">
+            <MaterialIcons name="sort" size={17} color={SereneColors.primary} />
+            <Text className="text-[12px] font-medium text-serene-on-surface" numberOfLines={1}>
+              Sorted by:{' '}
+              <Text className="font-bold text-serene-primary">{SORT_LABELS[selectedSort]}</Text>
             </Text>
-          </TouchableOpacity>
-        </View>
-      )}
+          </View>
+          <MaterialIcons name="expand-more" size={18} color={SereneColors.onSurfaceVariant} />
+        </TouchableOpacity>
 
-      {!isSelectionMode && (activeFilterCount > 0 || searchQuery) && (
+        <TouchableOpacity
+          className={`flex-row items-center gap-1.5 px-3.5 py-2 rounded-serene-lg border ${
+            activeFilterCount > 0
+              ? 'bg-serene-surface-container-highest border-serene-primary'
+              : 'bg-serene-surface-container-lowest border-serene-subtle-border'
+          }`}
+          onPress={() => setShowFilterModal(true)}
+          activeOpacity={0.8}
+          accessibilityLabel="Filter options"
+        >
+          <MaterialIcons
+            name="tune"
+            size={18}
+            color={activeFilterCount > 0 ? SereneColors.primary : SereneColors.onSurfaceVariant}
+          />
+          <Text className={`text-[12px] ${activeFilterCount > 0 ? 'font-bold text-serene-primary' : 'font-semibold text-serene-on-surface'}`}>
+            {activeFilterCount > 0 ? `Filter · ${activeFilterCount}` : 'Filters'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {(activeFilterCount > 0 || searchQuery) && (
         <View className="flex-row items-center justify-between bg-serene-surface-container-low px-3 py-2 rounded-serene-md border border-serene-subtle-border">
           <View className="flex-row items-center gap-1.5 flex-1 mr-2">
             <MaterialIcons name="filter-alt" size={14} color={SereneColors.primary} />
@@ -661,14 +654,14 @@ export default function ItemsCatalogScreen() {
         removeClippedSubviews={false}
       />
 
-      {isSelectionMode && selectedItemIds.size > 0 && (
+      {isSelectionMode && (
         <View
           style={{
             flexDirection: 'row',
             gap: 10,
             paddingHorizontal: 16,
             paddingVertical: 12,
-            paddingBottom: 24,
+            paddingBottom: Platform.OS === 'ios' ? 28 : 16,
             backgroundColor: '#fff',
             borderTopWidth: 1,
             borderTopColor: 'rgba(17,80,134,0.10)',
@@ -676,6 +669,7 @@ export default function ItemsCatalogScreen() {
         >
           <TouchableOpacity
             onPress={handleShare}
+            disabled={selectedItemIds.size === 0}
             style={{
               flex: 1,
               flexDirection: 'row',
@@ -687,6 +681,7 @@ export default function ItemsCatalogScreen() {
               backgroundColor: 'rgba(17,80,134,0.08)',
               borderWidth: 1,
               borderColor: 'rgba(17,80,134,0.18)',
+              opacity: selectedItemIds.size === 0 ? 0.45 : 1,
             }}
             accessibilityLabel={`Share ${selectedItemIds.size} selected items`}
           >
@@ -698,6 +693,7 @@ export default function ItemsCatalogScreen() {
 
           <TouchableOpacity
             onPress={handleDelete}
+            disabled={selectedItemIds.size === 0}
             style={{
               flex: 1,
               flexDirection: 'row',
@@ -709,12 +705,13 @@ export default function ItemsCatalogScreen() {
               backgroundColor: 'rgba(186,26,26,0.08)',
               borderWidth: 1,
               borderColor: 'rgba(186,26,26,0.20)',
+              opacity: selectedItemIds.size === 0 ? 0.45 : 1,
             }}
             accessibilityLabel={`Delete ${selectedItemIds.size} selected items`}
           >
             <MaterialIcons name="delete-outline" size={18} color={SereneColors.error} />
             <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.error }}>
-              Delete
+              {selectedItemIds.size > 0 ? `Delete (${selectedItemIds.size})` : 'Delete'}
             </Text>
           </TouchableOpacity>
         </View>

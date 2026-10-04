@@ -8,7 +8,9 @@ export type SyncOpType =
   | 'upsertItem'
   | 'deleteItem'
   | 'upsertDocument'
-  | 'deleteDocument';
+  | 'deleteDocument'
+  | 'upsertMaintenance'
+  | 'deleteMaintenance';
 
 export interface SyncQueueEntry {
   /**
@@ -51,6 +53,7 @@ async function writeQueue(entries: SyncQueueEntry[]): Promise<void> {
  * - A second upsert for the same entity replaces the first (newest payload wins).
  * - deleteItem for entity X removes any pending upsertItem for X (delete wins).
  * - deleteDocument for entity X removes any pending upsertDocument for X.
+ * - deleteMaintenance for entity X removes any pending upsertMaintenance for X.
  * - Operations are keyed by userId and can never be flushed for a different user.
  */
 export async function enqueueSyncOperation(
@@ -68,6 +71,10 @@ export async function enqueueSyncOperation(
   } else if (op.type === 'deleteDocument') {
     queue = queue.filter(
       (e) => !(e.entityId === op.entityId && e.type === 'upsertDocument')
+    );
+  } else if (op.type === 'deleteMaintenance') {
+    queue = queue.filter(
+      (e) => !(e.entityId === op.entityId && e.type === 'upsertMaintenance')
     );
   }
 
@@ -181,7 +188,7 @@ export async function flushSyncQueue(userId: string): Promise<void> {
         }
       } else if (entry.type === 'upsertDocument' && entry.payload) {
         const { error } = await supabase
-          .from('vault_documents')
+          .from('documents')
           .upsert(entry.payload, { onConflict: 'id' });
         success = !error;
         if (error) {
@@ -189,13 +196,31 @@ export async function flushSyncQueue(userId: string): Promise<void> {
         }
       } else if (entry.type === 'deleteDocument') {
         const { error } = await supabase
-          .from('vault_documents')
+          .from('documents')
           .delete()
           .eq('id', entry.entityId)
           .eq('user_id', userId);
         success = !error || error.code === 'PGRST116';
         if (error && error.code !== 'PGRST116') {
           console.warn(`[SyncQueue] deleteDocument retry failed for ${entry.entityId}:`, error.message);
+        }
+      } else if (entry.type === 'upsertMaintenance' && entry.payload) {
+        const { error } = await supabase
+          .from('maintenance_records')
+          .upsert(entry.payload, { onConflict: 'id' });
+        success = !error;
+        if (error) {
+          console.warn(`[SyncQueue] upsertMaintenance retry failed for ${entry.entityId}:`, error.message);
+        }
+      } else if (entry.type === 'deleteMaintenance') {
+        const { error } = await supabase
+          .from('maintenance_records')
+          .delete()
+          .eq('id', entry.entityId)
+          .eq('user_id', userId);
+        success = !error || error.code === 'PGRST116';
+        if (error && error.code !== 'PGRST116') {
+          console.warn(`[SyncQueue] deleteMaintenance retry failed for ${entry.entityId}:`, error.message);
         }
       }
 

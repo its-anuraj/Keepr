@@ -286,19 +286,29 @@ export default function DocumentDetailsScreen() {
         title="Document Details"
         showBack
         rightAction={
-          <View className="flex-row items-center gap-1">
+          <View className="flex-row items-center gap-1.5">
             <TouchableOpacity
               onPress={handleShare}
               className="w-9 h-9 rounded-full bg-serene-surface-container-high items-center justify-center"
               activeOpacity={0.7}
+              accessibilityLabel="Share document"
             >
               <MaterialIcons name="share" size={18} color={SereneColors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.push(`/document/add?editId=${doc.id}` as any)}
+              className="w-9 h-9 rounded-full bg-serene-surface-container-high items-center justify-center"
+              activeOpacity={0.7}
+              accessibilityLabel="Edit document"
+            >
+              <MaterialIcons name="edit" size={17} color={SereneColors.primary} />
             </TouchableOpacity>
             <TouchableOpacity
               onPress={handleDelete}
               className="w-9 h-9 rounded-full bg-serene-surface-container-high items-center justify-center"
               activeOpacity={0.7}
               disabled={isDeleting}
+              accessibilityLabel="Delete document"
             >
               {isDeleting ? (
                 <ActivityIndicator size="small" color={SereneColors.error} />
@@ -735,6 +745,45 @@ export default function DocumentDetailsScreen() {
               </TouchableOpacity>
             </View>
           )}
+        </View>
+
+        {/* Document Actions Card */}
+        <View className="bg-serene-surface-container-lowest rounded-serene-xl p-4 border border-serene-subtle-border shadow-sm gap-3">
+          <View className="flex-row items-center gap-2">
+            <MaterialIcons name="touch-app" size={18} color={SereneColors.primary} />
+            <Text className="text-[14px] font-bold text-serene-on-surface">Document Actions</Text>
+          </View>
+
+          <View className="flex-row items-center gap-2.5">
+            <TouchableOpacity
+              className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
+              activeOpacity={0.8}
+              onPress={() => router.push(`/document/add?editId=${doc.id}` as any)}
+            >
+              <MaterialIcons name="edit" size={16} color={SereneColors.primary} />
+              <Text className="text-[13px] font-semibold text-serene-primary">Edit Details</Text>
+            </TouchableOpacity>
+
+            {linkedItem ? (
+              <TouchableOpacity
+                className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
+                activeOpacity={0.8}
+                onPress={() => router.push(`/service/add?itemId=${linkedItem.id}` as any)}
+              >
+                <MaterialIcons name="build" size={16} color={SereneColors.primary} />
+                <Text className="text-[13px] font-semibold text-serene-primary">Add Service</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
+                activeOpacity={0.8}
+                onPress={() => setShowLinkModal(true)}
+              >
+                <MaterialIcons name="link" size={16} color={SereneColors.primary} />
+                <Text className="text-[13px] font-semibold text-serene-primary">Link to Item</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         <View className="bg-serene-surface-container-lowest rounded-serene-xl p-4 border border-serene-subtle-border shadow-sm gap-2">

@@ -22,7 +22,7 @@ export default function WelcomeScreen() {
 
         <Text className="text-[32px] font-bold text-serene-primary tracking-[-1px]">Keepr</Text>
         <Text className="text-[14px] text-serene-on-surface-variant text-center italic mt-[6px] max-w-[280px]">
-          "Everything you don't want to forget about what you own."
+          "Keep your purchases, receipts, documents, and important bills organized in one private place."
         </Text>
 
         <View className="flex-row items-center gap-[6px] bg-serene-tertiary-fixed px-[10px] py-1 rounded-full mt-3">
@@ -60,12 +60,12 @@ export default function WelcomeScreen() {
 
         <View className="flex-row items-start gap-3">
           <View className="w-[38px] h-[38px] rounded-serene-md bg-serene-surface-container-lowest border border-serene-subtle-border items-center justify-center">
-            <MaterialIcons name="build" size={20} color={SereneColors.primary} />
+            <MaterialIcons name="description" size={20} color={SereneColors.primary} />
           </View>
           <View className="flex-1">
-            <Text className="text-[14px] font-semibold text-serene-on-surface">Maintenance & Expenses</Text>
+            <Text className="text-[14px] font-semibold text-serene-on-surface">Documents & Receipts</Text>
             <Text className="text-[12px] text-serene-on-surface-variant mt-[2px] leading-[17px]">
-              Log servicing history, calculate total ownership cost, and stay on top of upkeep.
+              Keep receipts, invoices, warranties, bills, fee receipts, and other important documents organized.
             </Text>
           </View>
         </View>

@@ -302,10 +302,10 @@ export class NotificationService {
 
   /**
    * Sets up a listener for notification response (tap) events.
-   * When tapped, extracts itemId or documentId and triggers callback.
+   * When tapped, extracts itemId, documentId, or serviceId and triggers callback.
    */
   static setupNotificationResponseListener(
-    callback: (target: { itemId?: string; documentId?: string; type?: string }) => void
+    callback: (target: { itemId?: string; documentId?: string; serviceId?: string; type?: string }) => void
   ): () => void {
     const Notifications = getNotifications();
     if (!Notifications || !Notifications.addNotificationResponseReceivedListener) {
@@ -316,12 +316,13 @@ export class NotificationService {
       const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
         try {
           const data = response?.notification?.request?.content?.data as
-            | { itemId?: string; documentId?: string; type?: string }
+            | { itemId?: string; documentId?: string; serviceId?: string; type?: string }
             | undefined;
-          if (data && (data.documentId || data.itemId)) {
+          if (data && (data.documentId || data.itemId || data.serviceId)) {
             callback({
               documentId: data.documentId ? String(data.documentId) : undefined,
               itemId: data.itemId ? String(data.itemId) : undefined,
+              serviceId: data.serviceId ? String(data.serviceId) : undefined,
               type: data.type ? String(data.type) : undefined,
             });
           }
@@ -347,7 +348,7 @@ export class NotificationService {
    * Checks if the app was launched by tapping a notification.
    */
   static async checkInitialNotificationResponse(
-    callback: (target: { itemId?: string; documentId?: string; type?: string }) => void
+    callback: (target: { itemId?: string; documentId?: string; serviceId?: string; type?: string }) => void
   ): Promise<void> {
     const Notifications = getNotifications();
     if (!Notifications || !Notifications.getLastNotificationResponseAsync) {
@@ -357,12 +358,13 @@ export class NotificationService {
     try {
       const response = await Notifications.getLastNotificationResponseAsync();
       const data = response?.notification?.request?.content?.data as
-        | { itemId?: string; documentId?: string; type?: string }
+        | { itemId?: string; documentId?: string; serviceId?: string; type?: string }
         | undefined;
-      if (data && (data.documentId || data.itemId)) {
+      if (data && (data.documentId || data.itemId || data.serviceId)) {
         callback({
           documentId: data.documentId ? String(data.documentId) : undefined,
           itemId: data.itemId ? String(data.itemId) : undefined,
+          serviceId: data.serviceId ? String(data.serviceId) : undefined,
           type: data.type ? String(data.type) : undefined,
         });
       }
@@ -614,6 +616,128 @@ export class NotificationService {
       const identifier = `doc-rem-${documentId}-${suffix}`;
       await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
     }
+  }
+
+  /**
+   * Cancels all scheduled notification identifiers associated with a service / repair record.
+   */
+  static async cancelServiceReminders(serviceId: string): Promise<void> {
+    const Notifications = getNotifications();
+    if (!Notifications || !serviceId) return;
+
+    const identifiers = [
+      `service-warranty-${serviceId}`,
+      `service-guarantee-${serviceId}`,
+      `service-next-${serviceId}`,
+    ];
+
+    for (const id of identifiers) {
+      try {
+        await Notifications.cancelScheduledNotificationAsync(id);
+      } catch {}
+    }
+  }
+
+  /**
+   * Schedules reminders for post-service warranty or guarantee expiry dates.
+   * Strictly requires real dates, never invents dates.
+   */
+  static async scheduleServiceCoverageReminders(
+    service: {
+      id: string;
+      itemId: string;
+      title: string;
+      serviceType?: string;
+      postServiceWarranty?: boolean;
+      postServiceWarrantyUntil?: string | null;
+      postServiceGuarantee?: boolean;
+      postServiceGuaranteeUntil?: string | null;
+      nextServiceDate?: string | null;
+    },
+    itemName?: string
+  ): Promise<string[]> {
+    const Notifications = getNotifications();
+    if (!Notifications || !service || !service.id) return [];
+
+    await NotificationService.cancelServiceReminders(service.id);
+
+    const scheduledIds: string[] = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const displayName = itemName ? `${itemName} · ${service.title}` : service.title;
+
+    // Post-service warranty reminder (7 days before expiry)
+    if (service.postServiceWarranty && service.postServiceWarrantyUntil) {
+      const expDate = new Date(service.postServiceWarrantyUntil);
+      if (!isNaN(expDate.getTime())) {
+        const trigger = new Date(expDate);
+        trigger.setDate(trigger.getDate() - 7);
+        trigger.setHours(9, 0, 0, 0);
+
+        if (trigger.getTime() > today.getTime()) {
+          try {
+            const id = await Notifications.scheduleNotificationAsync({
+              identifier: `service-warranty-${service.id}`,
+              content: {
+                title: 'Repair Warranty Expiring Soon',
+                body: `Post-service warranty for "${displayName}" expires on ${service.postServiceWarrantyUntil}.`,
+                data: {
+                  serviceId: service.id,
+                  itemId: service.itemId,
+                  type: 'service_warranty_expiring',
+                },
+                sound: true,
+              },
+              trigger: {
+                type: Notifications.SchedulableTriggerInputTypes?.DATE || 'date',
+                date: trigger,
+              },
+            });
+            scheduledIds.push(id);
+          } catch (err) {
+            console.warn('[Keepr Notifications] Failed scheduling service warranty reminder:', err);
+          }
+        }
+      }
+    }
+
+    // Post-service guarantee reminder (7 days before expiry)
+    if (service.postServiceGuarantee && service.postServiceGuaranteeUntil) {
+      const expDate = new Date(service.postServiceGuaranteeUntil);
+      if (!isNaN(expDate.getTime())) {
+        const trigger = new Date(expDate);
+        trigger.setDate(trigger.getDate() - 7);
+        trigger.setHours(9, 0, 0, 0);
+
+        if (trigger.getTime() > today.getTime()) {
+          try {
+            const id = await Notifications.scheduleNotificationAsync({
+              identifier: `service-guarantee-${service.id}`,
+              content: {
+                title: 'Service Guarantee Expiring Soon',
+                body: `Service guarantee for "${displayName}" expires on ${service.postServiceGuaranteeUntil}.`,
+                data: {
+                  serviceId: service.id,
+                  itemId: service.itemId,
+                  type: 'service_guarantee_expiring',
+                },
+                sound: true,
+              },
+              trigger: {
+                type: Notifications.SchedulableTriggerInputTypes?.DATE || 'date',
+                date: trigger,
+              },
+            });
+            scheduledIds.push(id);
+          } catch (err) {
+            console.warn('[Keepr Notifications] Failed scheduling service guarantee reminder:', err);
+          }
+        }
+      }
+    }
+
+    return scheduledIds;
   }
 
   /**

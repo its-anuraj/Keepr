@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import '../global.css';
 import { Stack, router, useSegments, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet, Platform, Image, Animated } from 'react-native';
+import { View, Platform } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../src/store/authStore';
 import { SereneColors } from '../src/constants/theme';
@@ -25,17 +25,10 @@ export default function RootLayout() {
   const pathname = usePathname();
 
   const [appReady, setAppReady] = useState(false);
-  const [showSplashOverlay, setShowSplashOverlay] = useState(true);
-  const splashFadeAnim = useRef(new Animated.Value(1)).current;
 
   const pendingNotificationRef = useRef<string | null>(null);
   // Prevents duplicate navigation if both live listener and cold-start check fire
   const notificationHandledRef = useRef(false);
-
-  useEffect(() => {
-    // Immediately dismiss native OS splash so the full Keepr startup artwork is revealed
-    SplashScreen.hideAsync().catch(() => {});
-  }, []);
 
   useEffect(() => {
     async function prepare() {
@@ -53,15 +46,9 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (appReady) {
-      Animated.timing(splashFadeAnim, {
-        toValue: 0,
-        duration: 450,
-        useNativeDriver: true,
-      }).start(() => {
-        setShowSplashOverlay(false);
-      });
+      SplashScreen.hideAsync().catch(() => {});
     }
-  }, [appReady, splashFadeAnim]);
+  }, [appReady]);
 
   // Auth Routing Guard: Keep unauthenticated users in (auth), send authenticated users to (tabs)
   useEffect(() => {
@@ -132,10 +119,16 @@ export default function RootLayout() {
     };
   }, [appReady]);
 
-  // Navigates to target (document or item) exactly once, preventing duplicates
-  const navigateToTarget = useCallback((target: { itemId?: string; documentId?: string }) => {
+  // Navigates to target (service, document, or item) exactly once, preventing duplicates
+  const navigateToTarget = useCallback((target: { itemId?: string; documentId?: string; serviceId?: string }) => {
     if (notificationHandledRef.current) return;
-    if (target.documentId) {
+    if (target.serviceId) {
+      notificationHandledRef.current = true;
+      setTimeout(() => {
+        router.push(`/service/${target.serviceId}` as any);
+        setTimeout(() => { notificationHandledRef.current = false; }, 1500);
+      }, 100);
+    } else if (target.documentId) {
       notificationHandledRef.current = true;
       setTimeout(() => {
         router.push(`/document/${target.documentId}` as any);
@@ -150,12 +143,14 @@ export default function RootLayout() {
     }
   }, []);
 
-  // Deep linking on notification tap -> opens Item Details or Document Details screen
+  // Deep linking on notification tap -> opens Service, Item Details, or Document Details screen
   useEffect(() => {
     if (!appReady || !session) {
       NotificationService.checkInitialNotificationResponse((target) => {
-        if (target.documentId || target.itemId) {
-          pendingNotificationRef.current = target.documentId
+        if (target.serviceId || target.documentId || target.itemId) {
+          pendingNotificationRef.current = target.serviceId
+            ? `service:${target.serviceId}`
+            : target.documentId
             ? `doc:${target.documentId}`
             : `item:${target.itemId}`;
         }
@@ -166,7 +161,9 @@ export default function RootLayout() {
     if (pendingNotificationRef.current) {
       const pendingRaw = pendingNotificationRef.current;
       pendingNotificationRef.current = null;
-      if (pendingRaw.startsWith('doc:')) {
+      if (pendingRaw.startsWith('service:')) {
+        navigateToTarget({ serviceId: pendingRaw.slice(8) });
+      } else if (pendingRaw.startsWith('doc:')) {
         navigateToTarget({ documentId: pendingRaw.slice(4) });
       } else if (pendingRaw.startsWith('item:')) {
         navigateToTarget({ itemId: pendingRaw.slice(5) });
@@ -176,7 +173,7 @@ export default function RootLayout() {
     }
 
     const unsubscribe = NotificationService.setupNotificationResponseListener((target) => {
-      if (target.documentId || target.itemId) {
+      if (target.serviceId || target.documentId || target.itemId) {
         console.log('[Keepr Notifications] Tap received:', target);
         navigateToTarget(target);
       }
@@ -184,7 +181,7 @@ export default function RootLayout() {
 
     // Cold-start check (app was completely closed when notification was tapped)
     NotificationService.checkInitialNotificationResponse((target) => {
-      if (target.documentId || target.itemId) {
+      if (target.serviceId || target.documentId || target.itemId) {
         console.log('[Keepr Notifications] Cold-start notification tap:', target);
         navigateToTarget(target);
       }
@@ -252,26 +249,6 @@ export default function RootLayout() {
             }}
           />
         </Stack>
-
-        {showSplashOverlay && (
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              StyleSheet.absoluteFill,
-              {
-                zIndex: 99999,
-                backgroundColor: SereneColors.surface,
-                opacity: splashFadeAnim,
-              },
-            ]}
-          >
-            <Image
-              source={require('../assets/splash.png')}
-              style={{ width: '100%', height: '100%' }}
-              resizeMode="cover"
-            />
-          </Animated.View>
-        )}
       </View>
     </SafeAreaProvider>
   );

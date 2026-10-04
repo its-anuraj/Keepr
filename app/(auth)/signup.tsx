@@ -78,7 +78,7 @@ export default function SignupScreen() {
             <KeeprLogo size={52} />
             <Text className="text-[24px] font-bold text-serene-on-surface mt-3">Create Digital Vault</Text>
             <Text className="text-[13px] text-serene-on-surface-variant text-center mt-1 max-w-[280px]">
-              Secure all your physical & digital assets in one private space.
+              Keep your purchases, receipts, documents, and important bills in one private place.
             </Text>
           </View>
 
@@ -101,7 +101,7 @@ export default function SignupScreen() {
                 />
                 <TextInput
                   className="flex-1 text-[14px] text-serene-on-surface"
-                  placeholder="e.g. Anuraj Singh"
+                  placeholder="Enter your name"
                   placeholderTextColor={SereneColors.outline}
                   value={fullName}
                   onChangeText={(t) => {
@@ -124,7 +124,7 @@ export default function SignupScreen() {
                 />
                 <TextInput
                   className="flex-1 text-[14px] text-serene-on-surface"
-                  placeholder="you@example.com"
+                  placeholder="Enter your email"
                   placeholderTextColor={SereneColors.outline}
                   value={email}
                   onChangeText={(t) => {
@@ -139,7 +139,7 @@ export default function SignupScreen() {
             </View>
 
             <View className="gap-[6px]">
-              <Text className="text-[12px] font-semibold text-serene-on-surface">Master Vault Password</Text>
+              <Text className="text-[12px] font-semibold text-serene-on-surface">Vault Password</Text>
               <View className="flex-row items-center bg-serene-surface-container-lowest border border-serene-subtle-border rounded-serene-lg h-12 px-3">
                 <MaterialIcons
                   name="lock-outline"

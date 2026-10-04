@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -37,8 +37,20 @@ export default function ItemDetailScreen() {
   const deleteItem = useItemStore((s) => s.deleteItem);
   const convertItemToDocument = useItemStore((s) => s.convertItemToDocument);
   const getDocumentsByItemId = useItemStore((s) => s.getDocumentsByItemId);
+  const getMaintenanceRecordsByItemId = useItemStore((s) => s.getMaintenanceRecordsByItemId);
   const item = getItemById(id);
   const linkedDocuments = id ? getDocumentsByItemId(id) : [];
+  const maintenanceRecords = id ? getMaintenanceRecordsByItemId(id) : [];
+
+  const [maintenanceSortOrder, setMaintenanceSortOrder] = useState<'newest' | 'oldest'>('newest');
+
+  const sortedMaintenanceRecords = useMemo(() => {
+    return [...maintenanceRecords].sort((a, b) => {
+      const dateA = new Date(a.serviceDate || a.createdAt).getTime();
+      const dateB = new Date(b.serviceDate || b.createdAt).getTime();
+      return maintenanceSortOrder === 'newest' ? dateB - dateA : dateA - dateB;
+    });
+  }, [maintenanceRecords, maintenanceSortOrder]);
 
   const [previewModal, setPreviewModal] = useState<{ uri: string; title: string } | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -336,6 +348,44 @@ export default function ItemDetailScreen() {
               )}
             </TouchableOpacity>
           </View>
+        </View>
+
+        {/* Quick Add Actions: Extend item with documents, services, or receipts */}
+        <View className="flex-row items-center gap-2">
+          <TouchableOpacity
+            className="flex-1 bg-serene-surface-container-lowest border border-serene-subtle-border py-2.5 px-2 rounded-serene-lg flex-row items-center justify-center gap-1.5 shadow-sm"
+            activeOpacity={0.8}
+            onPress={() =>
+              router.push(
+                `/document/add?linkedItemId=${item.id}&linkedItemName=${encodeURIComponent(
+                  item.name
+                )}` as any
+              )
+            }
+          >
+            <MaterialIcons name="note-add" size={16} color={SereneColors.primary} />
+            <Text className="text-[12px] font-semibold text-serene-on-surface">Add Document</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            className="flex-1 bg-serene-surface-container-lowest border border-serene-subtle-border py-2.5 px-2 rounded-serene-lg flex-row items-center justify-center gap-1.5 shadow-sm"
+            activeOpacity={0.8}
+            onPress={() => router.push(`/service/add?itemId=${item.id}` as any)}
+          >
+            <MaterialIcons name="build" size={16} color={SereneColors.primary} />
+            <Text className="text-[12px] font-semibold text-serene-on-surface">Add Service</Text>
+          </TouchableOpacity>
+
+          {!receiptUri ? (
+            <TouchableOpacity
+              className="flex-1 bg-serene-surface-container-lowest border border-serene-subtle-border py-2.5 px-2 rounded-serene-lg flex-row items-center justify-center gap-1.5 shadow-sm"
+              activeOpacity={0.8}
+              onPress={() => router.push(`/(tabs)/add?editId=${item.id}` as any)}
+            >
+              <MaterialIcons name="receipt" size={16} color={SereneColors.primary} />
+              <Text className="text-[12px] font-semibold text-serene-on-surface">Add Receipt</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {allProductPhotos.length > 0 && (
@@ -1025,6 +1075,184 @@ export default function ItemDetailScreen() {
                 <MaterialIcons name="add" size={14} color={SereneColors.primary} />
                 <Text className="text-[11px] font-semibold text-serene-primary">
                   {item.categoryId === 'vehicles' ? 'Attach Vehicle Document' : 'Attach Document'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
+        {/* Service & Repair Section */}
+        <View className="bg-serene-surface-container-lowest rounded-serene-xl p-serene-md border border-serene-subtle-border shadow-sm gap-3">
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center gap-2">
+              <MaterialIcons name="build" size={18} color={SereneColors.primary} />
+              <Text className="text-[15px] font-bold text-serene-on-surface">Service & Repair</Text>
+              <View className="bg-serene-surface-container-high px-2 py-0.5 rounded-full">
+                <Text className="text-[10px] font-bold text-serene-primary">
+                  {maintenanceRecords.length}
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              className="bg-serene-primary/10 px-3 py-1 rounded-full flex-row items-center gap-1"
+              activeOpacity={0.8}
+              onPress={() => router.push(`/service/add?itemId=${item.id}` as any)}
+            >
+              <MaterialIcons name="add" size={14} color={SereneColors.primary} />
+              <Text className="text-[11px] font-semibold text-serene-primary">Add Service</Text>
+            </TouchableOpacity>
+          </View>
+
+          {sortedMaintenanceRecords.length > 0 ? (
+            <View className="gap-2.5">
+              {sortedMaintenanceRecords.length > 1 && (
+                <View className="flex-row items-center justify-between pt-0.5">
+                  <Text className="text-[11px] font-medium text-serene-on-surface-variant">
+                    Service & Repair History
+                  </Text>
+                  <TouchableOpacity
+                    className="flex-row items-center gap-1 px-2.5 py-1 rounded-full bg-serene-surface-container-low border border-serene-subtle-border"
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      setMaintenanceSortOrder((prev) => (prev === 'newest' ? 'oldest' : 'newest'))
+                    }
+                  >
+                    <MaterialIcons name="sort" size={13} color={SereneColors.primary} />
+                    <Text className="text-[10px] font-semibold text-serene-primary">
+                      {maintenanceSortOrder === 'newest' ? 'Newest First' : 'Oldest First'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {sortedMaintenanceRecords.map((record) => {
+                const isWarrantyCovered = record.warrantyCovered === 'yes';
+                const isWarrantyUnknown = record.warrantyCovered === 'unknown';
+                const currencySymbol = record.currency === 'INR' || item.currency === 'INR' ? '₹' : '$';
+                const effectiveCost = record.amountPaid ?? record.cost ?? 0;
+
+                return (
+                  <TouchableOpacity
+                    key={record.id}
+                    className="p-3 rounded-serene-lg bg-[rgba(246,243,235,0.65)] border border-serene-subtle-border/70 gap-2"
+                    activeOpacity={0.85}
+                    onPress={() => router.push(`/service/${record.id}` as any)}
+                  >
+                    <View className="flex-row items-start justify-between gap-2">
+                      <View className="flex-1">
+                        <View className="flex-row items-center gap-1.5 flex-wrap">
+                          <View className="bg-serene-primary/10 px-2 py-0.5 rounded-full">
+                            <Text className="text-[10px] font-bold text-serene-primary">
+                              {record.serviceType || 'Service'}
+                            </Text>
+                          </View>
+                          {isWarrantyCovered ? (
+                            <View className="bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                              <Text className="text-[10px] font-bold text-emerald-700">
+                                Warranty Covered
+                              </Text>
+                            </View>
+                          ) : isWarrantyUnknown ? (
+                            <View className="bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                              <Text className="text-[10px] font-bold text-amber-700">
+                                Coverage Unknown
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        <Text
+                          className="text-[14px] font-bold text-serene-on-surface mt-1.5"
+                          numberOfLines={1}
+                        >
+                          {record.title}
+                        </Text>
+
+                        {record.serviceProvider ? (
+                          <Text
+                            className="text-[11px] text-serene-on-surface-variant mt-0.5"
+                            numberOfLines={1}
+                          >
+                            Provider: {record.serviceProvider}
+                          </Text>
+                        ) : null}
+                      </View>
+
+                      <View className="items-end">
+                        <Text className="text-[11px] text-serene-on-surface-variant">
+                          {formatDate(record.serviceDate, 'medium') || record.serviceDate}
+                        </Text>
+                        <Text className="text-[13px] font-bold text-serene-primary mt-1">
+                          {isWarrantyCovered && effectiveCost === 0
+                            ? `${currencySymbol}0`
+                            : formatCurrency(effectiveCost, currencySymbol)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {(record.workPerformed || record.problemDescription) && (
+                      <Text
+                        className="text-[12px] text-serene-on-surface-variant line-clamp-2"
+                        numberOfLines={2}
+                      >
+                        {record.workPerformed || record.problemDescription}
+                      </Text>
+                    )}
+
+                    {record.partsReplaced && (
+                      <View className="flex-row items-center gap-1 mt-0.5">
+                        <MaterialIcons name="extension" size={12} color={SereneColors.outline} />
+                        <Text
+                          className="text-[11px] text-serene-on-surface-variant italic flex-1"
+                          numberOfLines={1}
+                        >
+                          Parts: {record.partsReplaced}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View className="flex-row items-center justify-between pt-1 border-t border-serene-subtle-border/40">
+                      <View className="flex-row items-center gap-1.5">
+                        {record.postServiceWarranty && record.postServiceWarrantyUntil && (
+                          <Text className="text-[10px] font-semibold text-emerald-700">
+                            🛡️ Warranty: {formatDate(record.postServiceWarrantyUntil, 'medium')}
+                          </Text>
+                        )}
+                        {record.postServiceGuarantee && record.postServiceGuaranteeUntil && (
+                          <Text className="text-[10px] font-semibold text-blue-700">
+                            ✓ Guarantee: {formatDate(record.postServiceGuaranteeUntil, 'medium')}
+                          </Text>
+                        )}
+                        {!record.postServiceWarranty &&
+                          !record.postServiceGuarantee &&
+                          record.documentIds &&
+                          record.documentIds.length > 0 && (
+                            <Text className="text-[10px] text-serene-outline">
+                              📎 {record.documentIds.length} attached doc
+                              {record.documentIds.length > 1 ? 's' : ''}
+                            </Text>
+                          )}
+                      </View>
+                      <MaterialIcons name="chevron-right" size={16} color={SereneColors.outline} />
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : (
+            <View className="bg-serene-surface-container-low p-4 rounded-serene-md items-center gap-1.5">
+              <MaterialIcons name="build-circle" size={24} color={SereneColors.outline} />
+              <Text className="text-[12px] text-serene-on-surface-variant text-center">
+                No service or repair history yet.
+              </Text>
+              <TouchableOpacity
+                className="mt-1 bg-serene-surface-container-high px-3 py-1 rounded-full flex-row items-center gap-1"
+                onPress={() => router.push(`/service/add?itemId=${item.id}` as any)}
+              >
+                <MaterialIcons name="add" size={14} color={SereneColors.primary} />
+                <Text className="text-[11px] font-semibold text-serene-primary">
+                  Add Service or Repair
                 </Text>
               </TouchableOpacity>
             </View>

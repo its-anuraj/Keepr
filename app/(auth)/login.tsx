@@ -96,7 +96,7 @@ export default function LoginScreen() {
                 />
                 <TextInput
                   className="flex-1 text-[14px] text-serene-on-surface"
-                  placeholder="you@example.com"
+                  placeholder="Enter your email"
                   placeholderTextColor={SereneColors.outline}
                   value={email}
                   onChangeText={(t) => {

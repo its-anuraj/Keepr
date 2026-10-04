@@ -217,24 +217,81 @@ export function mapDbRowToReceipt(row: Record<string, unknown>): Receipt {
   };
 }
 
-/**
- * Maps a raw Supabase maintenance_records row to the domain MaintenanceRecord type.
- */
 export function mapDbRowToMaintenanceRecord(row: Record<string, unknown>): MaintenanceRecord {
   return {
     id: row.id as string,
     itemId: row.item_id as string,
     userId: row.user_id as string,
     title: row.title as string,
+    serviceType: (row.service_type as string) || undefined,
     description: (row.description as string) || undefined,
+    problemDescription: (row.problem_description as string) || undefined,
+    workPerformed: (row.work_performed as string) || undefined,
+    partsReplaced: (row.parts_replaced as string) || undefined,
+    technicianNotes: (row.technician_notes as string) || undefined,
     serviceProvider: (row.service_provider as string) || undefined,
+    serviceProviderAddress: (row.service_provider_address as string) || undefined,
+    serviceProviderPhone: (row.service_provider_phone as string) || undefined,
     serviceDate: row.service_date as string,
-    cost: Number(row.cost) || 0,
+    cost: Number(row.cost || row.amount_paid) || 0,
+    amountPaid: row.amount_paid != null ? Number(row.amount_paid) : Number(row.cost) || 0,
+    currency: (row.currency as string) || 'INR',
+    warrantyCovered: (row.warranty_covered as MaintenanceRecord['warrantyCovered']) || 'unknown',
+    coverageType: (row.coverage_type as string) || undefined,
+    coverageReferenceNumber: (row.coverage_reference_number as string) || undefined,
+    postServiceWarranty: Boolean(row.post_service_warranty),
+    postServiceWarrantyUntil: (row.post_service_warranty_until as string) || null,
+    postServiceGuarantee: Boolean(row.post_service_guarantee),
+    postServiceGuaranteeUntil: (row.post_service_guarantee_until as string) || null,
     nextServiceDate: (row.next_service_date as string) || undefined,
+    documentIds: Array.isArray(row.document_ids) ? (row.document_ids as string[]) : [],
+    attachments: Array.isArray(row.attachments) ? (row.attachments as string[]) : [],
     status: (row.status as MaintenanceRecord['status']) || 'completed',
     notes: (row.notes as string) || undefined,
     createdAt: (row.created_at as string) || new Date().toISOString(),
     updatedAt: (row.updated_at as string) || new Date().toISOString(),
+  };
+}
+
+/**
+ * Maps a domain MaintenanceRecord to a database row for Supabase.
+ */
+export function mapMaintenanceToDbRow(
+  record: MaintenanceRecord,
+  userId: string
+): Record<string, unknown> {
+  const amt = record.amountPaid != null ? record.amountPaid : (record.cost ?? 0);
+  return {
+    id: record.id,
+    item_id: record.itemId,
+    user_id: userId,
+    title: record.title,
+    service_type: record.serviceType || 'Service',
+    description: record.description || record.problemDescription || null,
+    problem_description: record.problemDescription || null,
+    work_performed: record.workPerformed || null,
+    parts_replaced: record.partsReplaced || null,
+    technician_notes: record.technicianNotes || null,
+    service_provider: record.serviceProvider || null,
+    service_provider_address: record.serviceProviderAddress || null,
+    service_provider_phone: record.serviceProviderPhone || null,
+    service_date: record.serviceDate,
+    cost: amt,
+    amount_paid: amt,
+    currency: record.currency || 'INR',
+    warranty_covered: record.warrantyCovered || 'unknown',
+    coverage_type: record.coverageType || null,
+    coverage_reference_number: record.coverageReferenceNumber || null,
+    post_service_warranty: Boolean(record.postServiceWarranty),
+    post_service_warranty_until: record.postServiceWarrantyUntil || null,
+    post_service_guarantee: Boolean(record.postServiceGuarantee),
+    post_service_guarantee_until: record.postServiceGuaranteeUntil || null,
+    next_service_date: record.nextServiceDate || null,
+    document_ids: record.documentIds || [],
+    attachments: record.attachments || [],
+    status: record.status || 'completed',
+    notes: record.notes || null,
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -768,20 +825,9 @@ export async function cloudUpsertMaintenance(
 ): Promise<string | null> {
   if (!isSupabaseConfigured || !userId) return null;
   try {
+    const payload = mapMaintenanceToDbRow(record, userId);
     const { error } = await supabase.from('maintenance_records').upsert(
-      {
-        id: record.id,
-        item_id: record.itemId,
-        user_id: userId,
-        title: record.title,
-        description: record.description || null,
-        service_provider: record.serviceProvider || null,
-        service_date: record.serviceDate,
-        cost: record.cost,
-        next_service_date: record.nextServiceDate || null,
-        status: record.status,
-        notes: record.notes || null,
-      },
+      payload,
       { onConflict: 'id' }
     );
     if (error) {

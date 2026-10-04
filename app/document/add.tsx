@@ -54,34 +54,53 @@ export default function AddDocumentScreen() {
     prefillCandidateItemName?: string;
     fileUri?: string;
     fileUriBack?: string;
+    editId?: string;
   }>();
 
   const items = useItemStore((s) => s.items);
   const addDocument = useItemStore((s) => s.addDocument);
+  const getDocumentById = useItemStore((s) => s.getDocumentById);
+  const updateDocument = useItemStore((s) => s.updateDocument);
 
-  const [title, setTitle] = useState(params.prefillTitle || '');
+  const editDoc = params.editId ? getDocumentById(params.editId) : undefined;
+  const isEditing = Boolean(editDoc);
+
+  const [title, setTitle] = useState(editDoc?.title || params.prefillTitle || '');
   const [category, setCategory] = useState<CanonicalDocumentCategory>(
-    (params.prefillCategory as CanonicalDocumentCategory) || 'Receipts & Invoices'
+    (editDoc?.category as CanonicalDocumentCategory) ||
+      (params.prefillCategory as CanonicalDocumentCategory) ||
+      'Receipts & Invoices'
   );
   const [documentType, setDocumentType] = useState<CanonicalDocumentType>(
-    (params.prefillType as CanonicalDocumentType) || 'Receipt'
+    (editDoc?.documentType as CanonicalDocumentType) ||
+      (params.prefillType as CanonicalDocumentType) ||
+      'Receipt'
   );
 
   const [documentDate, setDocumentDate] = useState(
-    params.prefillDate || new Date().toISOString().split('T')[0]
+    editDoc?.documentDate || params.prefillDate || new Date().toISOString().split('T')[0]
   );
-  const [issuerName, setIssuerName] = useState(params.prefillIssuer || '');
-  const [referenceNumber, setReferenceNumber] = useState(params.prefillReference || '');
-  const [amount, setAmount] = useState(params.prefillAmount || '');
-  const [expiryDate, setExpiryDate] = useState(params.prefillExpiryDate || '');
-  const [dueDate, setDueDate] = useState(params.prefillDueDate || '');
+  const [issuerName, setIssuerName] = useState(editDoc?.issuerName || params.prefillIssuer || '');
+  const [referenceNumber, setReferenceNumber] = useState(
+    editDoc?.referenceNumber || params.prefillReference || ''
+  );
+  const [amount, setAmount] = useState(
+    editDoc?.amount != null ? String(editDoc.amount) : params.prefillAmount || ''
+  );
+  const [expiryDate, setExpiryDate] = useState(editDoc?.expiryDate || params.prefillExpiryDate || '');
+  const [dueDate, setDueDate] = useState(editDoc?.dueDate || params.prefillDueDate || '');
   const [enableReminder, setEnableReminder] = useState(
-    Boolean(params.prefillExpiryDate || params.prefillDueDate)
+    Boolean(
+      editDoc?.expiryDate ||
+        editDoc?.dueDate ||
+        params.prefillExpiryDate ||
+        params.prefillDueDate
+    )
   );
-  const [notes, setNotes] = useState('');
+  const [notes, setNotes] = useState(editDoc?.notes || '');
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(
-    params.linkedItemId || (params.prefillCandidateItemId || null)
+    editDoc?.itemId || params.linkedItemId || (params.prefillCandidateItemId || null)
   );
   const [candidateMatch, setCandidateMatch] = useState<{ id: string; name: string } | null>(
     params.prefillCandidateItemId && params.prefillCandidateItemName
@@ -90,23 +109,25 @@ export default function AddDocumentScreen() {
   );
 
   const [attachedFileUri, setAttachedFileUri] = useState<string | null>(
-    params.fileUri ? safeNormalizeRouteUri(params.fileUri) : null
+    editDoc?.filePath || (params.fileUri ? safeNormalizeRouteUri(params.fileUri) : null)
   );
   const [attachedFileName, setAttachedFileName] = useState<string | null>(
-    params.fileUri ? 'Document_Photo_1.jpg' : null
+    params.fileUri ? 'Document_Photo_1.jpg' : editDoc ? 'Document_Photo_1.jpg' : null
   );
-  const [attachedMimeType, setAttachedMimeType] = useState<string | null>('image/jpeg');
+  const [attachedMimeType, setAttachedMimeType] = useState<string | null>(
+    editDoc?.mimeType || 'image/jpeg'
+  );
 
   const [attachedFileUriBack, setAttachedFileUriBack] = useState<string | null>(
-    params.fileUriBack ? safeNormalizeRouteUri(params.fileUriBack) : null
+    editDoc?.filePathBack || (params.fileUriBack ? safeNormalizeRouteUri(params.fileUriBack) : null)
   );
   const [attachedFileNameBack, setAttachedFileNameBack] = useState<string | null>(
-    params.fileUriBack ? 'Document_Photo_2.jpg' : null
+    params.fileUriBack ? 'Document_Photo_2.jpg' : editDoc?.filePathBack ? 'Document_Photo_2.jpg' : null
   );
   const [attachedMimeTypeBack, setAttachedMimeTypeBack] = useState<string | null>('image/jpeg');
 
   const [isPersistingFile, setIsPersistingFile] = useState(false);
-  const [fileVerified, setFileVerified] = useState(false);
+  const [fileVerified, setFileVerified] = useState(Boolean(editDoc?.filePath));
 
   const [showItemPicker, setShowItemPicker] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -259,13 +280,16 @@ export default function AddDocumentScreen() {
         notes: notes.trim() || undefined,
       };
 
-      if (forceReplaceId) {
+      if (isEditing && editDoc) {
+        await updateDocument(editDoc.id, docPayload);
+        router.back();
+      } else if (forceReplaceId) {
         await useItemStore.getState().updateDocument(forceReplaceId, docPayload);
+        router.replace('/(tabs)/documents');
       } else {
         await addDocument(docPayload);
+        router.replace('/(tabs)/documents');
       }
-
-      router.replace('/(tabs)/documents');
     } catch (err) {
       Alert.alert('Save Error', 'Failed to save document to vault. Please try again.');
       setIsSaving(false);
@@ -296,36 +320,38 @@ export default function AddDocumentScreen() {
     const cleanAmount = amount ? parseFloat(amount.replace(/[^0-9.]/g, '')) : undefined;
     const existingDocs = useItemStore.getState().documents;
 
-    const dupResult = checkForDuplicateDocument(
-      {
-        title: title.trim(),
-        category,
-        documentType,
-        referenceNumber: referenceNumber.trim() || undefined,
-        issuerName: issuerName.trim() || undefined,
-        documentDate: documentDate.trim() || undefined,
-        amount: cleanAmount && !isNaN(cleanAmount) ? cleanAmount : undefined,
-      },
-      existingDocs
-    );
-
-    if (dupResult.isDuplicate) {
-      Alert.alert(
-        'Similar Document Detected',
-        `${dupResult.message}\n\nWould you like to keep both or replace the existing document in your vault?`,
-        [
-          { text: 'Cancel', style: 'cancel', onPress: () => setIsSaving(false) },
-          {
-            text: 'Keep Both',
-            onPress: () => performSave(),
-          },
-          {
-            text: 'Replace Existing',
-            onPress: () => performSave(dupResult.matchedDocument?.id),
-          },
-        ]
+    if (!isEditing) {
+      const dupResult = checkForDuplicateDocument(
+        {
+          title: title.trim(),
+          category,
+          documentType,
+          referenceNumber: referenceNumber.trim() || undefined,
+          issuerName: issuerName.trim() || undefined,
+          documentDate: documentDate.trim() || undefined,
+          amount: cleanAmount && !isNaN(cleanAmount) ? cleanAmount : undefined,
+        },
+        existingDocs
       );
-      return;
+
+      if (dupResult.isDuplicate) {
+        Alert.alert(
+          'Similar Document Detected',
+          `${dupResult.message}\n\nWould you like to keep both or replace the existing document in your vault?`,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => setIsSaving(false) },
+            {
+              text: 'Keep Both',
+              onPress: () => performSave(),
+            },
+            {
+              text: 'Replace Existing',
+              onPress: () => performSave(dupResult.matchedDocument?.id),
+            },
+          ]
+        );
+        return;
+      }
     }
 
     await performSave();
@@ -341,7 +367,7 @@ export default function AddDocumentScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <Header
-        title="Add Document"
+        title={isEditing ? 'Edit Document' : 'Add Document'}
         showBack
         rightAction={
           <TouchableOpacity

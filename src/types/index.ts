@@ -236,16 +236,46 @@ export interface Receipt {
   updatedAt: string;
 }
 
+export type ServiceType =
+  | 'Repair'
+  | 'Maintenance'
+  | 'Servicing'
+  | 'Inspection'
+  | 'Part Replacement'
+  | 'Software / Technical'
+  | 'Cleaning'
+  | 'Other';
+
+export type WarrantyCoverageStatus = 'yes' | 'no' | 'unknown';
+
 export interface MaintenanceRecord {
   id: string;
   itemId: string;
   userId: string;
   title: string;
+  serviceType?: ServiceType | string;
   description?: string;
+  problemDescription?: string;
+  workPerformed?: string;
+  partsReplaced?: string;
+  technicianNotes?: string;
   serviceProvider?: string;
+  serviceProviderAddress?: string;
+  serviceProviderPhone?: string;
   serviceDate: string; // ISO YYYY-MM-DD
   cost: number;
+  amountPaid?: number; // alias/support for cost
+  currency?: string; // default 'INR'
+  warrantyCovered?: WarrantyCoverageStatus | null;
+  coverageType?: string;
+  coverageReferenceNumber?: string;
+  postServiceWarranty?: boolean;
+  postServiceWarrantyUntil?: string | null;
+  postServiceGuarantee?: boolean;
+  postServiceGuaranteeUntil?: string | null;
   nextServiceDate?: string; // ISO YYYY-MM-DD
+  documentIds?: string[];
+  attachments?: string[];
   status: MaintenanceStatus;
   notes?: string;
   createdAt: string;

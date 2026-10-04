@@ -5,7 +5,7 @@
 // Pipeline: userDocuments → search → filter → sort → render
 // ==============================================================================
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -15,9 +15,12 @@ import {
   FlatList,
   StyleSheet,
   Platform,
+  Alert,
+  Share,
+  BackHandler,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
@@ -51,7 +54,23 @@ function getExpiryBadge(expiryDate?: string | null, category?: string) {
   return { label: isBill ? 'Due ' + formatDate(expiryDate) : 'Expires ' + formatDate(expiryDate), bg: '#F0FDF4', text: '#166534', border: '#BBF7D0' };
 }
 
-const DocumentCard = React.memo(({ item, linkedItem }: { item: VaultDocument; linkedItem?: { name: string } | null }) => {
+interface SelectableDocumentCardProps {
+  item: VaultDocument;
+  linkedItem?: { name: string } | null;
+  isSelected: boolean;
+  isSelectionMode: boolean;
+  onPress: () => void;
+  onLongPress: () => void;
+}
+
+const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
+  item,
+  linkedItem,
+  isSelected,
+  isSelectionMode,
+  onPress,
+  onLongPress,
+}: SelectableDocumentCardProps) {
   const meta = getDocumentCategoryMeta(item.category);
   const canonicalUri = getCanonicalDocumentUri(item.fileUrl || item.filePath);
   const isPdf =
@@ -68,11 +87,46 @@ const DocumentCard = React.memo(({ item, linkedItem }: { item: VaultDocument; li
 
   return (
     <TouchableOpacity
-      style={styles.card}
-      activeOpacity={0.85}
-      onPress={() => router.push(('/document/' + item.id) as any)}
-      accessibilityLabel={'Open document: ' + (item.title || item.name || 'Untitled')}
+      style={[
+        styles.card,
+        isSelected && {
+          backgroundColor: 'rgba(17, 80, 134, 0.07)',
+          borderColor: 'rgba(17, 80, 134, 0.35)',
+          borderWidth: 1.5,
+        },
+      ]}
+      activeOpacity={0.75}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={380}
+      accessible
+      accessibilityLabel={`${item.title || item.name || 'Untitled Document'}${isSelected ? ', selected' : ''}`}
+      accessibilityRole="button"
+      accessibilityState={{ selected: isSelected }}
     >
+      {isSelectionMode && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: 10,
+            zIndex: 10,
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            borderWidth: 2,
+            borderColor: isSelected ? SereneColors.primary : 'rgba(17, 80, 134, 0.3)',
+            backgroundColor: isSelected ? SereneColors.primary : 'rgba(255,255,255,0.9)',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {isSelected && (
+            <MaterialIcons name="check" size={14} color="#fff" />
+          )}
+        </View>
+      )}
+
       <View style={styles.cardRow}>
         <View style={styles.thumb}>
           {isPdf ? (
@@ -137,12 +191,39 @@ export default function DocumentsVaultScreen() {
   const user = useAuthStore((s) => s.user);
   const documents = useItemStore((s) => s.documents);
   const items = useItemStore((s) => s.items);
+  const deleteDocument = useItemStore((s) => s.deleteDocument);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSort, setSelectedSort] = useState<DocSortOption>('recent_added');
   const [filters, setFilters] = useState<DocFilterState>(DEFAULT_DOC_FILTERS);
   const [showSortModal, setShowSortModal] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
+
+  // ── Multi-Select State (ID-based, never index-based) ─────────────────────
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+
+  const exitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedDocIds(new Set());
+  }, []);
+
+  const enterSelectionMode = useCallback((firstDocId: string) => {
+    setIsSelectionMode(true);
+    setSelectedDocIds(new Set([firstDocId]));
+  }, []);
+
+  const toggleDocSelection = useCallback((docId: string) => {
+    setSelectedDocIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) {
+        next.delete(docId);
+      } else {
+        next.add(docId);
+      }
+      return next;
+    });
+  }, []);
 
   const itemsMap = useMemo(() => {
     const map = new Map<string, { name: string; registrationNumber?: string; brand?: string; model?: string }>();
@@ -161,6 +242,31 @@ export default function DocumentsVaultScreen() {
       return true;
     });
   }, [documents, user?.id]);
+
+  useEffect(() => {
+    if (isSelectionMode && selectedDocIds.size > 0) {
+      const validIds = new Set(userDocuments.map((d) => d.id));
+      const pruned = new Set([...selectedDocIds].filter((id) => validIds.has(id)));
+      if (pruned.size !== selectedDocIds.size) {
+        setSelectedDocIds(pruned);
+        if (pruned.size === 0) exitSelectionMode();
+      }
+    }
+  }, [userDocuments]);
+
+  // ── Android Back Button: exit selection first ──────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      const handler = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (isSelectionMode) {
+          exitSelectionMode();
+          return true; // consume the event
+        }
+        return false; // let default navigation happen
+      });
+      return () => handler.remove();
+    }, [isSelectionMode, exitSelectionMode])
+  );
 
   const filteredDocuments = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -264,10 +370,127 @@ export default function DocumentsVaultScreen() {
     setFilters(DEFAULT_DOC_FILTERS);
   }, []);
 
+  const handleDocPress = useCallback((doc: VaultDocument) => {
+    if (isSelectionMode) {
+      toggleDocSelection(doc.id);
+    } else {
+      router.push(`/document/${doc.id}` as any);
+    }
+  }, [isSelectionMode, toggleDocSelection]);
+
+  const handleDocLongPress = useCallback((doc: VaultDocument) => {
+    if (!isSelectionMode) {
+      enterSelectionMode(doc.id);
+    } else {
+      toggleDocSelection(doc.id);
+    }
+  }, [isSelectionMode, enterSelectionMode, toggleDocSelection]);
+
+  const displayedDocIds = useMemo(() => new Set(filteredDocuments.map((d) => d.id)), [filteredDocuments]);
+  const allDisplayedSelected = filteredDocuments.length > 0 && filteredDocuments.every((d) => selectedDocIds.has(d.id));
+
+  const handleSelectAllToggle = useCallback(() => {
+    if (allDisplayedSelected) {
+      setSelectedDocIds((prev) => {
+        const next = new Set(prev);
+        for (const id of displayedDocIds) next.delete(id);
+        return next;
+      });
+    } else {
+      setSelectedDocIds((prev) => new Set([...prev, ...displayedDocIds]));
+    }
+  }, [allDisplayedSelected, displayedDocIds]);
+
+  const buildShareDocsText = useCallback((ids: Set<string>): string => {
+    const selectedDocs = userDocuments.filter((d) => ids.has(d.id));
+    if (selectedDocs.length === 0) return '';
+
+    const lines: string[] = ['📄 Keepr Document Details\n'];
+
+    selectedDocs.forEach((doc, index) => {
+      lines.push(`${index + 1}. ${doc.title || doc.name || 'Untitled Document'}`);
+      if (doc.documentType) lines.push(`   Type: ${doc.documentType}`);
+      if (doc.category) lines.push(`   Category: ${doc.category}`);
+      if (doc.issuerName) lines.push(`   Issuer: ${doc.issuerName}`);
+      if (doc.referenceNumber) lines.push(`   Ref / Policy #: ${doc.referenceNumber}`);
+      if (doc.amount != null && doc.amount > 0) lines.push(`   Amount: ${formatCurrency(doc.amount, doc.currency || 'INR')}`);
+      if (doc.documentDate) lines.push(`   Date: ${formatDate(doc.documentDate)}`);
+      if (doc.expiryDate) lines.push(`   Expires: ${formatDate(doc.expiryDate)}`);
+      if (doc.notes) lines.push(`   Notes: ${doc.notes}`);
+      lines.push('');
+    });
+
+    return lines.join('\n');
+  }, [userDocuments]);
+
+  const handleShareDocs = useCallback(async () => {
+    if (selectedDocIds.size === 0) return;
+    const shareText = buildShareDocsText(selectedDocIds);
+    if (!shareText) return;
+
+    try {
+      await Share.share({
+        message: shareText,
+        title: selectedDocIds.size === 1 ? 'Document Details' : `${selectedDocIds.size} Document Records`,
+      });
+    } catch (err: any) {
+      if (err?.message !== 'User did not share') {
+        Alert.alert("Couldn't Share", "Couldn't share the selected documents. Please try again.");
+      }
+    }
+  }, [selectedDocIds, buildShareDocsText]);
+
+  const handleDeleteDocs = useCallback(() => {
+    if (selectedDocIds.size === 0) return;
+
+    const count = selectedDocIds.size;
+    const title = 'Delete permanently?';
+    const message = count === 1
+      ? 'This document will be permanently deleted and cannot be recovered.'
+      : 'These documents will be permanently deleted and cannot be recovered.';
+
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Permanently',
+          style: 'destructive',
+          onPress: async () => {
+            const idsToDelete = [...selectedDocIds];
+            for (const docId of idsToDelete) {
+              try {
+                await deleteDocument(docId);
+              } catch (err: any) {
+                console.warn('[DocumentsVault] Failed to delete document:', docId, err?.message);
+              }
+            }
+            setSelectedDocIds((prev) => {
+              const next = new Set(prev);
+              for (const id of idsToDelete) next.delete(id);
+              return next;
+            });
+            exitSelectionMode();
+          },
+        },
+      ]
+    );
+  }, [selectedDocIds, deleteDocument, exitSelectionMode]);
+
   const renderItem = useCallback(({ item }: { item: VaultDocument }) => {
     const linkedItem = item.itemId ? itemsMap.get(item.itemId) : null;
-    return <DocumentCard item={item} linkedItem={linkedItem} />;
-  }, [itemsMap]);
+    return (
+      <SelectableDocumentCard
+        item={item}
+        linkedItem={linkedItem}
+        isSelected={selectedDocIds.has(item.id)}
+        isSelectionMode={isSelectionMode}
+        onPress={() => handleDocPress(item)}
+        onLongPress={() => handleDocLongPress(item)}
+      />
+    );
+  }, [itemsMap, selectedDocIds, isSelectionMode, handleDocPress, handleDocLongPress]);
 
   const emptyNode = useMemo(() => {
     if (userDocuments.length === 0) {
@@ -324,21 +547,58 @@ export default function DocumentsVaultScreen() {
 
   return (
     <View style={styles.root}>
-      <Header
-        title="Documents"
-        rightAction={
+      {isSelectionMode ? (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 16,
+            paddingTop: 52,
+            paddingBottom: 12,
+            backgroundColor: '#fff',
+            borderBottomWidth: 1,
+            borderBottomColor: 'rgba(17,80,134,0.08)',
+          }}
+        >
           <TouchableOpacity
-            style={styles.addBtn}
-            activeOpacity={0.88}
-            onPress={() => router.push('/document/add' as any)}
-            accessibilityLabel="Add Document"
-            accessibilityRole="button"
+            onPress={exitSelectionMode}
+            style={{ padding: 4, marginRight: 10 }}
+            accessibilityLabel="Exit selection mode"
           >
-            <MaterialIcons name="add" size={18} color="#FFFFFF" />
-            <Text style={styles.addBtnText}>Add</Text>
+            <MaterialIcons name="close" size={22} color={SereneColors.primary} />
           </TouchableOpacity>
-        }
-      />
+
+          <Text style={{ flex: 1, fontSize: 16, fontWeight: '700', color: SereneColors.onSurface }}>
+            {selectedDocIds.size} selected
+          </Text>
+
+          <TouchableOpacity
+            onPress={handleSelectAllToggle}
+            style={{ marginRight: 6, paddingVertical: 4, paddingHorizontal: 8 }}
+            accessibilityLabel={allDisplayedSelected ? 'Deselect all' : 'Select all'}
+          >
+            <Text style={{ fontSize: 13, fontWeight: '600', color: SereneColors.primary }}>
+              {allDisplayedSelected ? 'Deselect All' : 'Select All'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <Header
+          title="Documents"
+          rightAction={
+            <TouchableOpacity
+              style={styles.addBtn}
+              activeOpacity={0.88}
+              onPress={() => router.push('/document/add' as any)}
+              accessibilityLabel="Add Document"
+              accessibilityRole="button"
+            >
+              <MaterialIcons name="add" size={18} color="#FFFFFF" />
+              <Text style={styles.addBtnText}>Add</Text>
+            </TouchableOpacity>
+          }
+        />
+      )}
 
       <View style={styles.content}>
         <View style={styles.searchBar}>
@@ -417,6 +677,7 @@ export default function DocumentsVaultScreen() {
           data={filteredDocuments}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
+          extraData={selectedDocIds}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
@@ -427,6 +688,69 @@ export default function DocumentsVaultScreen() {
           windowSize={8}
         />
       </View>
+
+      {isSelectionMode && (
+        <View
+          style={{
+            flexDirection: 'row',
+            gap: 10,
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            paddingBottom: Platform.OS === 'ios' ? 28 : 16,
+            backgroundColor: '#fff',
+            borderTopWidth: 1,
+            borderTopColor: 'rgba(17,80,134,0.10)',
+          }}
+        >
+          <TouchableOpacity
+            onPress={handleShareDocs}
+            disabled={selectedDocIds.size === 0}
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              paddingVertical: 12,
+              borderRadius: 10,
+              backgroundColor: 'rgba(17,80,134,0.08)',
+              borderWidth: 1,
+              borderColor: 'rgba(17,80,134,0.18)',
+              opacity: selectedDocIds.size === 0 ? 0.45 : 1,
+            }}
+            accessibilityLabel={`Share ${selectedDocIds.size} selected documents`}
+          >
+            <MaterialIcons name="share" size={18} color={SereneColors.primary} />
+            <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.primary }}>
+              Share
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={handleDeleteDocs}
+            disabled={selectedDocIds.size === 0}
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              paddingVertical: 12,
+              borderRadius: 10,
+              backgroundColor: 'rgba(186,26,26,0.08)',
+              borderWidth: 1,
+              borderColor: 'rgba(186,26,26,0.20)',
+              opacity: selectedDocIds.size === 0 ? 0.45 : 1,
+            }}
+            accessibilityLabel={`Delete ${selectedDocIds.size} selected documents`}
+          >
+            <MaterialIcons name="delete-outline" size={18} color={SereneColors.error} />
+            <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.error }}>
+              {selectedDocIds.size > 0 ? `Delete (${selectedDocIds.size})` : 'Delete'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <DocSortModal
         visible={showSortModal}

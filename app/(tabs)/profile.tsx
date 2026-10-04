@@ -156,7 +156,7 @@ export default function ProfileScreen() {
             onPress={() =>
               Alert.alert(
                 'About Keepr',
-                'Keepr - Personal Digital Ownership Vault.\n\nVersion 1.0.0 \n\nEverything you don\'t want to forget about what you own.'
+                'Keepr - Personal Digital Ownership Vault.\n\nVersion 1.0.0 \n\nKeep your purchases, receipts, documents, and important bills organized in one private place.'
               )
             }
           >

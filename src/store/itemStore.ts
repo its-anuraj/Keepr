@@ -54,6 +54,7 @@ import {
   cloudDeleteExpense,
   mapItemToDbRow,
   mapDocumentToDbRow,
+  mapMaintenanceToDbRow,
 } from '../services/cloudSyncService';
 import { reconcileNotificationsAfterHydration } from '../services/notificationReconciliationService';
 import {
@@ -269,9 +270,18 @@ interface ItemState {
   updateWarranty: (warrantyId: string, updates: Partial<Warranty>) => Promise<void>;
 
   addMaintenanceRecord: (
-    record: Omit<MaintenanceRecord, 'id' | 'createdAt' | 'updatedAt'>
+    record: Omit<MaintenanceRecord, 'id' | 'createdAt' | 'updatedAt' | 'userId'> & {
+      id?: string;
+      userId?: string;
+    }
   ) => Promise<MaintenanceRecord>;
+  updateMaintenanceRecord: (
+    recordId: string,
+    updates: Partial<MaintenanceRecord>
+  ) => Promise<MaintenanceRecord | null>;
   deleteMaintenanceRecord: (recordId: string) => Promise<void>;
+  getMaintenanceRecordById: (recordId: string) => MaintenanceRecord | undefined;
+  getMaintenanceRecordsByItemId: (itemId: string) => MaintenanceRecord[];
 
   addExpense: (expense: Omit<Expense, 'id' | 'createdAt'>) => Promise<Expense>;
   deleteExpense: (expenseId: string) => Promise<void>;
@@ -1315,11 +1325,22 @@ export const useItemStore = create<ItemState>()(
         if (!userId) {
           throw new Error('Authentication required: User must be signed in to log maintenance.');
         }
+        const recordId = (recordData.id && isValidUUID(recordData.id)) ? recordData.id : generateUUID();
+        const costAmount = recordData.amountPaid != null
+          ? Number(recordData.amountPaid)
+          : (Number(recordData.cost) || 0);
+
         const newRecord: MaintenanceRecord = {
           ...recordData,
-          id: generateUUID(),
+          id: recordId,
           userId,
-          cost: Number(recordData.cost) || 0,
+          cost: costAmount,
+          amountPaid: costAmount,
+          currency: recordData.currency || 'INR',
+          serviceType: recordData.serviceType || 'Maintenance',
+          status: recordData.status || 'completed',
+          documentIds: recordData.documentIds || [],
+          attachments: recordData.attachments || [],
           createdAt: now,
           updatedAt: now,
         };
@@ -1331,9 +1352,9 @@ export const useItemStore = create<ItemState>()(
           userId,
           itemId: recordData.itemId,
           activityType: 'maintenance_completed',
-          title: `Maintenance: ${recordData.title}`,
-          description: `${item?.name || 'Item'} · ₹${newRecord.cost.toLocaleString('en-IN')}`,
-          amount: newRecord.cost,
+          title: `${newRecord.serviceType || 'Service'}: ${recordData.title}`,
+          description: `${item?.name || 'Item'} · ₹${costAmount.toLocaleString('en-IN')}`,
+          amount: costAmount,
           createdAt: now,
         };
 
@@ -1342,33 +1363,120 @@ export const useItemStore = create<ItemState>()(
           activityLogs: [log, ...get().activityLogs],
         });
 
-        if (recordData.serviceDate) {
-          NotificationService.scheduleMaintenanceReminder({
-            itemId: recordData.itemId,
-            itemName: item?.name || 'Asset',
-            maintenanceTitle: recordData.title,
-            serviceDate: recordData.serviceDate,
-          });
-        }
+        // Reminders: post-service warranty / guarantee / next service date
+        NotificationService.scheduleServiceCoverageReminders(newRecord, item?.name).catch(() => {});
 
-        if (isSupabaseConfigured && authUser?.id) {
-          cloudUpsertMaintenance(newRecord, authUser.id).catch((e) => {
-            console.warn('[ItemStore] addMaintenanceRecord cloud sync notice:', e);
+        if (isSupabaseConfigured && userId) {
+          cloudUpsertMaintenance(newRecord, userId).then((err) => {
+            if (err) {
+              enqueueSyncOperation({
+                type: 'upsertMaintenance',
+                entityId: newRecord.id,
+                userId,
+                payload: mapMaintenanceToDbRow(newRecord, userId),
+              }).catch(() => {});
+            }
+          }).catch((syncErr) => {
+            console.warn('[ItemStore] addMaintenanceRecord cloud sync notice:', syncErr);
           });
         }
 
         return newRecord;
       },
 
+      updateMaintenanceRecord: async (recordId, updates) => {
+        const now = new Date().toISOString();
+        const current = get().maintenanceRecords.find((m) => m.id === recordId);
+        if (!current) return null;
+
+        const authUser = useAuthStore.getState().user;
+        const authSession = useAuthStore.getState().session;
+        const userId = current.userId || authUser?.id || authSession?.user?.id;
+
+        const costAmount = updates.amountPaid != null
+          ? Number(updates.amountPaid)
+          : updates.cost != null
+          ? Number(updates.cost)
+          : current.cost;
+
+        const updatedRecord: MaintenanceRecord = {
+          ...current,
+          ...updates,
+          cost: costAmount,
+          amountPaid: costAmount,
+          updatedAt: now,
+        };
+
+        set({
+          maintenanceRecords: get().maintenanceRecords.map((m) => (m.id === recordId ? updatedRecord : m)),
+        });
+
+        const item = get().items.find((i) => i.id === updatedRecord.itemId);
+        NotificationService.scheduleServiceCoverageReminders(updatedRecord, item?.name).catch(() => {});
+
+        if (isSupabaseConfigured && userId) {
+          cloudUpsertMaintenance(updatedRecord, userId).then((err) => {
+            if (err) {
+              enqueueSyncOperation({
+                type: 'upsertMaintenance',
+                entityId: updatedRecord.id,
+                userId,
+                payload: mapMaintenanceToDbRow(updatedRecord, userId),
+              }).catch(() => {});
+            }
+          }).catch((syncErr) => {
+            console.warn('[ItemStore] updateMaintenanceRecord cloud sync notice:', syncErr);
+          });
+        }
+
+        return updatedRecord;
+      },
+
       deleteMaintenanceRecord: async (recordId) => {
+        const current = get().maintenanceRecords.find((m) => m.id === recordId);
         set({
           maintenanceRecords: get().maintenanceRecords.filter((m) => m.id !== recordId),
         });
+
+        NotificationService.cancelServiceReminders(recordId).catch(() => {});
+
         if (isSupabaseConfigured) {
-          cloudDeleteMaintenance(recordId).catch((e) => {
-            console.warn('[ItemStore] deleteMaintenanceRecord cloud sync notice:', e);
+          const authUser = useAuthStore.getState().user;
+          const authSession = useAuthStore.getState().session;
+          const userId = current?.userId || authUser?.id || authSession?.user?.id;
+
+          cloudDeleteMaintenance(recordId).then((err) => {
+            if (err && userId) {
+              enqueueSyncOperation({
+                type: 'deleteMaintenance',
+                entityId: recordId,
+                userId,
+                payload: null,
+              }).catch(() => {});
+            }
+          }).catch((syncErr) => {
+            console.warn('[ItemStore] deleteMaintenanceRecord cloud sync notice:', syncErr);
           });
         }
+      },
+
+      getMaintenanceRecordById: (recordId: string) => {
+        const currentUserId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
+        const rec = get().maintenanceRecords.find((m) => m.id === recordId);
+        if (!rec) return undefined;
+        if (currentUserId && rec.userId && rec.userId !== currentUserId) {
+          return undefined;
+        }
+        return rec;
+      },
+
+      getMaintenanceRecordsByItemId: (itemId: string) => {
+        const currentUserId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
+        return get().maintenanceRecords.filter((m) => {
+          if (m.itemId !== itemId) return false;
+          if (currentUserId && m.userId && m.userId !== currentUserId) return false;
+          return true;
+        });
       },
 
       addExpense: async (expenseData) => {
@@ -1534,6 +1642,7 @@ export const useItemStore = create<ItemState>()(
       },
 
       deleteDocument: async (documentId) => {
+        const target = get().documents.find((d) => d.id === documentId);
         set({
           documents: get().documents.filter((d) => d.id !== documentId),
         });
@@ -1541,6 +1650,13 @@ export const useItemStore = create<ItemState>()(
         NotificationService.cancelAllDocumentReminders(documentId).catch((remErr) => {
           console.warn('[itemStore] deleteDocument reminder cancellation notice:', remErr);
         });
+
+        if (target) {
+          const docFiles = [target.filePath, target.fileUrl, target.filePathBack, target.fileUrlBack, target.thumbnailPath].filter(Boolean) as string[];
+          for (const f of docFiles) {
+            deleteLocalVaultFile(f, 'vault_documents').catch(() => {});
+          }
+        }
 
         if (isSupabaseConfigured) {
           const docUserId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
