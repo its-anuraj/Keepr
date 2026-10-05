@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
@@ -100,15 +100,17 @@ export default function AIReceiptScannerScreen() {
     initialUri?: string;
     initialName?: string;
     mode?: string;
+    autoProcess?: string;
   }>();
 
-  const initialSession = getActiveReceiptSession();
-  const fallbackParamUri = safeNormalizeRouteUri(params.initialUri);
+  const isExplicitCameraMode = params.mode === 'camera';
+  const initialSession = isExplicitCameraMode ? null : getActiveReceiptSession();
+  const fallbackParamUri = isExplicitCameraMode ? null : safeNormalizeRouteUri(params.initialUri);
   const initialUri = initialSession?.uri || fallbackParamUri || null;
-  const initialSource = initialSession?.source || (params.mode === 'camera' ? 'camera' : 'gallery');
+  const initialSource = isExplicitCameraMode ? 'camera' : (initialSession?.source || (params.mode === 'gallery' ? 'gallery' : 'camera'));
 
   const [screenState, setScreenState] = useState<ScannerScreenState>(
-    initialUri ? 'preview' : 'scan'
+    isExplicitCameraMode ? 'scan' : (initialUri ? 'preview' : 'scan')
   );
 
   const [flashMode, setFlashMode] = useState<'off' | 'auto' | 'on'>('auto');
@@ -116,16 +118,19 @@ export default function AIReceiptScannerScreen() {
 
   const [capturedImageUri, setCapturedImageUri] = useState<string | null>(initialUri);
   const [capturedImageName, setCapturedImageName] = useState<string>(
-    initialSession?.fileName || (params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg')
+    isExplicitCameraMode
+      ? 'Receipt.jpg'
+      : (initialSession?.fileName || (params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg'))
   );
   const [capturedBase64, setCapturedBase64] = useState<string | null>(
-    initialSession?.base64 || null
+    isExplicitCameraMode ? null : (initialSession?.base64 || null)
   );
 
   const [imageSource, setImageSource] = useState<'camera' | 'gallery'>(initialSource);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const autoProcessTriggeredRef = useRef(false);
 
   const [showCropModal, setShowCropModal] = useState(false);
   const [cropRotation, setCropRotation] = useState(0);
@@ -144,7 +149,41 @@ export default function AIReceiptScannerScreen() {
     imageName: string;
   } | null>(null);
 
+  // Deterministically reset to clean camera scan screen whenever re-focused in camera mode
+  useFocusEffect(
+    useCallback(() => {
+      if (params.mode === 'camera') {
+        clearActiveReceiptSession();
+        setCapturedImageUri(null);
+        setCapturedBase64(null);
+        setExtractedData(null);
+        setSavedItemId(null);
+        setProcessingError(null);
+        setReceiptRejection(null);
+        setIsScanning(false);
+        setImageLoadError(false);
+        setImageSource('camera');
+        setScreenState('scan');
+      }
+    }, [params.mode])
+  );
+
   useEffect(() => {
+    if (params.mode === 'camera') {
+      clearActiveReceiptSession();
+      setCapturedImageUri(null);
+      setCapturedBase64(null);
+      setExtractedData(null);
+      setSavedItemId(null);
+      setProcessingError(null);
+      setReceiptRejection(null);
+      setIsScanning(false);
+      setImageLoadError(false);
+      setImageSource('camera');
+      setScreenState('scan');
+      return;
+    }
+
     const session = getActiveReceiptSession();
     if (session?.uri) {
       console.log('[ReceiptPreview] Session restored URI:', session.uri);
@@ -160,7 +199,7 @@ export default function AIReceiptScannerScreen() {
     if (params.initialUri) {
       const cleanUri = safeNormalizeRouteUri(params.initialUri);
       console.log('[ReceiptPreview] Initial URI:', cleanUri);
-      setImageSource(params.mode === 'camera' ? 'camera' : 'gallery');
+      setImageSource(params.mode === 'gallery' ? 'gallery' : 'camera');
       setImageLoadError(false);
       setCapturedImageUri(cleanUri);
       setCapturedImageName(
@@ -943,6 +982,21 @@ export default function AIReceiptScannerScreen() {
     }
   };
 
+  useEffect(() => {
+    if (
+      params.autoProcess === 'true' &&
+      (capturedImageUri || capturedBase64) &&
+      !autoProcessTriggeredRef.current &&
+      !isScanning
+    ) {
+      autoProcessTriggeredRef.current = true;
+      const timer = setTimeout(() => {
+        handleConfirmAndProcessReceipt();
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [params.autoProcess, capturedImageUri, capturedBase64, isScanning]);
+
   const handleUpdateCommonField = (field: keyof ExtractedReceiptData['common'], value: any) => {
     if (!extractedData) return;
     setExtractedData({
@@ -1499,7 +1553,10 @@ export default function AIReceiptScannerScreen() {
         <View className="flex-row items-center justify-between px-4 py-2">
           <TouchableOpacity
             className="w-11 h-11 rounded-full bg-white/90 items-center justify-center shadow-sm"
-            onPress={() => router.back()}
+            onPress={() => {
+              clearActiveReceiptSession();
+              router.back();
+            }}
             activeOpacity={0.8}
             accessibilityLabel="Back"
           >
@@ -1675,7 +1732,12 @@ export default function AIReceiptScannerScreen() {
         <View className="flex-row items-center justify-between px-4 py-2 border-b border-serene-hairline-border">
           <TouchableOpacity
             className="w-10 h-10 rounded-full items-center justify-center"
-            onPress={() => setScreenState('scan')}
+            onPress={() => {
+              clearActiveReceiptSession();
+              setCapturedImageUri(null);
+              setCapturedBase64(null);
+              setScreenState('scan');
+            }}
             activeOpacity={0.8}
             accessibilityLabel="Back to Scan"
           >
@@ -3125,10 +3187,15 @@ export default function AIReceiptScannerScreen() {
           <TouchableOpacity
             className="w-full flex-row items-center justify-center gap-2 py-3 rounded-serene-lg bg-serene-surface-container-lowest border border-serene-hairline-border"
             onPress={() => {
+              clearActiveReceiptSession();
               setScreenState('scan');
               setCapturedImageUri(null);
+              setCapturedBase64(null);
               setExtractedData(null);
               setSavedItemId(null);
+              setProcessingError(null);
+              setReceiptRejection(null);
+              setIsScanning(false);
             }}
             activeOpacity={0.85}
           >

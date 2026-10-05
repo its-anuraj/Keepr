@@ -19,7 +19,11 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
-import { getActiveReceiptSession, clearActiveReceiptSession } from '../../src/store/receiptSessionStore';
+import {
+  getActiveReceiptSession,
+  setActiveReceiptSession,
+  clearActiveReceiptSession,
+} from '../../src/store/receiptSessionStore';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   safeNormalizeRouteUri,
@@ -28,6 +32,7 @@ import {
   persistReceiptToVault,
   persistProductPhotoToVault,
   logReceiptDebug,
+  stabilizeReceiptImage,
 } from '../../src/services/receiptFileService';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -591,6 +596,52 @@ export default function AddOrEditItemScreen() {
     }
   };
 
+  const handleChooseFromGalleryEntry = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Gallery Permission', 'Gallery access is needed to select your receipt image.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.9,
+        base64: true,
+      });
+      if (!res.canceled && res.assets && res.assets[0]) {
+        const asset = res.assets[0];
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const fileName = asset.fileName || `Receipt_${dateStr}.jpg`;
+
+        const stabilized = await stabilizeReceiptImage(asset.uri, asset.base64);
+
+        setActiveReceiptSession({
+          uri: stabilized.uri,
+          source: 'gallery',
+          fileName,
+          base64: asset.base64 || null,
+          width: asset.width,
+          height: asset.height,
+          mimeType: asset.mimeType,
+        });
+
+        router.push({
+          pathname: '/scan-receipt',
+          params: {
+            mode: 'gallery',
+            autoProcess: 'true',
+            initialUri: stabilized.uri,
+            initialName: encodeURIComponent(fileName),
+          },
+        } as any);
+      }
+    } catch (err) {
+      console.warn('[AddScreen] Choose from gallery error:', err);
+      Alert.alert('Gallery Notice', 'Could not open gallery on this device.');
+    }
+  };
+
   const handlePickReceiptDocument = async () => {
     try {
       const res = await DocumentPicker.getDocumentAsync({
@@ -851,6 +902,28 @@ export default function AddOrEditItemScreen() {
                 </View>
                 <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
                   Scan invoice to automatically detect category, product, price & seller.
+                </Text>
+              </View>
+            </View>
+            <MaterialIcons name="chevron-right" size={20} color={SereneColors.primary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            className="bg-serene-surface-container-lowest rounded-serene-xl p-3.5 flex-row items-center justify-between border border-serene-subtle-border shadow-sm active:border-serene-primary"
+            onPress={handleChooseFromGalleryEntry}
+            activeOpacity={0.88}
+          >
+            <View className="flex-1 flex-row items-center gap-3">
+              <View className="w-10 h-10 rounded-full bg-[#E0F2FE] items-center justify-center">
+                <MaterialIcons name="photo-library" size={20} color="#115086" />
+              </View>
+              <View className="flex-1">
+                <View className="flex-row items-center gap-1">
+                  <Text className="text-xs font-bold text-[#115086]">CHOOSE FROM GALLERY</Text>
+                  <Text className="text-[10px] text-serene-outline">· Auto-detect</Text>
+                </View>
+                <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
+                  Select an existing receipt or document photo to auto-extract details.
                 </Text>
               </View>
             </View>

@@ -23,7 +23,10 @@ import { getDeadlineStatus } from '../../src/utils/warranty';
 import { formatDate } from '../../src/utils/currency';
 import * as ImagePicker from 'expo-image-picker';
 import { AddReceiptModal } from '../../src/components/scanner/AddReceiptModal';
-import { setActiveReceiptSession, clearActiveReceiptSession } from '../../src/store/receiptSessionStore';
+import {
+  setActiveReceiptSession,
+  clearActiveReceiptSession,
+} from '../../src/store/receiptSessionStore';
 import { stabilizeReceiptImage } from '../../src/services/receiptFileService';
 import { ItemWithOwnerContext, RecentlyAddedEntry } from '../../src/types';
 
@@ -160,6 +163,10 @@ export default function VaultDashboardScreen() {
 
   const [showAddReceiptModal, setShowAddReceiptModal] = useState(false);
 
+  const handleScanItem = () => {
+    setShowAddReceiptModal(true);
+  };
+
   const handleModalChooseGallery = async () => {
     setShowAddReceiptModal(false);
     try {
@@ -201,17 +208,15 @@ export default function VaultDashboardScreen() {
           pathname: '/scan-receipt',
           params: {
             mode: 'gallery',
+            autoProcess: 'true',
+            initialUri: stabilized.uri,
+            initialName: encodeURIComponent(fileName),
           },
         } as any);
       }
     } catch (err) {
       console.warn('Gallery pick error:', err);
     }
-  };
-
-  const handleScanItem = () => {
-    clearActiveReceiptSession();
-    router.push('/scan-receipt?mode=camera' as any);
   };
 
   return (
@@ -314,8 +319,6 @@ export default function VaultDashboardScreen() {
               className="flex-1 h-12 bg-serene-surface-container-lowest rounded-serene-lg border border-serene-subtle-border flex-row items-center justify-center gap-2"
               activeOpacity={0.88}
               onPress={handleScanItem}
-              onLongPress={() => setShowAddReceiptModal(true)}
-              delayLongPress={500}
             >
               <MaterialIcons
                 name="document-scanner"
@@ -327,20 +330,9 @@ export default function VaultDashboardScreen() {
               </Text>
             </TouchableOpacity>
           </View>
-          <View className="flex-row items-center justify-center gap-1.5 flex-wrap">
-            <Text className="text-[11px] text-center text-serene-on-surface-variant/80">
-              Scan a receipt, bill, document, warranty or service record.
-            </Text>
-            <TouchableOpacity
-              onPress={() => setShowAddReceiptModal(true)}
-              activeOpacity={0.7}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Text className="text-[11px] font-semibold text-serene-primary underline">
-                Choose from Gallery
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <Text className="text-[11px] text-center text-serene-on-surface-variant/80">
+            Scan a receipt, bill, document, warranty or service record.
+          </Text>
         </View>
 
         {priorityItems.length > 0 && (
