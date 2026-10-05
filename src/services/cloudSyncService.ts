@@ -220,7 +220,7 @@ export function mapDbRowToReceipt(row: Record<string, unknown>): Receipt {
 export function mapDbRowToMaintenanceRecord(row: Record<string, unknown>): MaintenanceRecord {
   return {
     id: row.id as string,
-    itemId: row.item_id as string,
+    itemId: (row.item_id as string) || null,
     userId: row.user_id as string,
     title: row.title as string,
     serviceType: (row.service_type as string) || undefined,
@@ -263,7 +263,7 @@ export function mapMaintenanceToDbRow(
   const amt = record.amountPaid != null ? record.amountPaid : (record.cost ?? 0);
   return {
     id: record.id,
-    item_id: record.itemId,
+    item_id: (record.itemId && isValidUUID(record.itemId)) ? record.itemId : null,
     user_id: userId,
     title: record.title,
     service_type: record.serviceType || 'Service',

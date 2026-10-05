@@ -645,7 +645,7 @@ export class NotificationService {
   static async scheduleServiceCoverageReminders(
     service: {
       id: string;
-      itemId: string;
+      itemId?: string | null;
       title: string;
       serviceType?: string;
       postServiceWarranty?: boolean;

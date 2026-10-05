@@ -282,6 +282,7 @@ interface ItemState {
   deleteMaintenanceRecord: (recordId: string) => Promise<void>;
   getMaintenanceRecordById: (recordId: string) => MaintenanceRecord | undefined;
   getMaintenanceRecordsByItemId: (itemId: string) => MaintenanceRecord[];
+  getAllMaintenanceRecords: () => MaintenanceRecord[];
 
   addExpense: (expense: Omit<Expense, 'id' | 'createdAt'>) => Promise<Expense>;
   deleteExpense: (expenseId: string) => Promise<void>;
@@ -1345,15 +1346,15 @@ export const useItemStore = create<ItemState>()(
           updatedAt: now,
         };
 
-        const item = get().items.find((i) => i.id === recordData.itemId);
+        const item = recordData.itemId ? get().items.find((i) => i.id === recordData.itemId) : null;
 
         const log: ActivityLog = {
           id: generateUUID(),
           userId,
-          itemId: recordData.itemId,
+          itemId: recordData.itemId || undefined,
           activityType: 'maintenance_completed',
           title: `${newRecord.serviceType || 'Service'}: ${recordData.title}`,
-          description: `${item?.name || 'Item'} · ₹${costAmount.toLocaleString('en-IN')}`,
+          description: `${item?.name || 'Standalone Service'} · ₹${costAmount.toLocaleString('en-IN')}`,
           amount: costAmount,
           createdAt: now,
         };
@@ -1411,7 +1412,7 @@ export const useItemStore = create<ItemState>()(
           maintenanceRecords: get().maintenanceRecords.map((m) => (m.id === recordId ? updatedRecord : m)),
         });
 
-        const item = get().items.find((i) => i.id === updatedRecord.itemId);
+        const item = updatedRecord.itemId ? get().items.find((i) => i.id === updatedRecord.itemId) : null;
         NotificationService.scheduleServiceCoverageReminders(updatedRecord, item?.name).catch(() => {});
 
         if (isSupabaseConfigured && userId) {
@@ -1474,6 +1475,14 @@ export const useItemStore = create<ItemState>()(
         const currentUserId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
         return get().maintenanceRecords.filter((m) => {
           if (m.itemId !== itemId) return false;
+          if (currentUserId && m.userId && m.userId !== currentUserId) return false;
+          return true;
+        });
+      },
+
+      getAllMaintenanceRecords: () => {
+        const currentUserId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
+        return get().maintenanceRecords.filter((m) => {
           if (currentUserId && m.userId && m.userId !== currentUserId) return false;
           return true;
         });

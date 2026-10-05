@@ -334,9 +334,12 @@ export type TopLevelType =
   | 'AMBIGUOUS'
   | 'INVALID';
 
+export type CanonicalVaultEntityType = 'PURCHASED_ITEM' | 'DOCUMENT' | 'SERVICE_REPAIR';
+
 export type TopLevelClassification =
   | 'PURCHASE_ITEM'
   | 'GENERAL_DOCUMENT'
+  | 'SERVICE_REPAIR'
   | 'AMBIGUOUS'
   | 'INVALID_DOCUMENT'
   | 'PURCHASED_ITEM'
@@ -412,8 +415,34 @@ export interface ItemMatchResult {
   requiresUserConfirmation: boolean;
 }
 
+export interface ExtractedServiceRepair {
+  serviceDate: string | null;
+  serviceType: string | null;
+  title: string | null;
+  problemDescription: string | null;
+  workPerformed: string | null;
+  partsReplaced: string | null;
+  technicianNotes: string | null;
+  serviceProvider: string | null;
+  serviceProviderAddress: string | null;
+  serviceProviderPhone: string | null;
+  warrantyCovered: 'yes' | 'no' | 'unknown' | null;
+  coverageType: string | null;
+  coverageReferenceNumber: string | null;
+  amountPaid: number | null;
+  currency: string | null;
+  postServiceWarranty: boolean | null;
+  postServiceWarrantyUntil: string | null;
+  postServiceGuarantee: boolean | null;
+  postServiceGuaranteeUntil: string | null;
+  relatedItemCandidates?: string[];
+  supportingDocumentCandidates?: string[];
+}
+
 export interface DocumentClassificationResult {
   topLevelClassification: TopLevelClassification;
+  entityType?: CanonicalVaultEntityType;
+  canonicalEntityType?: CanonicalVaultEntityType;
   topLevelType?: TopLevelType;
   category?: DocumentCategoryType | string | null;
   documentCategory?: DocumentCategoryType | string | null;
@@ -425,6 +454,7 @@ export interface DocumentClassificationResult {
   shouldCreateItem: boolean;
   itemMatch?: ItemMatchResult | null;
   document?: DocumentOcrExtraction | null;
+  serviceRepair?: ExtractedServiceRepair | null;
 }
 
 export interface ExtractedReceiptData {
@@ -435,6 +465,7 @@ export interface ExtractedReceiptData {
   scannedAt: string;
   isReceipt: boolean;
   isDocument?: boolean;
+  isServiceRepair?: boolean;
   documentCategory?: string | null;
   documentType?: string | null;
   documentTitle?: string | null;
@@ -447,6 +478,8 @@ export interface ExtractedReceiptData {
   rejectionReason?: string | null;
   rejectionMessage?: string | null;
   classification?: DocumentClassificationResult;
+  entityType?: CanonicalVaultEntityType;
+  serviceRepair?: ExtractedServiceRepair | null;
   common: CommonReceiptInfo;
   category: ScannerCategory;
   categoryDetails: {
@@ -492,6 +525,10 @@ export interface ExtractedReceiptData {
 }
 
 export interface GeminiReceiptResponse {
+  entityType?: CanonicalVaultEntityType;
+  serviceRepair?: ExtractedServiceRepair | null;
+  purchase?: ExtractedReceiptData['purchase'] | null;
+  document?: DocumentOcrExtraction | null;
   isReceipt?: boolean;
   isDocument?: boolean;
   receiptConfidence?: number | null;

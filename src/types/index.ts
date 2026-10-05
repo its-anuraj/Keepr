@@ -250,7 +250,7 @@ export type WarrantyCoverageStatus = 'yes' | 'no' | 'unknown';
 
 export interface MaintenanceRecord {
   id: string;
-  itemId: string;
+  itemId?: string | null;
   userId: string;
   title: string;
   serviceType?: ServiceType | string;

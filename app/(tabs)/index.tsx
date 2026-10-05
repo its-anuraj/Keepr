@@ -238,76 +238,93 @@ export default function VaultDashboardScreen() {
           </Text>
         </View>
 
-        <View className="flex-row gap-2.5">
+        <View className="flex-row gap-2">
           <TouchableOpacity
-            className="flex-1 bg-serene-surface-container-lowest p-3 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between"
+            className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between"
             activeOpacity={0.85}
             onPress={() => router.push('/(tabs)/items')}
           >
-            <View className="w-8 h-8 rounded-serene-md bg-serene-surface-container-highest items-center justify-center mb-2">
-              <MaterialIcons name="inventory-2" size={17} color={SereneColors.primary} />
+            <View className="w-7 h-7 rounded-serene-md bg-serene-surface-container-highest items-center justify-center mb-1.5">
+              <MaterialIcons name="inventory-2" size={15} color={SereneColors.primary} />
             </View>
-            <Text className="text-2xl font-bold text-serene-on-surface">
+            <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.totalItems}
             </Text>
-            <Text className="text-[11px] font-medium text-serene-on-surface-variant mt-0.5">
+            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
               Items
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            className="flex-1 bg-serene-surface-container-lowest p-3 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between"
+            className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between"
             activeOpacity={0.85}
             onPress={() => router.push('/(tabs)/documents')}
           >
-            <View className="w-8 h-8 rounded-serene-md bg-blue-50 items-center justify-center mb-2">
-              <MaterialIcons name="description" size={17} color={SereneColors.primary} />
+            <View className="w-7 h-7 rounded-serene-md bg-blue-50 items-center justify-center mb-1.5">
+              <MaterialIcons name="description" size={15} color={SereneColors.primary} />
             </View>
-            <Text className="text-2xl font-bold text-serene-on-surface">
+            <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.totalDocuments}
             </Text>
-            <Text className="text-[11px] font-medium text-serene-on-surface-variant mt-0.5">
+            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
               Documents
             </Text>
           </TouchableOpacity>
 
-          <View className="flex-1 bg-serene-surface-container-lowest p-3 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between">
-            <View className="w-8 h-8 rounded-serene-md bg-rose-50 items-center justify-center mb-2">
-              <MaterialIcons name="verified-user" size={17} color={SereneColors.error} />
+          <View className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between">
+            <View className="w-7 h-7 rounded-serene-md bg-rose-50 items-center justify-center mb-1.5">
+              <MaterialIcons name="verified-user" size={15} color={SereneColors.error} />
             </View>
-            <Text className="text-2xl font-bold text-serene-on-surface">
+            <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.warrantiesEndingSoon}
             </Text>
-            <Text className="text-[11px] font-medium text-serene-on-surface-variant mt-0.5">
+            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
               Warranty ending
+            </Text>
+          </View>
+
+          <View className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between">
+            <View className="w-7 h-7 rounded-serene-md bg-amber-50 items-center justify-center mb-1.5">
+              <MaterialIcons name="assignment-return" size={15} color="#D97706" />
+            </View>
+            <Text className="text-xl font-bold text-serene-on-surface">
+              {metrics.returnsEndingSoon}
+            </Text>
+            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
+              Return ending
             </Text>
           </View>
         </View>
 
-        <View className="flex-row items-center gap-2.5">
-          <TouchableOpacity
-            className="flex-1 h-12 bg-serene-primary rounded-serene-lg flex-row items-center justify-center gap-2 shadow-sm"
-            activeOpacity={0.88}
-            onPress={() => router.push('/(tabs)/add')}
-          >
-            <MaterialIcons name="add" size={20} color="#FFFFFF" />
-            <Text className="text-[14px] font-semibold text-white">Add Item</Text>
-          </TouchableOpacity>
+        <View className="gap-1.5">
+          <View className="flex-row items-center gap-2.5">
+            <TouchableOpacity
+              className="flex-1 h-12 bg-serene-primary rounded-serene-lg flex-row items-center justify-center gap-2 shadow-sm"
+              activeOpacity={0.88}
+              onPress={() => router.push('/(tabs)/add')}
+            >
+              <MaterialIcons name="add" size={20} color="#FFFFFF" />
+              <Text className="text-[14px] font-semibold text-white">Add Item</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            className="flex-1 h-12 bg-serene-surface-container-lowest rounded-serene-lg border border-serene-subtle-border flex-row items-center justify-center gap-2"
-            activeOpacity={0.88}
-            onPress={handleScanReceipt}
-          >
-            <MaterialIcons
-              name="document-scanner"
-              size={18}
-              color={SereneColors.primary}
-            />
-            <Text className="text-[14px] font-semibold text-serene-primary">
-              Scan Receipt
-            </Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              className="flex-1 h-12 bg-serene-surface-container-lowest rounded-serene-lg border border-serene-subtle-border flex-row items-center justify-center gap-2"
+              activeOpacity={0.88}
+              onPress={handleScanReceipt}
+            >
+              <MaterialIcons
+                name="document-scanner"
+                size={18}
+                color={SereneColors.primary}
+              />
+              <Text className="text-[14px] font-semibold text-serene-primary">
+                Scan Item
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <Text className="text-[11px] text-center text-serene-on-surface-variant/80">
+            Scan a receipt, bill, document, warranty or service record.
+          </Text>
         </View>
 
         {priorityItems.length > 0 && (

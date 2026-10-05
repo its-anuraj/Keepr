@@ -4,7 +4,7 @@
 // Supports editing, permanent deletion with confirmation, and document linking.
 // ==============================================================================
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,9 @@ import {
   Alert,
   Platform,
   Linking,
+  Modal,
+  TextInput,
+  Pressable,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -29,11 +32,49 @@ export default function ServiceDetailsScreen() {
   const getItemById = useItemStore((s) => s.getItemById);
   const getDocumentById = useItemStore((s) => s.getDocumentById);
   const deleteMaintenanceRecord = useItemStore((s) => s.deleteMaintenanceRecord);
+  const updateMaintenanceRecord = useItemStore((s) => s.updateMaintenanceRecord);
+  const items = useItemStore((s) => s.items);
 
   const record = getMaintenanceRecordById(id);
   const item = record?.itemId ? getItemById(record.itemId) : null;
 
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showItemPickerModal, setShowItemPickerModal] = useState(false);
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
+
+  const filteredItems = useMemo(() => {
+    if (!itemSearchQuery.trim()) return items;
+    const q = itemSearchQuery.toLowerCase().trim();
+    return items.filter(
+      (i) =>
+        i.name.toLowerCase().includes(q) ||
+        (i.brand && i.brand.toLowerCase().includes(q)) ||
+        (i.model && i.model.toLowerCase().includes(q))
+    );
+  }, [items, itemSearchQuery]);
+
+  const handleUnlinkItem = () => {
+    if (!record) return;
+    Alert.alert(
+      'Unlink Purchased Item',
+      `Do you want to unlink "${item?.name || 'Item'}" from this service record? It will remain preserved as a standalone service record in Keepr.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unlink',
+          onPress: async () => {
+            await updateMaintenanceRecord(record.id, { itemId: null });
+          },
+        },
+      ]
+    );
+  };
+
+  const handleLinkItem = async (targetItemId: string | null) => {
+    if (!record) return;
+    await updateMaintenanceRecord(record.id, { itemId: targetItemId });
+    setShowItemPickerModal(false);
+  };
 
   if (!record) {
     return (
@@ -141,36 +182,95 @@ export default function ServiceDetailsScreen() {
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 50, gap: 14, paddingTop: 10 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Linked Purchased Item Banner (Tappable to jump to Item) */}
-        {item && (
+        {/* Linked Purchased Item Banner */}
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor: item ? 'rgba(17,80,134,0.06)' : 'rgba(100,116,139,0.06)',
+            borderColor: item ? 'rgba(17,80,134,0.18)' : 'rgba(100,116,139,0.18)',
+            borderWidth: 1,
+            borderRadius: 14,
+            padding: 12,
+          }}
+        >
           <TouchableOpacity
-            onPress={() => router.push(`/item/${item.id}` as any)}
-            activeOpacity={0.8}
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              backgroundColor: 'rgba(17,80,134,0.06)',
-              borderColor: 'rgba(17,80,134,0.18)',
-              borderWidth: 1,
-              borderRadius: 14,
-              padding: 12,
-            }}
+            onPress={() => item && router.push(`/item/${item.id}` as any)}
+            activeOpacity={item ? 0.75 : 1}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-              <MaterialIcons name="inventory-2" size={20} color={SereneColors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 10, fontWeight: '700', color: SereneColors.primary, letterSpacing: 0.5 }}>
-                  PURCHASED ITEM
+            <MaterialIcons
+              name="inventory-2"
+              size={20}
+              color={item ? SereneColors.primary : SereneColors.onSurfaceVariant}
+            />
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontWeight: '700',
+                  color: item ? SereneColors.primary : SereneColors.onSurfaceVariant,
+                  letterSpacing: 0.5,
+                }}
+              >
+                {item ? 'LINKED PURCHASED ITEM' : 'UNLINKED SERVICE RECORD'}
+              </Text>
+              <Text
+                style={{ fontSize: 14, fontWeight: '700', color: SereneColors.onSurface }}
+                numberOfLines={1}
+              >
+                {item ? item.name : 'No Item Linked (Standalone)'}
+              </Text>
+              {item && (item.brand || item.model) ? (
+                <Text
+                  style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }}
+                  numberOfLines={1}
+                >
+                  {item.brand ? `${item.brand} ` : ''}
+                  {item.model ? `(${item.model})` : ''}
                 </Text>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: SereneColors.onSurface }} numberOfLines={1}>
-                  {item.name}
-                </Text>
-              </View>
+              ) : null}
             </View>
-            <MaterialIcons name="chevron-right" size={20} color={SereneColors.primary} />
           </TouchableOpacity>
-        )}
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <TouchableOpacity
+              onPress={() => {
+                setItemSearchQuery('');
+                setShowItemPickerModal(true);
+              }}
+              style={{
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                borderRadius: 8,
+                backgroundColor: 'rgba(17,80,134,0.10)',
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.primary }}>
+                {item ? 'Change' : 'Link Item'}
+              </Text>
+            </TouchableOpacity>
+
+            {item && (
+              <TouchableOpacity
+                onPress={handleUnlinkItem}
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(186,26,26,0.08)',
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.error }}>
+                  Unlink
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
 
         {/* Primary Summary Card */}
         <View style={cardStyle}>
@@ -446,6 +546,201 @@ export default function ServiceDetailsScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Item Picker Modal */}
+      <Modal
+        visible={showItemPickerModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowItemPickerModal(false)}
+      >
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(15,23,42,0.55)',
+            justifyContent: 'flex-end',
+          }}
+          onPress={() => setShowItemPickerModal(false)}
+        >
+          <Pressable
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              maxHeight: '80%',
+              paddingTop: 12,
+              paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+              paddingHorizontal: 20,
+              gap: 12,
+            }}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View
+              style={{
+                width: 36,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: '#CBD5E1',
+                alignSelf: 'center',
+                marginBottom: 4,
+              }}
+            />
+
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <View>
+                <Text style={{ fontSize: 17, fontWeight: '700', color: SereneColors.onSurface }}>
+                  Link to Purchased Item
+                </Text>
+                <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant }}>
+                  Select the item this service or repair was performed on
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowItemPickerModal(false)}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: SereneColors.surfaceContainerHigh,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <MaterialIcons name="close" size={18} color={SereneColors.onSurfaceVariant} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Search Input */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: '#F1F5F9',
+                borderRadius: 10,
+                paddingHorizontal: 10,
+                height: 40,
+                gap: 8,
+              }}
+            >
+              <MaterialIcons name="search" size={18} color={SereneColors.onSurfaceVariant} />
+              <TextInput
+                style={{ flex: 1, fontSize: 13, color: SereneColors.onSurface }}
+                placeholder="Search your items..."
+                placeholderTextColor={SereneColors.onSurfaceVariant}
+                value={itemSearchQuery}
+                onChangeText={setItemSearchQuery}
+              />
+              {itemSearchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setItemSearchQuery('')}>
+                  <MaterialIcons name="cancel" size={16} color={SereneColors.onSurfaceVariant} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Items List */}
+            <ScrollView
+              style={{ maxHeight: 320 }}
+              contentContainerStyle={{ gap: 8 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Unlink Option */}
+              <TouchableOpacity
+                onPress={() => handleLinkItem(null)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: !record.itemId ? SereneColors.primary : '#E2E8F0',
+                  backgroundColor: !record.itemId ? 'rgba(17,80,134,0.06)' : '#F8FAFC',
+                }}
+                activeOpacity={0.8}
+              >
+                <View
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    backgroundColor: '#E2E8F0',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <MaterialIcons name="link-off" size={18} color="#64748B" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}>
+                    Keep Unlinked (Standalone)
+                  </Text>
+                  <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }}>
+                    Do not associate with any item
+                  </Text>
+                </View>
+                {!record.itemId && (
+                  <MaterialIcons name="check" size={18} color={SereneColors.primary} />
+                )}
+              </TouchableOpacity>
+
+              {filteredItems.map((it) => {
+                const isSelected = record.itemId === it.id;
+                return (
+                  <TouchableOpacity
+                    key={it.id}
+                    onPress={() => handleLinkItem(it.id)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: 12,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: isSelected ? SereneColors.primary : '#E2E8F0',
+                      backgroundColor: isSelected ? 'rgba(17,80,134,0.06)' : '#FFFFFF',
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <View
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 8,
+                        backgroundColor: 'rgba(17,80,134,0.08)',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <MaterialIcons name="inventory-2" size={18} color={SereneColors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}
+                        numberOfLines={1}
+                      >
+                        {it.name}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
+                        {it.brand ? `${it.brand} ` : ''}
+                        {it.model ? `(${it.model})` : ''}
+                      </Text>
+                    </View>
+                    {isSelected && (
+                      <MaterialIcons name="check" size={18} color={SereneColors.primary} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

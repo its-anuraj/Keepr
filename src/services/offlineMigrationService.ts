@@ -131,7 +131,7 @@ function isSeedMaintenance(m: MaintenanceRecord): boolean {
   return (
     DEMO_USER_IDS.has(m.userId || '') ||
     SEED_ITEM_IDS.has(m.id) ||
-    SEED_ITEM_IDS.has(m.itemId)
+    Boolean(m.itemId && SEED_ITEM_IDS.has(m.itemId))
   );
 }
 
@@ -506,8 +506,13 @@ export async function migrateLocalDataToCloud(
   for (const record of localData.maintenanceRecords) {
     if (isSeedMaintenance(record)) continue;
 
-    const newItemId = migratedItemIdMap.get(record.itemId) || idMap.get(record.itemId) || record.itemId;
-    if (!isValidUUID(newItemId)) continue;
+    let newItemId: string | null = null;
+    if (record.itemId) {
+      const resolved = migratedItemIdMap.get(record.itemId) || idMap.get(record.itemId) || record.itemId;
+      if (isValidUUID(resolved)) {
+        newItemId = resolved;
+      }
+    }
 
     const newId = resolveId(record.id, idMap);
     const migrated: MaintenanceRecord = { ...record, id: newId, itemId: newItemId, userId };

@@ -2,6 +2,8 @@
 import {
   GeminiReceiptResponse,
   ExtractedReceiptData,
+  CanonicalVaultEntityType,
+  ExtractedServiceRepair,
   CanonicalCategory,
   ScannerCategory,
   ReceiptMultiItem,
@@ -451,6 +453,8 @@ export function parseGeminiResponseToExtractedData(
   const legacyCommon = (geminiResponse.common || {}) as Record<string, any>;
   const legacyCategorySpecific = (geminiResponse.categorySpecific || {}) as Record<string, any>;
 
+  const serviceRepairData = geminiResponse.serviceRepair || (geminiResponse as any).service;
+
   let merchantField: any =
     docFields.merchantName ??
     docFields.institutionName ??
@@ -461,10 +465,11 @@ export function parseGeminiResponseToExtractedData(
     geminiResponse.merchantName ??
     (geminiResponse as any).issuerName ??
     (geminiResponse as any).issuer ??
+    serviceRepairData?.serviceProvider ??
     legacyCommon.storeName;
 
-  let merchantAddressField = docFields.address ?? geminiResponse.merchantAddress ?? legacyCommon.storeLocation;
-  let merchantPhoneField = docFields.phone ?? geminiResponse.merchantPhone;
+  let merchantAddressField = docFields.address ?? geminiResponse.merchantAddress ?? serviceRepairData?.serviceProviderAddress ?? legacyCommon.storeLocation;
+  let merchantPhoneField = docFields.phone ?? geminiResponse.merchantPhone ?? serviceRepairData?.serviceProviderPhone;
   let gstinField = docFields.merchantGstin ?? geminiResponse.merchantGstin ?? (geminiResponse as any).gstin ?? legacyCommon.gst;
 
   let invoiceNumberField: any =
@@ -478,6 +483,7 @@ export function parseGeminiResponseToExtractedData(
     geminiResponse.receiptNumber ??
     geminiResponse.invoiceNumber ??
     (geminiResponse as any).referenceNumber ??
+    serviceRepairData?.coverageReferenceNumber ??
     legacyCommon.invoiceNumber;
 
   let rawDateField: any =
@@ -488,10 +494,11 @@ export function parseGeminiResponseToExtractedData(
     geminiResponse.purchaseDate ??
     geminiResponse.invoiceDate ??
     (geminiResponse as any).documentDate ??
+    serviceRepairData?.serviceDate ??
     legacyCommon.purchaseDate;
   let invoiceDateField = normalizeDateToIso(rawDateField) ?? rawDateField;
 
-  let currencyField = docFields.currency ?? geminiResponse.currency ?? legacyCommon.currency ?? 'INR';
+  let currencyField = docFields.currency ?? geminiResponse.currency ?? serviceRepairData?.currency ?? legacyCommon.currency ?? 'INR';
   let subtotalField = docFields.subtotal ?? geminiResponse.subtotal ?? legacyCommon.subtotal;
   let taxField = docFields.taxAmount ?? geminiResponse.taxAmount ?? geminiResponse.tax ?? legacyCommon.tax ?? legacyCommon.gst;
   let discountField = docFields.discount ?? geminiResponse.discount ?? legacyCommon.discount;
@@ -501,6 +508,7 @@ export function parseGeminiResponseToExtractedData(
     docFields.premiumAmount ??
     geminiResponse.grandTotal ??
     geminiResponse.total ??
+    serviceRepairData?.amountPaid ??
     legacyCommon.totalAmount;
 
   let paymentMethodField = docFields.paymentMode ?? geminiResponse.paymentMethod ?? legacyCommon.paymentMethod;
@@ -510,13 +518,13 @@ export function parseGeminiResponseToExtractedData(
 
   // Run top-level classification and deterministic validation
   const classificationResult = classifyDocument({
-    modelClassification: geminiResponse.classification,
+    modelClassification: geminiResponse.classification || (geminiResponse.entityType ? { entityType: geminiResponse.entityType, canonicalEntityType: geminiResponse.entityType } : undefined),
     rawText: (geminiResponse as any).rawText,
-    documentTitle: (geminiResponse as any).documentTitle || (geminiResponse as any).document?.documentTitle,
+    documentTitle: (geminiResponse as any).documentTitle || (geminiResponse as any).document?.documentTitle || serviceRepairData?.title,
     documentCategory: catString,
-    documentType: rawDocType,
+    documentType: rawDocType || serviceRepairData?.serviceType,
     merchantName: typeof merchantField === 'object' && merchantField !== null ? merchantField.value : merchantField,
-    issuerName: (geminiResponse as any).issuerName || (geminiResponse as any).issuer,
+    issuerName: (geminiResponse as any).issuerName || (geminiResponse as any).issuer || serviceRepairData?.serviceProvider,
     invoiceNumber: typeof invoiceNumberField === 'object' && invoiceNumberField !== null ? invoiceNumberField.value : invoiceNumberField,
     items: geminiResponse.items,
     grandTotal: toNum(totalField),
@@ -1017,14 +1025,47 @@ export function parseGeminiResponseToExtractedData(
     (reconciledDocCategory === 'Bills & Utilities' ? (geminiResponse as any).expiryDate : null);
   const normalizedDueDate = rawDueDate ? normalizeDateToIso(rawDueDate) || String(rawDueDate) : null;
 
-  const isDoc = classificationResult.topLevelClassification === 'GENERAL_DOCUMENT';
-  const isActualReceipt = classificationResult.topLevelClassification === 'PURCHASE_ITEM';
+  const isService = classificationResult.canonicalEntityType === 'SERVICE_REPAIR';
+  const isActualReceipt = !isService && classificationResult.canonicalEntityType === 'PURCHASED_ITEM';
+  const isDoc = !isService && !isActualReceipt;
+
+  const entityType: CanonicalVaultEntityType = classificationResult.canonicalEntityType ||
+    (isActualReceipt ? 'PURCHASED_ITEM' : (isService ? 'SERVICE_REPAIR' : 'DOCUMENT'));
 
   const derivedIssuer = typeof merchantField === 'object' && merchantField !== null ? merchantField.value : merchantField;
-  const docTitle =
+
+  const rawService = geminiResponse.serviceRepair || (geminiResponse as any).service;
+  const rawServiceTitle = rawService?.title || (geminiResponse as any).documentTitle;
+
+  const docTitle: string | null =
     (geminiResponse as any).document?.documentTitle ||
     (geminiResponse as any).documentTitle ||
+    (isService ? (rawServiceTitle || `Service - ${derivedIssuer || 'Provider'}`) : null) ||
     (reconciledDocType ? `${reconciledDocType}${derivedIssuer ? ` - ${derivedIssuer}` : ''}` : null);
+
+  const serviceRepairContract: ExtractedServiceRepair | undefined = (isService || rawService) ? {
+    serviceDate: normalizeDateToIso(rawService?.serviceDate) || rawService?.serviceDate || invoiceDateField || null,
+    serviceType: rawService?.serviceType || 'Repair',
+    title: rawService?.title || docTitle || 'Service & Repair Record',
+    problemDescription: rawService?.problemDescription || null,
+    workPerformed: rawService?.workPerformed || null,
+    partsReplaced: rawService?.partsReplaced || null,
+    technicianNotes: rawService?.technicianNotes || null,
+    serviceProvider: rawService?.serviceProvider || derivedIssuer || null,
+    serviceProviderAddress: rawService?.serviceProviderAddress || (typeof merchantAddressField === 'object' && merchantAddressField !== null ? merchantAddressField.value : merchantAddressField) || null,
+    serviceProviderPhone: rawService?.serviceProviderPhone || null,
+    warrantyCovered: typeof rawService?.warrantyCovered === 'boolean' ? rawService.warrantyCovered : null,
+    coverageType: rawService?.coverageType || null,
+    coverageReferenceNumber: rawService?.coverageReferenceNumber || null,
+    amountPaid: toNum(rawService?.amountPaid) ?? toNum(totalField) ?? null,
+    currency: rawService?.currency || currencyField || 'INR',
+    postServiceWarranty: typeof rawService?.postServiceWarranty === 'boolean' ? rawService.postServiceWarranty : null,
+    postServiceWarrantyUntil: normalizeDateToIso(rawService?.postServiceWarrantyUntil) || rawService?.postServiceWarrantyUntil || null,
+    postServiceGuarantee: typeof rawService?.postServiceGuarantee === 'boolean' ? rawService.postServiceGuarantee : null,
+    postServiceGuaranteeUntil: normalizeDateToIso(rawService?.postServiceGuaranteeUntil) || rawService?.postServiceGuaranteeUntil || null,
+    relatedItemCandidates: Array.isArray(rawService?.relatedItemCandidates) ? rawService.relatedItemCandidates : [],
+    supportingDocumentCandidates: Array.isArray(rawService?.supportingDocumentCandidates) ? rawService.supportingDocumentCandidates : [],
+  } : undefined;
 
   const canonicalProducts = parsedItems.map((pi) => ({
     id: pi.id,
@@ -1058,8 +1099,10 @@ export function parseGeminiResponseToExtractedData(
     receiptUri,
     receiptImageName: fileName || 'Receipt-Scanned.jpg',
     scannedAt: new Date().toISOString(),
+    entityType,
     isReceipt: isActualReceipt,
     isDocument: isDoc,
+    isServiceRepair: isService,
     classification: classificationResult,
     documentCategory: reconciledDocCategory || null,
     documentType: reconciledDocType || null,
@@ -1075,6 +1118,7 @@ export function parseGeminiResponseToExtractedData(
     categoryDetails,
     items: parsedItems,
     purchase: purchaseContract,
+    serviceRepair: serviceRepairContract,
     rawConfidenceScore: Math.round(classificationResult.confidence * 100),
     overallQuality: classificationResult.confidence >= 0.85 ? 'excellent' : 'good',
     provider: 'gemini',

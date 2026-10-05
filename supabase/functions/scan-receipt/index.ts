@@ -63,44 +63,42 @@ If the image is NOT a document/receipt/bill, return strictly:
 }
 
 ============================================================
-PHASE 2: TOP-LEVEL DOCUMENT CLASSIFICATION (DECIDE FIRST BEFORE EXTRACTION)
+PHASE 2: CANONICAL 3-ENTITY CLASSIFICATION (DECIDE FIRST BEFORE EXTRACTION)
 ============================================================
-Classify the document into EXACTLY ONE of these 4 top-level classes:
+Classify the document into EXACTLY ONE of these 3 canonical entity types:
 
-1. "PURCHASE_ITEM":
-A receipt or invoice that represents purchase/acquisition of a physical item/product that Keepr should track as an Item (electronics, appliances, vehicles, furniture, clothing, accessories, etc.).
-Strong signals: product/item line items, product names, quantity, unit price, item subtotal, total purchase amount, seller/merchant, purchase date, invoice/receipt number, SKU/model.
+1. "PURCHASED_ITEM":
+A receipt or invoice that represents purchase or acquisition of a physical, trackable product (laptop, phone, TV, refrigerator, appliances, furniture, vehicle, clothing, tools).
+Evidence: product line items, quantity, unit price, item subtotal, total purchase amount, seller/merchant, purchase date, invoice number.
 Subtype must be: "INVOICE" or "RECEIPT".
 Destination: "item_review". isPhysicalItemPurchase: true, shouldCreateItem: true.
 
-2. "GENERAL_DOCUMENT":
-A valid document that should live in Documents and does NOT represent the purchase of a trackable physical item.
-CRITICAL: These must NEVER become Items:
-- College / school / university / tuition fee receipts -> Subtype: "FEE_RECEIPT" (Do NOT create an Item named "College Fee")
-- Electricity, water, gas, internet, mobile bills -> Subtype: "UTILITY_BILL" (Do NOT create an Item)
-- Vehicle registration certificate -> Subtype: "VEHICLE_RC" (Do NOT create an Item)
-- Vehicle / motor insurance policy -> Subtype: "VEHICLE_INSURANCE" (Do NOT create an Item)
-- Pollution Under Control certificate -> Subtype: "PUC" (Do NOT create an Item)
-- Standalone warranty or guarantee certificate -> Subtype: "WARRANTY", "GUARANTEE", or "EXTENDED_WARRANTY"
-- Service / repair invoice without physical item purchase (e.g. AC service, labour charges) -> Subtype: "SERVICE_DOCUMENT"
-- Bank payment slip, counterfoil, rent receipt -> Subtype: "PAYMENT_RECEIPT"
-- Delivery document without clear purchase items -> Subtype: "DELIVERY_DOCUMENT"
-- Property deed, ownership document -> Subtype: "OWNERSHIP_DOCUMENT"
+2. "DOCUMENT":
+A document, record, certificate, or bill stored for records, administrative, legal, or utility purposes:
+- College / school / university / tuition fee receipts -> Subtype: "FEE_RECEIPT" (MUST NOT become a Purchased Item)
+- Electricity, water, gas, internet, mobile bills -> Subtype: "UTILITY_BILL" (MUST NOT become a Purchased Item)
+- Vehicle registration certificate -> Subtype: "VEHICLE_RC" (MUST NOT become a Purchased Item)
+- Vehicle / motor insurance policy -> Subtype: "VEHICLE_INSURANCE" (MUST NOT become a Purchased Item)
+- Pollution Under Control certificate -> Subtype: "PUC" (MUST NOT become a Purchased Item)
+- Standalone warranty or guarantee certificate -> Subtype: "WARRANTY" or "GUARANTEE"
+- Payment receipts, challans, bank counterfoils -> Subtype: "PAYMENT_RECEIPT"
+- Property deeds, ownership agreements -> Subtype: "OWNERSHIP_DOCUMENT"
+- Delivery proofs without product lines -> Subtype: "DELIVERY_DOCUMENT"
 - Other non-purchase documents -> Subtype: "OTHER"
 Destination: "document_review". isPhysicalItemPurchase: false, shouldCreateItem: false.
 
-3. "AMBIGUOUS":
-The model cannot confidently determine whether a physical item was purchased.
-Destination: "review_type". isPhysicalItemPurchase: null, shouldCreateItem: false.
+3. "SERVICE_REPAIR":
+A document or bill recording maintenance, repair, servicing, inspection, or part replacement performed on an existing product:
+- Laptop or computer repair invoice (e.g. keyboard replacement, OS reinstall) -> Subtype: "SERVICE_DOCUMENT"
+- Mobile phone repair receipt (e.g. screen replacement, battery change) -> Subtype: "SERVICE_DOCUMENT"
+- Vehicle servicing bill or dealership service invoice (e.g. oil change, periodic maintenance) -> Subtype: "SERVICE_DOCUMENT"
+- AC, washing machine, or home appliance repair bill -> Subtype: "SERVICE_DOCUMENT"
+- Service center job sheet or inspection report -> Subtype: "SERVICE_DOCUMENT"
+Evidence: problem/complaint, work performed, parts replaced, technician/service center, labour charge, repair total, warranty coverage.
+Destination: "service_review". isPhysicalItemPurchase: false, shouldCreateItem: false.
 
-4. "INVALID_DOCUMENT":
-Not a supported receipt/document/image, unreadable, corrupted, or unrelated content.
-Destination: "invalid". isPhysicalItemPurchase: false, shouldCreateItem: false.
-
-CRITICAL RULE:
-A receipt or invoice does NOT automatically mean PURCHASE_ITEM.
-The actual question is: "Does this document prove purchase of a physical item that should become a Keepr Item?"
-If the document is a college fee receipt, electricity bill, vehicle RC, insurance, or AC service invoice, it MUST be GENERAL_DOCUMENT.
+If the document is ambiguous or confidence < 0.80:
+Destination: "review_type".
 
 CANONICAL KEEPR CATEGORIES (For Documents Vault):
 Must be strictly one of these 7 strings:
@@ -117,8 +115,7 @@ PHASE 3: CATEGORY-SPECIFIC SCHEMA EXTRACTION
 ============================================================
 Read ONLY what is visually legible on the document. NEVER invent, guess, or hallucinate missing data!
 
-1. RECEIPTS & INVOICES (Retail store receipts, online purchases, tax invoices):
-   Extract:
+1. RECEIPTS & INVOICES (Physical Product Purchases):
    - merchantName: Store or seller name
    - merchantAddress: Address of store/seller
    - merchantPhone: Phone number
@@ -133,100 +130,54 @@ Read ONLY what is visually legible on the document. NEVER invent, guess, or hall
    - grandTotal: Final total paid (number)
    - items: Array of purchased items [ { name, category, productType, brand, model, serialNumber, quantity, unitPrice, lineSubtotal, lineDiscount, lineTax, lineTotal, returnUntil, warrantyUntil } ]
 
-2. FEES & PAYMENTS (College, university, school, tuition, fee challans):
-   Extract:
+2. SERVICE & REPAIR (Maintenance, repairs, inspections, parts replaced):
+   - serviceDate: Date of service/repair (YYYY-MM-DD)
+   - serviceType: "Repair" | "Maintenance" | "Servicing" | "Inspection" | "Part Replacement" | "Software / Technical" | "Cleaning" | "Other"
+   - title: Short title (e.g. "MacBook Screen Replacement", "Honda City 20,000km Service")
+   - problemDescription: Issue or customer complaint
+   - workPerformed: Summary of repair/service work completed
+   - partsReplaced: List of parts replaced
+   - technicianNotes: Technician advice or comments
+   - serviceProvider: Workshop / repair center name
+   - serviceProviderAddress: Address of service center
+   - serviceProviderPhone: Phone number
+   - warrantyCovered: "yes" | "no" | "unknown"
+   - coverageType: Coverage scheme or null
+   - coverageReferenceNumber: Claim # or approval #
+   - amountPaid: Total service cost or amount paid (number)
+   - currency: Currency code (e.g. "INR")
+   - postServiceWarranty: boolean (true if repair includes post-service warranty)
+   - postServiceWarrantyUntil: Expiry date of repair warranty (YYYY-MM-DD)
+   - postServiceGuarantee: boolean
+   - postServiceGuaranteeUntil: Expiry date of guarantee (YYYY-MM-DD)
+   - relatedItemCandidates: Array of candidate item names/brands/serials mentioned (e.g. ["Honda City ZX", "DL 01 AB 1234"])
+
+3. FEES & PAYMENTS (College, university, school, tuition, fee challans):
    - institutionName: College, university, or institute name
    - studentName: Student name
    - studentId: Student ID, roll number, enrollment number
-   - course: Course or degree (e.g. "B.Tech Computer Science")
+   - course: Course or degree
    - semester: Semester or academic year
-   - feeType: e.g. "College Fee Receipt", "Tuition Fee", "Exam Fee", "Hostel Fee"
+   - feeType: e.g. "College Fee Receipt", "Tuition Fee"
    - receiptNumber: Receipt or voucher #
    - paymentDate: Payment date (YYYY-MM-DD)
    - amount: Amount paid (number)
    - currency: Currency code (e.g. "INR")
-   - paymentMode: Payment mode (e.g. "UPI", "Net Banking", "Card", "DD", "Cash")
-   - transactionReference: Transaction reference # or UTR
+   - paymentMode: Payment mode (e.g. "UPI", "Net Banking", "Card")
+   - transactionReference: Transaction reference #
    - dueDate: Due date if explicitly present, else null
    - issuerName: Institution name
    - documentDate: Payment/issue date (YYYY-MM-DD)
-   CRITICAL: Do NOT create fake productName, purchasePrice, merchant, returnUntil, or warrantyUntil for Fee receipts!
-   Category is "Fees & Payments", Document Type is "College Fee Receipt". Destination is "document_review".
 
-3. VEHICLE DOCUMENTS (RC, PUC, Vehicle Invoice, Delivery Proof):
-   Extract:
-   - vehicleRegistrationNumber: License plate / registration #
-   - ownerName: Owner name
-   - vehicleMake: Manufacturer (e.g. "Honda", "Hyundai", "Tata")
-   - vehicleModel: Model (e.g. "City", "Creta", "Nexon")
-   - variant: Trim / variant (e.g. "ZX CVT")
-   - vinChassisNumber: Chassis number / VIN
-   - engineNumber: Engine number
-   - policyNumber: Policy number if insurance
-   - insurer: Insurer name if insurance
-   - registrationDate: Registration date (YYYY-MM-DD)
-   - issueDate: Issue date (YYYY-MM-DD)
-   - expiryDate: Expiry date of RC or PUC (YYYY-MM-DD)
-   - documentNumber: Certificate / document #
-   - dealer: Dealership name
-   - purchaseDate: Purchase date (YYYY-MM-DD)
-   - amount: Amount if invoice or fee
-   CRITICAL: Return deadline is strictly null. Never assume or fabricate warranty for vehicles!
+4. VEHICLE DOCUMENTS (RC, PUC, Insurance):
+   - vehicleRegistrationNumber, ownerName, vehicleMake, vehicleModel, variant, vinChassisNumber, engineNumber
+   - policyNumber, insurer, registrationDate, issueDate, expiryDate, documentNumber
 
-4. INSURANCE (Motor, Health, Life policy documents):
-   Extract:
-   - policyNumber: Insurance policy #
-   - insurer: Insurance company
-   - insuredName: Policyholder name
-   - vehicleNumber: Vehicle plate number if motor insurance
-   - policyStartDate: Policy start date (YYYY-MM-DD)
-   - policyExpiryDate: Policy expiry date (YYYY-MM-DD)
-   - premiumAmount: Premium amount paid (number)
-   - vehicleDetails: Make/model if present
-   - documentNumber: Policy schedule or certificate #
-   CRITICAL: Expiry date is policy expiry, NOT product warranty!
+5. UTILITY BILL (Electricity, Water, Gas, Broadband):
+   - provider, customerName, accountNumber, billNumber, billingPeriod, issueDate, dueDate, amount, currency
 
-5. WARRANTY / GUARANTEE:
-   Extract:
-   - provider: Manufacturer or warranty provider
-   - product: Covered product
-   - brand: Brand
-   - model: Model
-   - serialNumber: Serial #
-   - warrantyStartDate: Start date (YYYY-MM-DD)
-   - warrantyEndDate: End date (YYYY-MM-DD)
-   - guaranteeStartDate: Guarantee start date (YYYY-MM-DD)
-   - guaranteeEndDate: Guarantee end date (YYYY-MM-DD)
-   - terms: Brief summary of terms
-   - documentNumber: Warranty certificate / card #
-   CRITICAL: Never invent warranty end date. If duration is explicitly printed, calculate from start date, otherwise null.
-
-6. UTILITY BILL (Electricity, Water, Gas, Broadband):
-   Extract:
-   - provider: Utility provider (e.g. BSES, Bescom, Tata Power)
-   - customerName: Consumer name
-   - accountNumber: Consumer number / CA number / account ID
-   - billNumber: Bill # or invoice #
-   - billingPeriod: e.g. "Sep 2026"
-   - issueDate: Bill date (YYYY-MM-DD)
-   - dueDate: Due date (YYYY-MM-DD)
-   - amount: Bill amount payable (number)
-   - currency: Currency code (e.g. "INR")
-   - address: Service address
-   - meterNumber: Meter number if printed
-
-7. OWNERSHIP & PURCHASE:
-   Extract:
-   - owner: Owner name
-   - seller: Seller name
-   - documentNumber: Agreement / deed #
-   - purchaseDate: Date (YYYY-MM-DD)
-   - amount: Consideration amount (number)
-   - description: Description of asset / property
-   - referenceNumbers: Reference / registry numbers
-   - issuer: Authority or issuing party
-   - dates: Relevant dates
-   - address: Asset / property address
+6. WARRANTY / GUARANTEE:
+   - provider, product, brand, model, serialNumber, warrantyStartDate, warrantyEndDate, terms
 
 ============================================================
 OUTPUT FORMAT (STRICT JSON ONLY)
@@ -235,23 +186,81 @@ Return a single strictly valid JSON object matching this schema:
 {
   "status": "success" | "invalid_document",
   "classification": {
+    "entityType": "PURCHASED_ITEM" | "DOCUMENT" | "SERVICE_REPAIR",
     "topLevelClassification": "PURCHASE_ITEM" | "GENERAL_DOCUMENT" | "AMBIGUOUS" | "INVALID_DOCUMENT",
-    "documentSubtype": "INVOICE" | "RECEIPT" | "FEE_RECEIPT" | "PAYMENT_RECEIPT" | "VEHICLE_RC" | "VEHICLE_INSURANCE" | "PUC" | "WARRANTY" | "GUARANTEE" | "EXTENDED_WARRANTY" | "UTILITY_BILL" | "DELIVERY_DOCUMENT" | "SERVICE_DOCUMENT" | "OWNERSHIP_DOCUMENT" | "OTHER" | null,
+    "documentSubtype": string | null,
     "confidence": number,
     "reason": string,
     "isPhysicalItemPurchase": boolean | null,
     "shouldCreateItem": boolean
   },
+  "routing": {
+    "destination": "item_review" | "document_review" | "service_review" | "review_type" | "invalid"
+  },
+  "purchase": {
+    "purchaseDate": string | null,
+    "merchantName": string | null,
+    "merchantAddress": string | null,
+    "merchantPhone": string | null,
+    "invoiceNumber": string | null,
+    "currency": string | null,
+    "subtotal": number | null,
+    "discount": number | null,
+    "taxAmount": number | null,
+    "taxRate": string | null,
+    "grandTotal": number | null,
+    "products": [
+      {
+        "name": string,
+        "category": string | null,
+        "productType": string | null,
+        "brand": string | null,
+        "model": string | null,
+        "serialNumber": string | null,
+        "quantity": number,
+        "unitPrice": number | null,
+        "lineSubtotal": number | null,
+        "lineDiscount": number | null,
+        "lineTax": number | null,
+        "lineTotal": number,
+        "returnUntil": string | null,
+        "warrantyUntil": string | null
+      }
+    ]
+  },
   "document": {
-    "category": "Receipts & Invoices" | "Vehicle Documents" | "Warranty & Guarantee" | "Fees & Payments" | "Bills & Utilities" | "Ownership & Purchase" | "Other Important Documents" | null,
+    "category": string | null,
     "documentType": string | null,
     "confidence": number,
     "documentTitle": string | null,
-    "fields": { ...categorySpecificFieldsOnly... }
+    "fields": {}
   },
-  "routing": {
-    "destination": "document_review" | "item_review" | "review_type" | "invalid"
+  "serviceRepair": {
+    "serviceDate": string | null,
+    "serviceType": string | null,
+    "title": string | null,
+    "problemDescription": string | null,
+    "workPerformed": string | null,
+    "partsReplaced": string | null,
+    "technicianNotes": string | null,
+    "serviceProvider": string | null,
+    "serviceProviderAddress": string | null,
+    "serviceProviderPhone": string | null,
+    "warrantyCovered": "yes" | "no" | "unknown" | null,
+    "coverageType": string | null,
+    "coverageReferenceNumber": string | null,
+    "amountPaid": number | null,
+    "currency": string | null,
+    "postServiceWarranty": boolean | null,
+    "postServiceWarrantyUntil": string | null,
+    "postServiceGuarantee": boolean | null,
+    "postServiceGuaranteeUntil": string | null,
+    "relatedItemCandidates": string[],
+    "supportingDocumentCandidates": string[]
   },
+  "warnings": [],
+  "missingFields": [],
+
   "isReceipt": boolean,
   "isDocument": boolean,
   "documentCategory": string | null,
@@ -262,6 +271,7 @@ Return a single strictly valid JSON object matching this schema:
   "purchaseDate": string | null,
   "documentDate": string | null,
   "expiryDate": string | null,
+  "dueDate": string | null,
   "merchantName": string | null,
   "issuerName": string | null,
   "merchantAddress": string | null,

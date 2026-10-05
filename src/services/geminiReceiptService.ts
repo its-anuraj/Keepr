@@ -9,8 +9,9 @@ import {
   getGeminiApiKey,
   setRuntimeGeminiApiKey as setGeminiApiKey,
 } from './receiptScanner';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, supabaseAnonKey, supabaseUrl } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
+import { prepareImageForAnalysis } from './receiptFileService';
 
 export { isGeminiConfigured, getGeminiApiKey, setGeminiApiKey };
 
@@ -51,21 +52,21 @@ export class ScannerError extends Error {
 function toUserFacingErrorMessage(code: ScannerErrorCode): string {
   switch (code) {
     case 'AUTH_REQUIRED':
-      return 'Please sign in to scan receipts.';
+      return 'Please sign in to scan documents.';
     case 'SESSION_EXPIRED':
       return 'Your session has expired. Please sign in again.';
     case 'FORBIDDEN':
-      return 'You are not authorized to scan receipts.';
+      return 'You are not authorized to scan documents.';
     case 'NETWORK_ERROR':
-      return "Couldn't connect to the receipt scanner. Please try again.";
+      return "Couldn't connect to the scanner. Please try again.";
     case 'TIMEOUT':
-      return 'The receipt scan timed out. Please try again with a clearer photo.';
+      return 'The scan timed out. Please try again with a clearer photo.';
     case 'UNREADABLE_RECEIPT':
-      return "We couldn't read this receipt clearly. Please upload a clearer photo.";
+      return "We couldn't read this document clearly. Please upload a clearer photo.";
     case 'SERVICE_UNAVAILABLE':
     case 'SERVER_ERROR':
     default:
-      return 'Receipt scanning is temporarily unavailable. Please try again.';
+      return "Couldn't analyze this document right now. Please try again.";
   }
 }
 
@@ -109,13 +110,9 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
     const requestId = `receipt-scan-${scanDate}-${randSuffix}`;
     const startTime = Date.now();
 
-    const base64Data = input.base64 || (await uriToBase64(input.imageUri!));
-
-    let mimeType = 'image/jpeg';
-    const cleanTarget = (input.fileName || input.imageUri || '').toLowerCase();
-    if (cleanTarget.endsWith('.png')) mimeType = 'image/png';
-    else if (cleanTarget.endsWith('.webp')) mimeType = 'image/webp';
-    else if (cleanTarget.endsWith('.heic') || cleanTarget.endsWith('.heif')) mimeType = 'image/heic';
+    const prepared = await prepareImageForAnalysis(input.imageUri || '', input.base64);
+    const base64Data = prepared.base64;
+    const mimeType = prepared.mimeType || 'image/jpeg';
 
     let rawResult: any = null;
     let providerName = 'supabase-edge-function';
@@ -233,35 +230,76 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
           );
         }
 
-        // 6. Section 4: Direct fetch with Authorization: Bearer <accessToken>
-        const supabaseUrl =
-          process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://lqzhfnsxgytwbeudtzks.supabase.co';
-        const edgeFunctionUrl = `${supabaseUrl}/functions/v1/scan-receipt`;
+        // 6. Section 4: Direct fetch with apikey and Authorization: Bearer <accessToken>
+        const targetSupabaseUrl =
+          supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://lqzhfnsxgytwbeudtzks.supabase.co';
+        const edgeFunctionUrl = `${targetSupabaseUrl}/functions/v1/scan-receipt`;
 
         console.log(`[ScannerDiagnostics] backend request started: edgeFunction=${edgeFunctionUrl} requestId=${requestId}`);
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 35000);
+        let response: Response | null = null;
+        let lastError: any = null;
+        const maxAttempts = 2;
 
-        let response: Response;
-        try {
-          response = await fetch(edgeFunctionUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${accessToken}`,
-              'x-request-id': requestId,
-            },
-            body: JSON.stringify({
-              imageBase64: base64Data,
-              mimeType,
-              fileName: input.fileName,
-              requestId,
-            }),
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timeoutId);
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+          try {
+            const res = await fetch(edgeFunctionUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${accessToken}`,
+                'x-request-id': requestId,
+              },
+              body: JSON.stringify({
+                imageBase64: base64Data,
+                mimeType,
+                fileName: input.fileName,
+                requestId,
+              }),
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (res.ok || res.status === 401 || res.status === 403 || res.status === 400 || res.status === 422) {
+              response = res;
+              break;
+            }
+
+            // Retry on transient 503/429/502/504
+            if (attempt < maxAttempts && (res.status === 503 || res.status === 429 || res.status === 502 || res.status === 504)) {
+              const backoff = attempt === 1 ? 1500 : 3000;
+              console.warn(`[ReceiptScanner] Transient status ${res.status}, retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})...`);
+              await new Promise((r) => setTimeout(r, backoff));
+              continue;
+            }
+            response = res;
+            break;
+          } catch (fetchErr: any) {
+            clearTimeout(timeoutId);
+            lastError = fetchErr;
+            const isCancel =
+              fetchErr.name === 'AbortError' ||
+              fetchErr.message?.includes('canceled') ||
+              fetchErr.message?.includes('cancelled') ||
+              fetchErr.message?.includes('aborted');
+
+            if (attempt < maxAttempts && !isCancel) {
+              const backoff = attempt === 1 ? 1500 : 3000;
+              console.warn(`[ReceiptScanner] Network exception, retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})...`);
+              await new Promise((r) => setTimeout(r, backoff));
+              continue;
+            }
+            throw fetchErr;
+          }
+        }
+
+        if (!response) {
+          throw lastError || new Error('No response from scanner backend');
         }
 
         const durationMs = Date.now() - startTime;
@@ -331,7 +369,17 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
         }
       } catch (err: any) {
         if (err instanceof ScannerError) throw err;
-        if (err.name === 'AbortError') {
+        const msg = err?.message || String(err);
+        const isTimeoutOrAbort =
+          err.name === 'AbortError' ||
+          msg.includes('canceled') ||
+          msg.includes('cancelled') ||
+          msg.includes('aborted') ||
+          msg.includes('timeout') ||
+          msg.includes('timed out');
+
+        if (isTimeoutOrAbort) {
+          console.warn(`[ReceiptScanner] Scan request timeout/aborted requestId=${requestId}`);
           throw new ScannerError(
             toUserFacingErrorMessage('TIMEOUT'),
             'TIMEOUT',
@@ -339,7 +387,7 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
             408
           );
         }
-        const msg = err?.message || String(err);
+
         console.error(`[ReceiptScanner] Client network invocation error requestId=${requestId}:`, msg);
         throw new ScannerError(
           toUserFacingErrorMessage('NETWORK_ERROR'),

@@ -17,6 +17,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -44,6 +46,25 @@ export default function AddServiceScreen() {
   const params = useLocalSearchParams<{
     itemId?: string;
     editId?: string;
+    prefillTitle?: string;
+    prefillServiceType?: string;
+    prefillServiceDate?: string;
+    prefillProblem?: string;
+    prefillWork?: string;
+    prefillParts?: string;
+    prefillProvider?: string;
+    prefillProviderAddress?: string;
+    prefillProviderPhone?: string;
+    prefillAmount?: string;
+    prefillWarrantyCovered?: string;
+    prefillCoverageType?: string;
+    prefillCoverageRef?: string;
+    prefillPostWarrantyUntil?: string;
+    prefillPostGuaranteeUntil?: string;
+    prefillTechnicianNotes?: string;
+    prefillCandidateItemId?: string;
+    fileUri?: string;
+    fileName?: string;
   }>();
 
   const getItemById = useItemStore((s) => s.getItemById);
@@ -52,69 +73,121 @@ export default function AddServiceScreen() {
   const updateMaintenanceRecord = useItemStore((s) => s.updateMaintenanceRecord);
   const getDocumentsByItemId = useItemStore((s) => s.getDocumentsByItemId);
   const addDocument = useItemStore((s) => s.addDocument);
+  const items = useItemStore((s) => s.items);
 
   const editRecord: MaintenanceRecord | undefined = params.editId
     ? getMaintenanceRecordById(params.editId)
     : undefined;
 
-  const targetItemId = editRecord?.itemId || params.itemId || '';
-  const item = getItemById(targetItemId);
-  const linkedDocs = targetItemId ? getDocumentsByItemId(targetItemId) : [];
+  const initialItemId = editRecord?.itemId || params.itemId || params.prefillCandidateItemId || '';
+  const [selectedItemId, setSelectedItemId] = useState<string>(initialItemId);
+  const [showItemPickerModal, setShowItemPickerModal] = useState(false);
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
+
+  const item = selectedItemId ? getItemById(selectedItemId) : null;
+  const linkedDocs = selectedItemId ? getDocumentsByItemId(selectedItemId) : [];
 
   const isEditing = Boolean(editRecord);
 
   // Form State
-  const [title, setTitle] = useState(editRecord?.title || '');
+  const [title, setTitle] = useState(
+    editRecord?.title || (params.prefillTitle ? decodeURIComponent(params.prefillTitle) : '')
+  );
   const [serviceType, setServiceType] = useState<ServiceType>(
-    (editRecord?.serviceType as ServiceType) || 'Repair'
+    (editRecord?.serviceType as ServiceType) || (params.prefillServiceType as ServiceType) || 'Repair'
   );
   const [serviceDate, setServiceDate] = useState(
-    editRecord?.serviceDate || new Date().toISOString().split('T')[0]
+    editRecord?.serviceDate || params.prefillServiceDate || new Date().toISOString().split('T')[0]
   );
   const [problemDescription, setProblemDescription] = useState(
-    editRecord?.problemDescription || editRecord?.description || ''
+    editRecord?.problemDescription || editRecord?.description || (params.prefillProblem ? decodeURIComponent(params.prefillProblem) : '')
   );
-  const [workPerformed, setWorkPerformed] = useState(editRecord?.workPerformed || '');
-  const [partsReplaced, setPartsReplaced] = useState(editRecord?.partsReplaced || '');
-  const [serviceProvider, setServiceProvider] = useState(editRecord?.serviceProvider || '');
+  const [workPerformed, setWorkPerformed] = useState(
+    editRecord?.workPerformed || (params.prefillWork ? decodeURIComponent(params.prefillWork) : '')
+  );
+  const [partsReplaced, setPartsReplaced] = useState(
+    editRecord?.partsReplaced || (params.prefillParts ? decodeURIComponent(params.prefillParts) : '')
+  );
+  const [serviceProvider, setServiceProvider] = useState(
+    editRecord?.serviceProvider || (params.prefillProvider ? decodeURIComponent(params.prefillProvider) : '')
+  );
   const [serviceProviderAddress, setServiceProviderAddress] = useState(
-    editRecord?.serviceProviderAddress || ''
+    editRecord?.serviceProviderAddress || (params.prefillProviderAddress ? decodeURIComponent(params.prefillProviderAddress) : '')
   );
   const [serviceProviderPhone, setServiceProviderPhone] = useState(
-    editRecord?.serviceProviderPhone || ''
+    editRecord?.serviceProviderPhone || (params.prefillProviderPhone ? decodeURIComponent(params.prefillProviderPhone) : '')
   );
 
   const [warrantyCovered, setWarrantyCovered] = useState<WarrantyCoverageStatus>(
-    editRecord?.warrantyCovered || 'unknown'
+    editRecord?.warrantyCovered || (params.prefillWarrantyCovered as WarrantyCoverageStatus) || 'unknown'
   );
-  const [coverageType, setCoverageType] = useState(editRecord?.coverageType || '');
+  const [coverageType, setCoverageType] = useState(
+    editRecord?.coverageType || (params.prefillCoverageType ? decodeURIComponent(params.prefillCoverageType) : '')
+  );
   const [coverageReferenceNumber, setCoverageReferenceNumber] = useState(
-    editRecord?.coverageReferenceNumber || ''
+    editRecord?.coverageReferenceNumber || (params.prefillCoverageRef ? decodeURIComponent(params.prefillCoverageRef) : '')
   );
   const [amountPaid, setAmountPaid] = useState(
-    editRecord ? String(editRecord.amountPaid != null ? editRecord.amountPaid : editRecord.cost) : ''
+    editRecord ? String(editRecord.amountPaid != null ? editRecord.amountPaid : editRecord.cost) : (params.prefillAmount || '')
   );
 
   const [hasPostWarranty, setHasPostWarranty] = useState(
-    Boolean(editRecord?.postServiceWarranty && editRecord?.postServiceWarrantyUntil)
+    Boolean((editRecord?.postServiceWarranty && editRecord?.postServiceWarrantyUntil) || params.prefillPostWarrantyUntil)
   );
   const [postServiceWarrantyUntil, setPostServiceWarrantyUntil] = useState(
-    editRecord?.postServiceWarrantyUntil || ''
+    editRecord?.postServiceWarrantyUntil || params.prefillPostWarrantyUntil || ''
   );
 
   const [hasPostGuarantee, setHasPostGuarantee] = useState(
-    Boolean(editRecord?.postServiceGuarantee && editRecord?.postServiceGuaranteeUntil)
+    Boolean((editRecord?.postServiceGuarantee && editRecord?.postServiceGuaranteeUntil) || params.prefillPostGuaranteeUntil)
   );
   const [postServiceGuaranteeUntil, setPostServiceGuaranteeUntil] = useState(
-    editRecord?.postServiceGuaranteeUntil || ''
+    editRecord?.postServiceGuaranteeUntil || params.prefillPostGuaranteeUntil || ''
   );
 
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>(
     editRecord?.documentIds || []
   );
   const [isAttachingDoc, setIsAttachingDoc] = useState(false);
-  const [technicianNotes, setTechnicianNotes] = useState(editRecord?.technicianNotes || '');
+  const [technicianNotes, setTechnicianNotes] = useState(
+    editRecord?.technicianNotes || (params.prefillTechnicianNotes ? decodeURIComponent(params.prefillTechnicianNotes) : '')
+  );
   const [notes, setNotes] = useState(editRecord?.notes || '');
+
+  const autoAttachedRef = React.useRef(false);
+  useEffect(() => {
+    if (params.fileUri && !autoAttachedRef.current) {
+      autoAttachedRef.current = true;
+      (async () => {
+        try {
+          setIsAttachingDoc(true);
+          const fileName = params.fileName ? decodeURIComponent(params.fileName) : 'Scanned_Service_Invoice.jpg';
+          const persisted = await persistDocumentToVault(params.fileUri, fileName);
+          if (persisted.persisted && persisted.uri) {
+            const parsedAmount = amountPaid.trim() ? parseFloat(amountPaid.replace(/[^0-9.]/g, '')) : 0;
+            const createdDoc = await addDocument({
+              title: `${title.trim() || serviceType} Invoice`,
+              category: 'Receipts & Invoices',
+              documentType: 'Invoice',
+              documentDate: serviceDate,
+              itemId: selectedItemId || undefined,
+              filePath: persisted.uri,
+              fileUrl: persisted.uri,
+              storagePath: persisted.storagePath,
+              fileSizeBytes: persisted.fileSize || 0,
+              mimeType: 'image/jpeg',
+              amount: parsedAmount > 0 ? parsedAmount : undefined,
+            });
+            setSelectedDocIds((prev) => [...prev, createdDoc.id]);
+          }
+        } catch (e) {
+          console.warn('[AddService] auto attach failed:', e);
+        } finally {
+          setIsAttachingDoc(false);
+        }
+      })();
+    }
+  }, [params.fileUri]);
 
   const handleAttachFromPicker = async (source: 'camera' | 'gallery' | 'pdf') => {
     try {
@@ -181,7 +254,7 @@ export default function AddServiceScreen() {
         category: 'Receipts & Invoices',
         documentType: 'Invoice',
         documentDate: serviceDate,
-        itemId: targetItemId || undefined,
+        itemId: selectedItemId || undefined,
         filePath: persisted.uri,
         fileUrl: persisted.uri,
         storagePath: persisted.storagePath,
@@ -239,10 +312,6 @@ export default function AddServiceScreen() {
 
   const handleSave = async () => {
     if (!validate()) return;
-    if (!targetItemId) {
-      Alert.alert('Error', 'No associated purchased item found for this service record.');
-      return;
-    }
 
     setIsSubmitting(true);
     try {
@@ -250,7 +319,7 @@ export default function AddServiceScreen() {
       const cleanCost = isNaN(parsedAmount) ? 0 : parsedAmount;
 
       const recordPayload = {
-        itemId: targetItemId,
+        itemId: selectedItemId || undefined,
         title: title.trim(),
         serviceType,
         serviceDate: serviceDate.trim(),
@@ -299,6 +368,17 @@ export default function AddServiceScreen() {
     );
   };
 
+  const filteredItemsForModal = useMemo(() => {
+    if (!itemSearchQuery.trim()) return items;
+    const q = itemSearchQuery.toLowerCase().trim();
+    return items.filter(
+      (it) =>
+        it.name.toLowerCase().includes(q) ||
+        (it.brand && it.brand.toLowerCase().includes(q)) ||
+        (it.model && it.model.toLowerCase().includes(q))
+    );
+  }, [items, itemSearchQuery]);
+
   return (
     <View style={{ flex: 1, backgroundColor: SereneColors.surface }}>
       <Header title={isEditing ? 'Edit Service Record' : 'Add Service & Repair'} showBack />
@@ -312,20 +392,20 @@ export default function AddServiceScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Purchased Item Context Card (Read-only) */}
-          {item && (
-            <View
-              style={{
-                backgroundColor: 'rgba(17,80,134,0.06)',
-                borderColor: 'rgba(17,80,134,0.18)',
-                borderWidth: 1,
-                borderRadius: 14,
-                padding: 12,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 12,
-              }}
-            >
+          {/* Purchased Item Context Card (Interactive link / change / unlink) */}
+          <View
+            style={{
+              backgroundColor: item ? 'rgba(17,80,134,0.06)' : 'rgba(100,116,139,0.06)',
+              borderColor: item ? 'rgba(17,80,134,0.18)' : 'rgba(100,116,139,0.18)',
+              borderWidth: 1,
+              borderRadius: 14,
+              padding: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
               <View
                 style={{
                   width: 44,
@@ -339,26 +419,65 @@ export default function AddServiceScreen() {
                   borderColor: SereneColors.subtleBorder,
                 }}
               >
-                {item.receiptUri && !item.receiptUri.toLowerCase().endsWith('.pdf') ? (
+                {item?.receiptUri && !item.receiptUri.toLowerCase().endsWith('.pdf') ? (
                   <Image source={{ uri: item.receiptUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                 ) : (
-                  <MaterialIcons name="inventory-2" size={22} color={SereneColors.primary} />
+                  <MaterialIcons name="inventory-2" size={22} color={item ? SereneColors.primary : SereneColors.outline} />
                 )}
               </View>
 
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontWeight: '600', color: SereneColors.primary }}>
-                  PURCHASED ITEM CONTEXT
+                <Text style={{ fontSize: 10, fontWeight: '700', color: item ? SereneColors.primary : SereneColors.onSurfaceVariant, letterSpacing: 0.5 }}>
+                  {item ? 'PURCHASED ITEM CONTEXT' : 'UNLINKED / STANDALONE'}
                 </Text>
                 <Text style={{ fontSize: 14, fontWeight: '700', color: SereneColors.onSurface }} numberOfLines={1}>
-                  {item.name}
+                  {item ? item.name : 'No Item Linked'}
                 </Text>
-                <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
-                  {item.brand ? `${item.brand} ` : ''}{item.model ? `(${item.model})` : ''}
-                </Text>
+                {item && (item.brand || item.model) ? (
+                  <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
+                    {item.brand ? `${item.brand} ` : ''}{item.model ? `(${item.model})` : ''}
+                  </Text>
+                ) : null}
               </View>
             </View>
-          )}
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  setItemSearchQuery('');
+                  setShowItemPickerModal(true);
+                }}
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(17,80,134,0.10)',
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.primary }}>
+                  {item ? 'Change' : 'Choose Item'}
+                </Text>
+              </TouchableOpacity>
+
+              {item && (
+                <TouchableOpacity
+                  onPress={() => setSelectedItemId('')}
+                  style={{
+                    paddingHorizontal: 8,
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                    backgroundColor: 'rgba(186,26,26,0.08)',
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.error }}>
+                    Unlink
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
 
           {/* Service Title & Date Card */}
           <View style={cardStyle}>
@@ -838,6 +957,207 @@ export default function AddServiceScreen() {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Item Picker Modal */}
+      <Modal
+        visible={showItemPickerModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowItemPickerModal(false)}
+      >
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(15,23,42,0.55)',
+            justifyContent: 'flex-end',
+          }}
+          onPress={() => setShowItemPickerModal(false)}
+        >
+          <Pressable
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              maxHeight: '80%',
+              paddingTop: 12,
+              paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+              paddingHorizontal: 20,
+              gap: 12,
+            }}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View
+              style={{
+                width: 36,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: '#CBD5E1',
+                alignSelf: 'center',
+                marginBottom: 4,
+              }}
+            />
+
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <View>
+                <Text style={{ fontSize: 17, fontWeight: '700', color: SereneColors.onSurface }}>
+                  Select Purchased Item
+                </Text>
+                <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant }}>
+                  Choose an item to associate with this service record
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowItemPickerModal(false)}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: SereneColors.surfaceContainerHigh,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <MaterialIcons name="close" size={18} color={SereneColors.onSurfaceVariant} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Search Input */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: '#F1F5F9',
+                borderRadius: 10,
+                paddingHorizontal: 10,
+                height: 40,
+                gap: 8,
+              }}
+            >
+              <MaterialIcons name="search" size={18} color={SereneColors.onSurfaceVariant} />
+              <TextInput
+                style={{ flex: 1, fontSize: 13, color: SereneColors.onSurface }}
+                placeholder="Search your items..."
+                placeholderTextColor={SereneColors.onSurfaceVariant}
+                value={itemSearchQuery}
+                onChangeText={setItemSearchQuery}
+              />
+              {itemSearchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setItemSearchQuery('')}>
+                  <MaterialIcons name="cancel" size={16} color={SereneColors.onSurfaceVariant} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Items List */}
+            <ScrollView
+              style={{ maxHeight: 320 }}
+              contentContainerStyle={{ gap: 8 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Unlink / Standalone Option */}
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedItemId('');
+                  setShowItemPickerModal(false);
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: !selectedItemId ? SereneColors.primary : '#E2E8F0',
+                  backgroundColor: !selectedItemId ? 'rgba(17,80,134,0.06)' : '#F8FAFC',
+                }}
+                activeOpacity={0.8}
+              >
+                <View
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    backgroundColor: '#E2E8F0',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <MaterialIcons name="link-off" size={18} color="#64748B" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}>
+                    Keep Unlinked (Standalone)
+                  </Text>
+                  <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }}>
+                    Record service without linking to a specific item
+                  </Text>
+                </View>
+                {!selectedItemId && (
+                  <MaterialIcons name="check" size={18} color={SereneColors.primary} />
+                )}
+              </TouchableOpacity>
+
+              {filteredItemsForModal.map((it) => {
+                const isSelected = selectedItemId === it.id;
+                return (
+                  <TouchableOpacity
+                    key={it.id}
+                    onPress={() => {
+                      setSelectedItemId(it.id);
+                      setShowItemPickerModal(false);
+                    }}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: 12,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: isSelected ? SereneColors.primary : '#E2E8F0',
+                      backgroundColor: isSelected ? 'rgba(17,80,134,0.06)' : '#FFFFFF',
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <View
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 8,
+                        backgroundColor: 'rgba(17,80,134,0.08)',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <MaterialIcons name="inventory-2" size={18} color={SereneColors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}
+                        numberOfLines={1}
+                      >
+                        {it.name}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
+                        {it.brand ? `${it.brand} ` : ''}
+                        {it.model ? `(${it.model})` : ''}
+                      </Text>
+                    </View>
+                    {isSelected && (
+                      <MaterialIcons name="check" size={18} color={SereneColors.primary} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

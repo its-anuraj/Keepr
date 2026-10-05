@@ -214,12 +214,12 @@ export default function AIReceiptScannerScreen() {
   const scanInProgressRef = useRef(false);
 
   const [processingSteps, setProcessingSteps] = useState<ProcessingStep[]>([
-    { id: 1, label: 'Reading purchase details', completed: false },
-    { id: 2, label: 'Finding products and prices', completed: false },
-    { id: 3, label: 'Checking purchase information', completed: false },
-    { id: 4, label: 'Details found', completed: false },
+    { id: 1, label: 'Reading document', completed: false },
+    { id: 2, label: 'Identifying what this is', completed: false },
+    { id: 3, label: 'Extracting important details', completed: false },
+    { id: 4, label: 'Preparing your information', completed: false },
   ]);
-  const [processingTitle, setProcessingTitle] = useState('Reading purchase details');
+  const [processingTitle, setProcessingTitle] = useState('Understanding your document');
 
   useEffect(() => {
     if (screenState === 'scan') {
@@ -642,6 +642,56 @@ export default function AIReceiptScannerScreen() {
     }
   };
 
+  const navigateToServiceAdd = async (
+    data: ExtractedReceiptData,
+    uri: string,
+    fileName: string
+  ) => {
+    console.log(`[ScannerDiagnostics] navigation started (destination=/service/add)`);
+    try {
+      console.log(`[ScannerDiagnostics] image persistence started (target=vault_services, uri=${uri})`);
+      const persistRes = await persistDocumentToVault(uri, fileName, capturedBase64 || null);
+      let finalUri = uri;
+      if (persistRes.persisted && persistRes.uri) {
+        finalUri = persistRes.uri;
+        console.log(`[ScannerDiagnostics] image persistence completed (persistedUri=${finalUri})`);
+      } else {
+        console.warn(`[ScannerDiagnostics] image persistence fallback (using active URI: ${uri})`);
+      }
+
+      const sData = data.serviceRepair;
+      const primaryPrice = sData?.amountPaid != null
+        ? String(sData.amountPaid)
+        : data.common.finalAmount?.value
+        ? String(data.common.finalAmount.value)
+        : '';
+
+      router.replace({
+        pathname: '/service/add',
+        params: {
+          scannedServiceUri: finalUri,
+          scannedServiceName: fileName,
+          prefillProvider: sData?.serviceProvider || data.issuerName || data.common.merchant?.value || '',
+          prefillServiceType: sData?.serviceType || 'Service & Repair',
+          prefillServiceDate: sData?.serviceDate || data.documentDate || data.common.purchaseDate?.value || '',
+          prefillCost: primaryPrice,
+          prefillProblem: sData?.problemDescription || '',
+          prefillWorkDone: sData?.workPerformed || '',
+          prefillTechnicianNotes: sData?.technicianNotes || '',
+          prefillWarrantyCovered: sData?.warrantyCovered ? String(sData.warrantyCovered) : '',
+          prefillWarrantyUntil: sData?.postServiceWarrantyUntil || '',
+          prefillGuaranteeUntil: sData?.postServiceGuaranteeUntil || '',
+          prefillCandidateItemId: data.classification?.itemMatch?.candidateItemId || '',
+          prefillCandidateItemName: data.classification?.itemMatch?.matchedItemName ? encodeURIComponent(data.classification.itemMatch.matchedItemName) : '',
+        },
+      });
+      console.log(`[ScannerDiagnostics] navigation completed (/service/add)`);
+    } catch (navErr) {
+      console.error(`[ScannerDiagnostics] navigation error (/service/add):`, navErr);
+      setProcessingError("Could not open Service Review. Please try again.");
+    }
+  };
+
   const handleConfirmAndProcessReceipt = async () => {
     if (scanInProgressRef.current) {
       console.log('[ScannerDiagnostics] scan duplicate prevented: scan already in progress');
@@ -662,12 +712,12 @@ export default function AIReceiptScannerScreen() {
     setDetailsFound(false);
 
     setProcessingSteps([
-      { id: 1, label: 'Reading purchase details', completed: false },
-      { id: 2, label: 'Finding products and prices', completed: false },
-      { id: 3, label: 'Checking purchase information', completed: false },
-      { id: 4, label: 'Details found', completed: false },
+      { id: 1, label: 'Reading document', completed: false },
+      { id: 2, label: 'Identifying what this is', completed: false },
+      { id: 3, label: 'Extracting important details', completed: false },
+      { id: 4, label: 'Preparing your information', completed: false },
     ]);
-    setProcessingTitle('Reading purchase details');
+    setProcessingTitle('Understanding your document');
 
     Animated.loop(
       Animated.sequence([
@@ -678,7 +728,7 @@ export default function AIReceiptScannerScreen() {
 
     try {
       setProcessingSteps((prev) => prev.map((s) => (s.id <= 1 ? { ...s, completed: true } : s)));
-      setProcessingTitle('Finding products and prices');
+      setProcessingTitle('Identifying what this is');
       await new Promise((r) => setTimeout(r, 200));
 
       const geminiResponse = await executeGeminiReceiptAnalysis({
@@ -688,7 +738,7 @@ export default function AIReceiptScannerScreen() {
       });
 
       setProcessingSteps((prev) => prev.map((s) => (s.id <= 2 ? { ...s, completed: true } : s)));
-      setProcessingTitle('Checking purchase information');
+      setProcessingTitle('Extracting important details');
       await new Promise((r) => setTimeout(r, 200));
 
       const parsedData = parseGeminiResponseToExtractedData(
@@ -699,12 +749,12 @@ export default function AIReceiptScannerScreen() {
 
       console.log(`[ScannerDiagnostics] result stored: id=${parsedData.id}`);
 
-      if (!parsedData.isReceipt && !parsedData.isDocument) {
+      if (!parsedData.isReceipt && !parsedData.isDocument && !parsedData.serviceRepair) {
         setProcessingSteps((prev) => prev.map((s) => ({ ...s, completed: false })));
-        setProcessingTitle("That doesn't look like a document or receipt");
+        setProcessingTitle("That doesn't look like a supported document");
         setReceiptRejection({
-          reason: parsedData.rejectionReason || "This image does not appear to be a receipt, invoice, or supported document.",
-          message: parsedData.rejectionMessage || "Please upload a clear photo of your receipt, bill, or ownership document.",
+          reason: parsedData.rejectionReason || "This image does not appear to be an invoice, bill, warranty, or service document.",
+          message: parsedData.rejectionMessage || "Please upload a clear photo of your receipt, bill, or service record.",
         });
         setIsScanning(false);
         scanInProgressRef.current = false;
@@ -761,12 +811,12 @@ export default function AIReceiptScannerScreen() {
         shouldCreateItem: false,
       };
 
-      if (parsedData.isDocument) {
+      if (parsedData.isDocument || parsedData.serviceRepair) {
         const matchRes = matchDocumentToItem(
           {
-            title: parsedData.documentTitle,
-            issuerName: parsedData.issuerName || parsedData.common.merchant?.value,
-            referenceNumber: parsedData.referenceNumber || parsedData.common.invoiceNumber?.value,
+            title: parsedData.serviceRepair?.title || parsedData.documentTitle,
+            issuerName: parsedData.serviceRepair?.serviceProvider || parsedData.issuerName || parsedData.common.merchant?.value,
+            referenceNumber: parsedData.serviceRepair?.coverageReferenceNumber || parsedData.referenceNumber || parsedData.common.invoiceNumber?.value,
             documentType: parsedData.documentType,
             brand: parsedData.common.brand?.value,
             productName: parsedData.common.productName?.value,
@@ -799,19 +849,22 @@ export default function AIReceiptScannerScreen() {
       // Canonical Scanner Telemetry: Expose canonical entityType, category, documentType, confidence, and destination
       const isGeneralDoc = classification.topLevelClassification === 'GENERAL_DOCUMENT';
       const isPurchaseItem = classification.topLevelClassification === 'PURCHASE_ITEM';
+      const isServiceRepair = classification.topLevelClassification === 'SERVICE_REPAIR' || routingDecision.action === 'AUTO_ROUTE_SERVICE';
       const isMultiItem = isPurchaseItem && Boolean(parsedData.items && parsedData.items.length > 1);
       const isUserReview =
         routingDecision.action === 'USER_REVIEW' ||
         classification.topLevelClassification === 'AMBIGUOUS' ||
         classification.confidence < 0.85;
 
-      const entityType = isGeneralDoc ? 'DOCUMENT' : isPurchaseItem ? 'PURCHASED_ITEM' : 'AMBIGUOUS';
-      const rawCat = docCat || parsedData.category || (isPurchaseItem ? 'ELECTRONICS' : 'OTHER');
+      const entityType = isServiceRepair ? 'SERVICE_REPAIR' : isGeneralDoc ? 'DOCUMENT' : isPurchaseItem ? 'PURCHASED_ITEM' : 'AMBIGUOUS';
+      const rawCat = docCat || parsedData.category || (isServiceRepair ? 'SERVICE' : isPurchaseItem ? 'ELECTRONICS' : 'OTHER');
       const canonicalCategory = String(rawCat).toUpperCase().replace(/[\s&]+/g, '_');
-      const canonicalDocType = (docType || classification.documentSubtype || (isPurchaseItem ? 'PURCHASE_INVOICE' : 'DOCUMENT')).toUpperCase().replace(/[\s&]+/g, '_');
+      const canonicalDocType = (docType || classification.documentSubtype || (isServiceRepair ? 'SERVICE_INVOICE' : isPurchaseItem ? 'PURCHASE_INVOICE' : 'DOCUMENT')).toUpperCase().replace(/[\s&]+/g, '_');
       const confLevel = classification.confidence >= 0.85 ? 'high' : classification.confidence >= 0.6 ? 'medium' : 'low';
       const destination = isUserReview
         ? 'review_modal'
+        : isServiceRepair
+        ? '/service/add'
         : isGeneralDoc
         ? '/document/add'
         : isMultiItem
@@ -841,7 +894,14 @@ export default function AIReceiptScannerScreen() {
         return;
       }
 
-      // 2. High-Confidence GENERAL_DOCUMENT (confidence >= 0.85):
+      // 2. High-Confidence SERVICE_REPAIR (confidence >= 0.85):
+      if (isServiceRepair) {
+        console.log(`[ScannerDiagnostics] high-confidence SERVICE_REPAIR, routing to /service/add`);
+        await navigateToServiceAdd(parsedData, activeUri, capturedImageName || 'Service_Record.jpg');
+        return;
+      }
+
+      // 3. High-Confidence GENERAL_DOCUMENT (confidence >= 0.85):
       // College fee, utility bill, vehicle RC, insurance, PUC, warranty, service slip -> Document Vault!
       if (classification.topLevelClassification === 'GENERAL_DOCUMENT') {
         console.log(`[ScannerDiagnostics] high-confidence GENERAL_DOCUMENT (${classification.documentSubtype}), routing to /document/add`);
@@ -849,7 +909,7 @@ export default function AIReceiptScannerScreen() {
         return;
       }
 
-      // 3. High-Confidence PURCHASE_ITEM (confidence >= 0.85):
+      // 4. High-Confidence PURCHASE_ITEM (confidence >= 0.85):
       if (classification.topLevelClassification === 'PURCHASE_ITEM') {
         // Multi-item purchase (>= 2 products): Show dedicated multi-item review checklist
         if (parsedData.items && parsedData.items.length > 1) {
@@ -1925,8 +1985,8 @@ export default function AIReceiptScannerScreen() {
         </Text>
         <Text className="text-[13px] text-serene-on-surface-variant text-center max-w-[300px] mb-8">
           {detailsFound
-            ? 'Opening your purchase details to review...'
-            : "We're checking your receipt for product, price, shop and purchase details."}
+            ? 'Details found.'
+            : "We're identifying items, documents, warranties, bills, and service details."}
         </Text>
 
         {receiptRejection ? (
@@ -1935,10 +1995,10 @@ export default function AIReceiptScannerScreen() {
               <MaterialIcons name="image-not-supported" size={28} color="#DC2626" />
             </View>
             <Text className="text-[17px] font-bold text-serene-on-surface mt-1 text-center">
-              That doesn't look like a receipt
+              That doesn't look like a supported document
             </Text>
             <Text className="text-xs text-serene-on-surface-variant text-center mt-1.5 mb-5 leading-4 px-2">
-              {receiptRejection.message || 'Please upload a clear photo of your receipt or invoice.'}
+              {receiptRejection.message || 'Please upload a clear photo of your receipt, bill, warranty, or service record.'}
             </Text>
 
             <View className="flex-row gap-2.5 w-full">
@@ -1969,12 +2029,12 @@ export default function AIReceiptScannerScreen() {
           </View>
         ) : processingError ? (
           <View className="w-full max-w-[340px] bg-amber-50 rounded-serene-lg p-5 border border-amber-200 items-center">
-            <MaterialIcons name="receipt-long" size={32} color={SereneColors.primary} />
+            <MaterialIcons name="description" size={32} color={SereneColors.primary} />
             <Text className="text-[16px] font-bold text-serene-on-surface mt-2.5 text-center">
               {processingError}
             </Text>
-            <Text className="text-xs text-serene-on-surface-variant text-center mt-1.5 mb-5 leading-4">
-              Please review and complete them manually, or retry with a clearer photo.
+            <Text className="text-xs text-serene-on-surface-variant text-center mt-1.5 mb-4 leading-4">
+              You can retry or choose how you'd like to manually save this document.
             </Text>
 
             {processingError.toLowerCase().includes('sign in') && (
@@ -1989,7 +2049,7 @@ export default function AIReceiptScannerScreen() {
               </TouchableOpacity>
             )}
 
-            <View className="flex-row gap-2.5 w-full mb-2.5">
+            <View className="flex-row gap-2.5 w-full mb-3">
               <TouchableOpacity
                 className="flex-1 py-2.5 rounded-serene-md border border-serene-subtle-border items-center bg-white"
                 onPress={() => {
@@ -2008,20 +2068,53 @@ export default function AIReceiptScannerScreen() {
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity
-              className="w-full py-2.5 rounded-serene-md bg-serene-surface-container-high items-center border border-serene-subtle-border"
-              onPress={() => {
-                router.push({
-                  pathname: '/(tabs)/add',
-                  params: {
-                    scannedReceiptUri: capturedImageUri || undefined,
-                    scannedReceiptName: capturedImageName || undefined,
-                  },
-                } as any);
-              }}
-            >
-              <Text className="text-xs font-bold text-serene-primary">Complete in Add Form</Text>
-            </TouchableOpacity>
+            <View className="w-full gap-2 pt-1 border-t border-amber-200/60">
+              <TouchableOpacity
+                className="w-full py-2.5 rounded-serene-md bg-white items-center border border-serene-subtle-border flex-row justify-center"
+                onPress={() => {
+                  router.push({
+                    pathname: '/(tabs)/add',
+                    params: {
+                      scannedReceiptUri: capturedImageUri || undefined,
+                      scannedReceiptName: capturedImageName || undefined,
+                    },
+                  } as any);
+                }}
+              >
+                <MaterialIcons name="shopping-bag" size={15} color={SereneColors.primary} style={{ marginRight: 6 }} />
+                <Text className="text-xs font-bold text-serene-primary">Add as Purchased Item</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                className="w-full py-2.5 rounded-serene-md bg-white items-center border border-serene-subtle-border flex-row justify-center"
+                onPress={() => {
+                  router.push({
+                    pathname: '/document/add',
+                    params: {
+                      fileUri: capturedImageUri || undefined,
+                    },
+                  } as any);
+                }}
+              >
+                <MaterialIcons name="folder" size={15} color={SereneColors.primary} style={{ marginRight: 6 }} />
+                <Text className="text-xs font-bold text-serene-primary">Add as Document</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                className="w-full py-2.5 rounded-serene-md bg-white items-center border border-serene-subtle-border flex-row justify-center"
+                onPress={() => {
+                  router.push({
+                    pathname: '/service/add',
+                    params: {
+                      scannedServiceUri: capturedImageUri || undefined,
+                    },
+                  } as any);
+                }}
+              >
+                <MaterialIcons name="build" size={15} color={SereneColors.primary} style={{ marginRight: 6 }} />
+                <Text className="text-xs font-bold text-serene-primary">Add as Service & Repair</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : (
           <View className="w-full max-w-[340px] bg-serene-surface-container-lowest rounded-serene-lg p-4 border border-serene-hairline-border">
@@ -3438,6 +3531,23 @@ export default function AIReceiptScannerScreen() {
               >
                 <MaterialIcons name="shopping-bag" size={18} color="#1A73E8" style={{ marginRight: 8 }} />
                 <Text className="text-sm font-semibold text-serene-primary">Save as Retail Purchased Item</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                className="w-full py-3 rounded-xl bg-amber-50 items-center justify-center flex-row border border-amber-200"
+                onPress={() => {
+                  if (pendingRoutingData) {
+                    setShowReviewDocTypeModal(false);
+                    navigateToServiceAdd(
+                      pendingRoutingData.parsedData,
+                      pendingRoutingData.activeUri,
+                      pendingRoutingData.imageName
+                    );
+                  }
+                }}
+              >
+                <MaterialIcons name="build" size={18} color="#D97706" style={{ marginRight: 8 }} />
+                <Text className="text-sm font-semibold text-amber-800">Save as Service & Repair Record</Text>
               </TouchableOpacity>
             </View>
           </View>

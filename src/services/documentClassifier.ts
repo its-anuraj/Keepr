@@ -604,6 +604,30 @@ export function classifyDocument(input: {
     };
   }
 
+  if (
+    modelClass === 'SERVICE_REPAIR' ||
+    (input.modelClassification as any)?.entityType === 'SERVICE_REPAIR' ||
+    features.detectedGeneralSubtype === 'SERVICE_DOCUMENT'
+  ) {
+    const conf = Math.max(0.85, modelConfidence ?? 0.90);
+    return {
+      topLevelClassification: 'SERVICE_REPAIR',
+      entityType: 'SERVICE_REPAIR',
+      topLevelType: 'SERVICE_REPAIR' as any,
+      category: 'Service & Repair',
+      documentCategory: 'Service & Repair',
+      documentSubtype: 'SERVICE_DOCUMENT',
+      documentType: 'Service Invoice',
+      confidence: conf,
+      reason: input.modelClassification?.reason || features.dominantReason || 'Classified as Service & Repair record based on maintenance, repair, and technical service details.',
+      isPhysicalItemPurchase: false,
+      shouldCreateItem: false,
+      itemMatch,
+      document: docExtraction,
+      serviceRepair: (input.modelClassification as any)?.serviceRepair || null,
+    };
+  }
+
   if (modelClass === 'GENERAL_DOCUMENT' || modelClass === 'DOCUMENT') {
     // If model claims GENERAL_DOCUMENT but there is overwhelming physical product evidence:
     if (features.hasPhysicalItems && features.physicalItemCount >= 1 && features.physicalProductEvidenceScore >= 85) {
@@ -708,7 +732,7 @@ export function classifyDocument(input: {
  * < 0.60             -> AMBIGUOUS / NEEDS REVIEW
  */
 export function evaluateRoutingDecision(classification: DocumentClassificationResult): {
-  action: 'AUTO_ROUTE_ITEM' | 'AUTO_ROUTE_DOCUMENT' | 'USER_REVIEW' | 'INVALID';
+  action: 'AUTO_ROUTE_ITEM' | 'AUTO_ROUTE_DOCUMENT' | 'AUTO_ROUTE_SERVICE' | 'USER_REVIEW' | 'INVALID';
   userFacingHeader: string;
   userFacingPrompt: string;
   allowAutoRoute: boolean;
@@ -726,43 +750,66 @@ export function evaluateRoutingDecision(classification: DocumentClassificationRe
     };
   }
 
+  const isService =
+    classification.topLevelClassification === 'SERVICE_REPAIR' ||
+    classification.entityType === 'SERVICE_REPAIR';
+
+  if (isService) {
+    if (classification.confidence >= 0.85) {
+      return {
+        action: 'AUTO_ROUTE_SERVICE',
+        userFacingHeader: 'Looks like a Service & Repair record',
+        userFacingPrompt: 'Save to Service & Repair',
+        allowAutoRoute: true,
+      };
+    }
+    return {
+      action: 'USER_REVIEW',
+      userFacingHeader: 'Looks like a Service & Repair record',
+      userFacingPrompt: 'Review and confirm this Service & Repair record.',
+      allowAutoRoute: false,
+    };
+  }
+
   const isPurchase =
     classification.topLevelClassification === 'PURCHASE_ITEM' ||
-    classification.topLevelType === 'PURCHASED_ITEM';
+    classification.topLevelType === 'PURCHASED_ITEM' ||
+    classification.entityType === 'PURCHASED_ITEM';
 
   if (isPurchase) {
     if (classification.confidence >= 0.85) {
       return {
         action: 'AUTO_ROUTE_ITEM',
-        userFacingHeader: 'Purchase details found',
+        userFacingHeader: 'Looks like a Purchased Item',
         userFacingPrompt: 'Save as Item',
         allowAutoRoute: true,
       };
     }
     return {
       action: 'USER_REVIEW',
-      userFacingHeader: 'Purchase details found',
-      userFacingPrompt: 'Review and confirm saving as an Item or Document.',
+      userFacingHeader: 'Looks like a Purchased Item',
+      userFacingPrompt: 'Review and confirm saving as an Item, Document, or Service.',
       allowAutoRoute: false,
     };
   }
 
   const isGeneralDoc =
     classification.topLevelClassification === 'GENERAL_DOCUMENT' ||
-    classification.topLevelType === 'DOCUMENT';
+    classification.topLevelType === 'DOCUMENT' ||
+    classification.entityType === 'DOCUMENT';
 
   if (isGeneralDoc) {
     if (classification.confidence >= 0.85) {
       return {
         action: 'AUTO_ROUTE_DOCUMENT',
-        userFacingHeader: 'Document details found',
+        userFacingHeader: 'Looks like an Important Document',
         userFacingPrompt: 'Save to Documents',
         allowAutoRoute: true,
       };
     }
     return {
       action: 'USER_REVIEW',
-      userFacingHeader: 'Document details found',
+      userFacingHeader: 'Looks like an Important Document',
       userFacingPrompt: 'Review and confirm saving as a Document.',
       allowAutoRoute: false,
     };
@@ -770,8 +817,8 @@ export function evaluateRoutingDecision(classification: DocumentClassificationRe
 
   return {
     action: 'USER_REVIEW',
-    userFacingHeader: "We're not sure what this document is",
-    userFacingPrompt: 'Choose where to save: Save as Item or Save to Documents.',
+    userFacingHeader: 'Review what this document is',
+    userFacingPrompt: 'Choose whether this is a Purchased Item, Document, or Service & Repair record.',
     allowAutoRoute: false,
   };
 }
