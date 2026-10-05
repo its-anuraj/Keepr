@@ -7,10 +7,15 @@ import { formatCurrency, formatDate } from '../../utils/currency';
 import { formatWarrantyBadge, formatReturnBadge, getCategoryCapabilities } from '../../utils/warranty';
 import { router } from 'expo-router';
 
-interface ItemCardProps {
+export interface ItemCardProps {
   item: ItemWithOwnerContext;
   isEmbedded?: boolean;
   showDivider?: boolean;
+  isSelected?: boolean;
+  isSelectionMode?: boolean;
+  onPress?: () => void;
+  onLongPress?: () => void;
+  delayLongPress?: number;
 }
 
 const getCategoryIcon = (categoryId?: string): keyof typeof MaterialIcons.glyphMap => {
@@ -39,6 +44,11 @@ export const ItemCard: React.FC<ItemCardProps> = ({
   item,
   isEmbedded = false,
   showDivider = false,
+  isSelected = false,
+  isSelectionMode = false,
+  onPress,
+  onLongPress,
+  delayLongPress = 500,
 }) => {
   const [imageError, setImageError] = React.useState(false);
 
@@ -165,10 +175,43 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 
   return (
     <TouchableOpacity
-      className="bg-serene-surface-container-lowest rounded-serene-xl overflow-hidden border border-serene-subtle-border mb-[10px] shadow-sm"
-      activeOpacity={0.88}
-      onPress={handlePress}
+      className={`bg-serene-surface-container-lowest rounded-serene-xl overflow-hidden border mb-[10px] shadow-sm ${
+        isSelected
+          ? 'bg-[rgba(17,80,134,0.07)] border-[rgba(17,80,134,0.45)] border-[1.5px]'
+          : 'border-serene-subtle-border'
+      }`}
+      activeOpacity={0.8}
+      onPress={onPress || handlePress}
+      onLongPress={onLongPress}
+      delayLongPress={delayLongPress}
+      accessible
+      accessibilityLabel={`${item.name}${isSelected ? ', selected' : ''}`}
+      accessibilityRole="button"
+      accessibilityState={{ selected: isSelected }}
     >
+      {isSelectionMode && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: 10,
+            zIndex: 30,
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            borderWidth: 2,
+            borderColor: isSelected ? SereneColors.primary : 'rgba(17, 80, 134, 0.35)',
+            backgroundColor: isSelected ? SereneColors.primary : 'rgba(255,255,255,0.95)',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {isSelected && (
+            <MaterialIcons name="check" size={14} color="#fff" />
+          )}
+        </View>
+      )}
+
       <View className="flex-row items-center justify-between p-serene-md">
         <View className="flex-row items-center gap-3 flex-1 min-w-0 pr-2">
           <View
@@ -234,11 +277,13 @@ export const ItemCard: React.FC<ItemCardProps> = ({
         </View>
 
         <View className="w-7 h-7 items-center justify-center shrink-0">
-          <MaterialIcons
-            name="chevron-right"
-            size={20}
-            color={SereneColors.outline}
-          />
+          {!isSelectionMode && (
+            <MaterialIcons
+              name="chevron-right"
+              size={20}
+              color={SereneColors.outline}
+            />
+          )}
         </View>
       </View>
 

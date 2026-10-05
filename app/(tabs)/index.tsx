@@ -158,7 +158,7 @@ export default function VaultDashboardScreen() {
     return allRecentlyAdded.slice(0, visibleCount);
   }, [allRecentlyAdded, visibleCount]);
 
-  const [showAddReceiptModal, setShowAddReceiptModal] = React.useState(false);
+  const [showAddReceiptModal, setShowAddReceiptModal] = useState(false);
 
   const handleModalChooseGallery = async () => {
     setShowAddReceiptModal(false);
@@ -209,14 +209,9 @@ export default function VaultDashboardScreen() {
     }
   };
 
-  const handleModalScanReceipt = () => {
-    setShowAddReceiptModal(false);
+  const handleScanItem = () => {
     clearActiveReceiptSession();
     router.push('/scan-receipt?mode=camera' as any);
-  };
-
-  const handleScanReceipt = () => {
-    setShowAddReceiptModal(true);
   };
 
   return (
@@ -240,59 +235,67 @@ export default function VaultDashboardScreen() {
 
         <View className="flex-row gap-2">
           <TouchableOpacity
-            className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between"
+            className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between"
             activeOpacity={0.85}
             onPress={() => router.push('/(tabs)/items')}
           >
-            <View className="w-7 h-7 rounded-serene-md bg-serene-surface-container-highest items-center justify-center mb-1.5">
+            <View className="w-7 h-7 rounded-serene-md bg-serene-surface-container-highest items-center justify-center mb-1">
               <MaterialIcons name="inventory-2" size={15} color={SereneColors.primary} />
             </View>
             <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.totalItems}
             </Text>
-            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
-              Items
-            </Text>
+            <View className="h-[28px] justify-start mt-0.5">
+              <Text className="text-[10px] font-medium text-serene-on-surface-variant leading-[13px]" numberOfLines={2}>
+                Items
+              </Text>
+            </View>
           </TouchableOpacity>
 
           <TouchableOpacity
-            className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between"
+            className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between"
             activeOpacity={0.85}
             onPress={() => router.push('/(tabs)/documents')}
           >
-            <View className="w-7 h-7 rounded-serene-md bg-blue-50 items-center justify-center mb-1.5">
+            <View className="w-7 h-7 rounded-serene-md bg-blue-50 items-center justify-center mb-1">
               <MaterialIcons name="description" size={15} color={SereneColors.primary} />
             </View>
             <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.totalDocuments}
             </Text>
-            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
-              Documents
-            </Text>
+            <View className="h-[28px] justify-start mt-0.5">
+              <Text className="text-[10px] font-medium text-serene-on-surface-variant leading-[13px]" numberOfLines={2}>
+                Documents
+              </Text>
+            </View>
           </TouchableOpacity>
 
-          <View className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between">
-            <View className="w-7 h-7 rounded-serene-md bg-rose-50 items-center justify-center mb-1.5">
+          <View className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between">
+            <View className="w-7 h-7 rounded-serene-md bg-rose-50 items-center justify-center mb-1">
               <MaterialIcons name="verified-user" size={15} color={SereneColors.error} />
             </View>
             <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.warrantiesEndingSoon}
             </Text>
-            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
-              Warranty ending
-            </Text>
+            <View className="h-[28px] justify-start mt-0.5">
+              <Text className="text-[10px] font-medium text-serene-on-surface-variant leading-[13px]" numberOfLines={2}>
+                Warranty{'\n'}ending
+              </Text>
+            </View>
           </View>
 
-          <View className="flex-1 bg-serene-surface-container-lowest p-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm justify-between">
-            <View className="w-7 h-7 rounded-serene-md bg-amber-50 items-center justify-center mb-1.5">
+          <View className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between">
+            <View className="w-7 h-7 rounded-serene-md bg-amber-50 items-center justify-center mb-1">
               <MaterialIcons name="assignment-return" size={15} color="#D97706" />
             </View>
             <Text className="text-xl font-bold text-serene-on-surface">
               {metrics.returnsEndingSoon}
             </Text>
-            <Text className="text-[10px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
-              Return ending
-            </Text>
+            <View className="h-[28px] justify-start mt-0.5">
+              <Text className="text-[10px] font-medium text-serene-on-surface-variant leading-[13px]" numberOfLines={2}>
+                Return{'\n'}ending
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -310,7 +313,9 @@ export default function VaultDashboardScreen() {
             <TouchableOpacity
               className="flex-1 h-12 bg-serene-surface-container-lowest rounded-serene-lg border border-serene-subtle-border flex-row items-center justify-center gap-2"
               activeOpacity={0.88}
-              onPress={handleScanReceipt}
+              onPress={handleScanItem}
+              onLongPress={() => setShowAddReceiptModal(true)}
+              delayLongPress={500}
             >
               <MaterialIcons
                 name="document-scanner"
@@ -322,9 +327,20 @@ export default function VaultDashboardScreen() {
               </Text>
             </TouchableOpacity>
           </View>
-          <Text className="text-[11px] text-center text-serene-on-surface-variant/80">
-            Scan a receipt, bill, document, warranty or service record.
-          </Text>
+          <View className="flex-row items-center justify-center gap-1.5 flex-wrap">
+            <Text className="text-[11px] text-center text-serene-on-surface-variant/80">
+              Scan a receipt, bill, document, warranty or service record.
+            </Text>
+            <TouchableOpacity
+              onPress={() => setShowAddReceiptModal(true)}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text className="text-[11px] font-semibold text-serene-primary underline">
+                Choose from Gallery
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {priorityItems.length > 0 && (
@@ -546,7 +562,6 @@ export default function VaultDashboardScreen() {
         visible={showAddReceiptModal}
         onClose={() => setShowAddReceiptModal(false)}
         onChooseFromGallery={handleModalChooseGallery}
-        onScanReceipt={handleModalScanReceipt}
       />
     </View>
   );

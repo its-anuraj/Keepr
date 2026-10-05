@@ -5,7 +5,7 @@
 // Pipeline: userDocuments → search → filter → sort → render
 // ==============================================================================
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -98,7 +98,7 @@ const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
       activeOpacity={0.75}
       onPress={onPress}
       onLongPress={onLongPress}
-      delayLongPress={380}
+      delayLongPress={500}
       accessible
       accessibilityLabel={`${item.title || item.name || 'Untitled Document'}${isSelected ? ', selected' : ''}`}
       accessibilityRole="button"
@@ -370,7 +370,13 @@ export default function DocumentsVaultScreen() {
     setFilters(DEFAULT_DOC_FILTERS);
   }, []);
 
+  const lastLongPressRef = useRef<number>(0);
+
   const handleDocPress = useCallback((doc: VaultDocument) => {
+    // Prevent accidental onPress execution immediately after long press release on Android
+    if (Date.now() - lastLongPressRef.current < 500) {
+      return;
+    }
     if (isSelectionMode) {
       toggleDocSelection(doc.id);
     } else {
@@ -379,6 +385,7 @@ export default function DocumentsVaultScreen() {
   }, [isSelectionMode, toggleDocSelection]);
 
   const handleDocLongPress = useCallback((doc: VaultDocument) => {
+    lastLongPressRef.current = Date.now();
     if (!isSelectionMode) {
       enterSelectionMode(doc.id);
     } else {

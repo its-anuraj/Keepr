@@ -67,55 +67,14 @@ const SelectableItemCard = React.memo(function SelectableItemCard({
   onLongPress,
 }: SelectableItemCardProps) {
   return (
-    <TouchableOpacity
-      activeOpacity={0.75}
+    <ItemCard
+      item={item}
+      isSelected={isSelected}
+      isSelectionMode={isSelectionMode}
       onPress={onPress}
       onLongPress={onLongPress}
-      delayLongPress={380}
-      accessible
-      accessibilityLabel={`${item.name}${isSelected ? ', selected' : ''}`}
-      accessibilityRole="button"
-      accessibilityState={{ selected: isSelected }}
-    >
-      <View
-        style={
-          isSelected
-            ? {
-                backgroundColor: 'rgba(17, 80, 134, 0.07)',
-                borderColor: 'rgba(17, 80, 134, 0.35)',
-                borderWidth: 1.5,
-                borderRadius: 12,
-                marginBottom: 8,
-                overflow: 'hidden',
-              }
-            : { marginBottom: 8 }
-        }
-      >
-        {isSelectionMode && (
-          <View
-            style={{
-              position: 'absolute',
-              top: 10,
-              right: 10,
-              zIndex: 10,
-              width: 22,
-              height: 22,
-              borderRadius: 11,
-              borderWidth: 2,
-              borderColor: isSelected ? SereneColors.primary : 'rgba(17, 80, 134, 0.3)',
-              backgroundColor: isSelected ? SereneColors.primary : 'rgba(255,255,255,0.9)',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            {isSelected && (
-              <MaterialIcons name="check" size={14} color="#fff" />
-            )}
-          </View>
-        )}
-        <ItemCard item={item} />
-      </View>
-    </TouchableOpacity>
+      delayLongPress={500}
+    />
   );
 });
 
@@ -325,7 +284,13 @@ export default function ItemsCatalogScreen() {
   );
 
 
+  const lastLongPressRef = useRef<number>(0);
+
   const handleItemPress = useCallback((item: ItemWithOwnerContext) => {
+    // Prevent accidental onPress execution immediately after long press release on Android
+    if (Date.now() - lastLongPressRef.current < 500) {
+      return;
+    }
     if (isSelectionMode) {
       toggleItemSelection(item.id);
     } else {
@@ -334,6 +299,7 @@ export default function ItemsCatalogScreen() {
   }, [isSelectionMode, toggleItemSelection]);
 
   const handleItemLongPress = useCallback((item: ItemWithOwnerContext) => {
+    lastLongPressRef.current = Date.now();
     if (!isSelectionMode) {
       enterSelectionMode(item.id);
     } else {
@@ -642,6 +608,7 @@ export default function ItemsCatalogScreen() {
         data={displayItems}
         renderItem={renderItem}
         keyExtractor={keyExtractor}
+        extraData={selectedItemIds}
         ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, paddingTop: 4 }}

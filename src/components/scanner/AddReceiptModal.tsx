@@ -1,4 +1,3 @@
-
 import React from 'react';
 import {
   Modal,
@@ -15,14 +14,12 @@ export interface AddReceiptModalProps {
   visible: boolean;
   onClose: () => void;
   onChooseFromGallery: () => void;
-  onScanReceipt: () => void;
 }
 
 export const AddReceiptModal: React.FC<AddReceiptModalProps> = ({
   visible,
   onClose,
   onChooseFromGallery,
-  onScanReceipt,
 }) => {
   return (
     <Modal
@@ -79,25 +76,6 @@ export const AddReceiptModal: React.FC<AddReceiptModalProps> = ({
                     </Text>
                     <Text className="text-[12px] text-[#64748B] leading-4">
                       Select an existing receipt photo
-                    </Text>
-                  </View>
-                  <MaterialIcons name="chevron-right" size={22} color="#94A3B8" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  className="flex-row items-center bg-white rounded-serene-xl p-4 border border-[#E2E8F0] shadow-sm"
-                  onPress={onScanReceipt}
-                  activeOpacity={0.85}
-                >
-                  <View className="w-[50px] h-[50px] rounded-full items-center justify-center mr-[14px] bg-[#E0F2FE]">
-                    <MaterialIcons name="photo-camera" size={26} color="#115086" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-[15px] font-bold text-[#0F172A] mb-[3px]">
-                      Scan a Receipt
-                    </Text>
-                    <Text className="text-[12px] text-[#64748B] leading-4">
-                      Take a clear photo of your receipt
                     </Text>
                   </View>
                   <MaterialIcons name="chevron-right" size={22} color="#94A3B8" />

@@ -375,17 +375,6 @@ export default function ItemDetailScreen() {
             <MaterialIcons name="build" size={16} color={SereneColors.primary} />
             <Text className="text-[12px] font-semibold text-serene-on-surface">Add Service</Text>
           </TouchableOpacity>
-
-          {!receiptUri ? (
-            <TouchableOpacity
-              className="flex-1 bg-serene-surface-container-lowest border border-serene-subtle-border py-2.5 px-2 rounded-serene-lg flex-row items-center justify-center gap-1.5 shadow-sm"
-              activeOpacity={0.8}
-              onPress={() => router.push(`/(tabs)/add?editId=${item.id}` as any)}
-            >
-              <MaterialIcons name="receipt" size={16} color={SereneColors.primary} />
-              <Text className="text-[12px] font-semibold text-serene-on-surface">Add Receipt</Text>
-            </TouchableOpacity>
-          ) : null}
         </View>
 
         {allProductPhotos.length > 0 && (
