@@ -12,9 +12,11 @@ import { NotificationService } from '../src/services/notifications';
 import * as Linking from 'expo-linking';
 import { handleIncomingAuthLink } from '../src/services/authRecoveryService';
 
-// Keep native splash screen visible during asset and auth loading
-SplashScreen.preventAutoHideAsync().catch(() => {
-});
+import { hideSplashScreen } from '../src/utils/splashCoordinator';
+
+// Prevent the native splash from auto-hiding. It stays visible until
+// the first real screen (Welcome or Vault) completes its layout.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
   const initializeAuth = useAuthStore((s) => s.initialize);
@@ -24,37 +26,60 @@ export default function RootLayout() {
   const segments = useSegments();
   const pathname = usePathname();
 
+  // Single authoritative loading flag.
+  // Stays false until auth state is definitively resolved (authenticated OR unauthenticated).
+  // While false the JSX returns null — no React screen is mounted, native splash stays on top.
   const [appReady, setAppReady] = useState(false);
 
   const pendingNotificationRef = useRef<string | null>(null);
   // Prevents duplicate navigation if both live listener and cold-start check fire
   const notificationHandledRef = useRef(false);
 
+  // ── Auth Initialization ────────────────────────────────────────────────────
   useEffect(() => {
     async function prepare() {
+      console.log('[StartupAuth] auth initialization started');
       try {
         await initializeAuth();
       } catch (e) {
         console.warn('App initialization error:', e);
       } finally {
+        const currentSession = useAuthStore.getState().session;
+        if (currentSession) {
+          console.log('[StartupAuth] session resolved: logged-in');
+        } else {
+          console.log('[StartupAuth] session resolved: logged-out');
+        }
+        // Auth state definitively resolved — allow route tree to mount.
+        // DO NOT hide the splash here! The native splash remains visible
+        // until the first real screen (Welcome for logged-out, Vault for logged-in)
+        // completes its initial layout.
         setAppReady(true);
       }
     }
 
+    console.log('[StartupAuth] prepare() queued');
     prepare();
   }, [initializeAuth]);
 
+  // ── Safety Fallback for Splash Screen ──────────────────────────────────────
+  // If for any reason no screen calls hideSplashScreen within 3s after appReady,
+  // ensure the splash is hidden so the user is never stuck.
   useEffect(() => {
-    if (appReady) {
-      SplashScreen.hideAsync().catch(() => {});
-    }
+    if (!appReady) return;
+    const timer = setTimeout(() => {
+      hideSplashScreen('safety-timeout');
+    }, 3000);
+    return () => clearTimeout(timer);
   }, [appReady]);
 
-  // Auth Routing Guard: Keep unauthenticated users in (auth), send authenticated users to (tabs)
+  // ── Auth Routing Guard ─────────────────────────────────────────────────────
+  // Runs after appReady is true (and therefore after all hooks are stable).
+  // Keeps unauthenticated users in (auth), sends authenticated users to (tabs).
   useEffect(() => {
-    const segs = (segments as unknown as string[]) || [];
-    if (!appReady || !isInitialized || segs.length === 0) return;
+    if (!appReady || !isInitialized) return;
 
+    const segs = (segments as unknown as string[]) || [];
     const authScreens = ['welcome', 'login', 'signup', 'forgot-password', 'reset-password'];
     const authPaths = ['/welcome', '/login', '/signup', '/forgot-password', '/reset-password'];
 
@@ -75,13 +100,18 @@ export default function RootLayout() {
     }
 
     if (!session && !inAuthGroup) {
+      console.log('[AuthDiagnostic] RootLayout redirecting unauthenticated user to /(auth)/welcome');
       router.replace('/(auth)/welcome');
     } else if (session && inAuthGroup) {
+      console.log('[AuthDiagnostic] RootLayout redirecting authenticated user to /(tabs)');
       router.replace('/(tabs)');
     }
   }, [session, isInitialized, appReady, segments, pathname, isRecoveryMode]);
 
+  // ── Deep Link / Auth Recovery Handling ────────────────────────────────────
   useEffect(() => {
+    if (!appReady) return;
+
     let isMounted = true;
 
     async function processUrl(url: string | null) {
@@ -103,11 +133,9 @@ export default function RootLayout() {
       }
     }
 
-    if (appReady) {
-      Linking.getInitialURL().then((url) => {
-        if (url) processUrl(url);
-      }).catch((e) => console.warn('Failed to get initial URL:', e));
-    }
+    Linking.getInitialURL().then((url) => {
+      if (url) processUrl(url);
+    }).catch((e) => console.warn('Failed to get initial URL:', e));
 
     const subscription = Linking.addEventListener('url', (event) => {
       processUrl(event.url);
@@ -119,6 +147,7 @@ export default function RootLayout() {
     };
   }, [appReady]);
 
+  // ── Notification Navigation Helpers ───────────────────────────────────────
   // Navigates to target (service, document, or item) exactly once, preventing duplicates
   const navigateToTarget = useCallback((target: { itemId?: string; documentId?: string; serviceId?: string }) => {
     if (notificationHandledRef.current) return;
@@ -143,6 +172,7 @@ export default function RootLayout() {
     }
   }, []);
 
+  // ── Notification Deep Linking ─────────────────────────────────────────────
   // Deep linking on notification tap -> opens Service, Item Details, or Document Details screen
   useEffect(() => {
     if (!appReady || !session) {
@@ -191,6 +221,20 @@ export default function RootLayout() {
       unsubscribe();
     };
   }, [appReady, session, navigateToTarget]);
+
+  // ── CRITICAL: Block render until auth is resolved ─────────────────────────
+  // While appReady is false, return null so no screen is mounted.
+  // The native splash screen (from expo-splash-screen) stays visible during this time.
+  // Only after initializeAuth() completes do we set appReady=true and call hideAsync().
+  if (!appReady) {
+    return null;
+  }
+
+  if (session) {
+    console.log('[StartupAuth] rendering authenticated tree');
+  } else {
+    console.log('[StartupAuth] rendering auth tree');
+  }
 
   return (
     <SafeAreaProvider>

@@ -1,13 +1,38 @@
 
 import React from 'react';
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import { Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { SereneColors } from '../../src/constants/theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAuthStore } from '../../src/store/authStore';
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const session = useAuthStore((s) => s.session);
+  const isInitialized = useAuthStore((s) => s.isInitialized);
+
+  // ── Startup gate ──────────────────────────────────────────────────────────
+  // If auth has not yet been initialized, render nothing so the native splash
+  // stays on top. This is a belt-and-suspenders guard: the root layout already
+  // returns null while appReady is false, so (tabs) should only ever mount
+  // when isInitialized is true. The check here prevents any flash if the root
+  // layout renders the Stack one frame before the auth guard effect fires.
+  if (!isInitialized) {
+    console.log('[AuthDiagnostic] (tabs) layout: auth not yet initialized — blocking render');
+    return null;
+  }
+
+  // ── Auth gate ─────────────────────────────────────────────────────────────
+  // If no session exists after initialization, redirect synchronously during
+  // this render. Because <Redirect> fires in the same render pass as mounting
+  // (tabs), the tab content (Vault/Home) never paints to screen.
+  if (!session) {
+    console.log('[AuthDiagnostic] (tabs) layout: no session — synchronous redirect to welcome');
+    return <Redirect href="/(auth)/welcome" />;
+  }
+
+  console.log('[AuthDiagnostic] CASE F: (tabs) layout rendering authenticated tree');
 
   return (
     <Tabs

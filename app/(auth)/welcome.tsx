@@ -1,19 +1,29 @@
 
-import React from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { KeeprLogo } from '../../src/components/ui/KeeprLogo';
 import { SereneColors } from '../../src/constants/theme';
+import { hideSplashScreen } from '../../src/utils/splashCoordinator';
 
 export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
+
+  useEffect(() => {
+    console.log('[StartupAuth] auth route ready');
+  }, []);
+
+  const handleLayout = useCallback(() => {
+    hideSplashScreen('welcome');
+  }, []);
 
   return (
     <View
       className="flex-1 bg-serene-surface px-serene-lg justify-between"
       style={{ paddingTop: insets.top + 20, paddingBottom: insets.bottom + 20 }}
+      onLayout={handleLayout}
     >
       <View className="items-center mt-5">
         <View className="mb-4 shadow-md">

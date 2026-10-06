@@ -16,6 +16,7 @@ import { router } from 'expo-router';
 import { KeeprLogo } from '../../src/components/ui/KeeprLogo';
 import { SereneColors } from '../../src/constants/theme';
 import { useAuthStore } from '../../src/store/authStore';
+import { hideSplashScreen } from '../../src/utils/splashCoordinator';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -49,6 +50,7 @@ export default function LoginScreen() {
     <KeyboardAvoidingView
       className="flex-1 bg-serene-surface"
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      onLayout={() => hideSplashScreen('login')}
     >
       <ScrollView
         contentContainerStyle={{

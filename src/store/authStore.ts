@@ -4,7 +4,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Session, User } from '@supabase/supabase-js';
 import { Profile } from '../types';
-import { isSupabaseConfigured, supabase, runAuthStorageDiagnostics } from '../lib/supabase';
+import { isSupabaseConfigured, supabase, supabaseUrl, runAuthStorageDiagnostics } from '../lib/supabase';
 import * as SecureStore from 'expo-secure-store';
 
 export interface AuthState {
@@ -71,19 +71,23 @@ async function fetchProfile(supaUser: User): Promise<Profile> {
 }
 
 let authListenerSubscribed = false;
+// Resolvers for the INITIAL_SESSION promise used by initialize()
+let resolveInitialSession: (() => void) | null = null;
 
 function setupAuthListener() {
   if (authListenerSubscribed || !isSupabaseConfigured) return;
   authListenerSubscribed = true;
 
   supabase.auth.onAuthStateChange(async (event, session) => {
-    console.log(`[AuthDiagnostics] onAuthStateChange event=${event}, sessionExists=${Boolean(session)}`);
+    console.log(
+      `[AuthDiagnostic] onAuthStateChange event=${event} sessionExists=${Boolean(session)} accessTokenExists=${Boolean(session?.access_token)}`
+    );
 
     // PASSWORD_RECOVERY: Supabase established a temporary recovery session from the
     // reset-email link. Set isRecoveryMode so the root auth guard does NOT redirect
     // to /(tabs). The reset-password screen clears this flag on completion.
     if (event === 'PASSWORD_RECOVERY') {
-      console.log('[PasswordReset] PASSWORD_RECOVERY event received — entering recovery mode');
+      console.log('[AuthDiagnostic] PASSWORD_RECOVERY event received — entering recovery mode');
       useAuthStore.setState({
         session,
         token: session?.access_token ?? null,
@@ -93,6 +97,9 @@ function setupAuthListener() {
         isInitialized: true,
         error: null,
       });
+      // Resolve the init promise so the splash can hide
+      resolveInitialSession?.();
+      resolveInitialSession = null;
       setTimeout(() => {
         const { router } = require('expo-router');
         router.replace('/(auth)/reset-password');
@@ -107,9 +114,21 @@ function setupAuthListener() {
       event === 'INITIAL_SESSION'
     ) {
       if (session?.user) {
-        const profile = await fetchProfile(session.user);
+        // Immediate baseline profile from session metadata — never wait for network roundtrip to unblock UI!
+        const baseProfile: Profile = {
+          id: session.user.id,
+          email: session.user.email || '',
+          fullName:
+            session.user.user_metadata?.full_name ||
+            session.user.email?.split('@')[0] ||
+            'Vault Member',
+          currency: 'INR',
+          createdAt: session.user.created_at || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
         useAuthStore.setState({
-          user: profile,
+          user: baseProfile,
           session,
           token: session.access_token,
           isAuthenticated: true,
@@ -119,17 +138,36 @@ function setupAuthListener() {
           isOfflineMode: false,
           isRecoveryMode: false,
         });
+
+        // Resolve the init promise immediately on INITIAL_SESSION so splash screen can hide without delay
+        if (event === 'INITIAL_SESSION') {
+          console.log('[AuthDiagnostic] CASE F CHECK: INITIAL_SESSION resolved with active session');
+          resolveInitialSession?.();
+          resolveInitialSession = null;
+        }
+
+        // Fetch full profile from cloud asynchronously in background without blocking startup/splash
+        fetchProfile(session.user)
+          .then((fullProfile) => {
+            useAuthStore.setState({ user: fullProfile });
+          })
+          .catch((err) => {
+            console.warn('[AuthDiagnostic] Background fetchProfile warning:', err);
+          });
+
         // Cloud hydration: load all vault data for this user from Supabase.
-        // Only on SIGNED_IN (not TOKEN_REFRESHED) to avoid redundant fetches.
+        // Only on SIGNED_IN or INITIAL_SESSION to avoid redundant fetches on token refresh.
         if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
           try {
             const { useItemStore } = require('./itemStore');
             useItemStore.getState().hydrateFromCloud();
           } catch (hydrateErr) {
-            console.warn('[AuthStore] hydrateFromCloud deferred:', hydrateErr);
+            console.warn('[AuthDiagnostic] hydrateFromCloud deferred:', hydrateErr);
           }
         }
       } else if (event === 'INITIAL_SESSION') {
+        // No session in storage — definitively unauthenticated logged-out user
+        console.log('[AuthDiagnostic] INITIAL_SESSION resolved: session=null (unauthenticated)');
         useAuthStore.setState({
           user: null,
           session: null,
@@ -140,8 +178,11 @@ function setupAuthListener() {
           error: null,
           isRecoveryMode: false,
         });
+        resolveInitialSession?.();
+        resolveInitialSession = null;
       }
     } else if (event === 'SIGNED_OUT') {
+      console.log('[AuthDiagnostic] SIGNED_OUT event received');
       useAuthStore.setState({
         user: null,
         session: null,
@@ -171,61 +212,122 @@ export const useAuthStore = create<AuthState>()(
       clearRecoveryMode: () => set({ isRecoveryMode: false }),
 
       initialize: async () => {
+        if (get().isInitialized && get().session) {
+          console.log('[AuthDiagnostic] Already initialized with active session, skipping re-init');
+          return;
+        }
+
         set({ isLoading: true, error: null });
 
         if (isSupabaseConfigured) {
-          const diag = await runAuthStorageDiagnostics();
+          const projectRef = supabaseUrl.replace(/^https?:\/\//, '').split('.')[0];
+          const storageKey = `sb-${projectRef}-auth-token`;
 
           // Check if a legacy session exists in SecureStore that needs migration to AsyncStorage
-          if (diag?.secureValExists && !diag?.asyncValExists) {
-            try {
-              const secureSessionRaw = await SecureStore.getItemAsync(diag.actualStorageKey);
-              if (secureSessionRaw) {
-                console.log('[AuthStore] Migrating legacy session from SecureStore to AsyncStorage...');
-                await AsyncStorage.setItem(diag.actualStorageKey, secureSessionRaw);
-              }
-            } catch (migErr) {
-              console.warn('[AuthStore] SecureStore migration check failed:', migErr);
+          try {
+            const asyncVal = await AsyncStorage.getItem(storageKey);
+            const secureVal = await SecureStore.getItemAsync(storageKey).catch(() => null);
+            if (secureVal && !asyncVal) {
+              console.log('[AuthDiagnostic] Migrating legacy session from SecureStore to AsyncStorage');
+              await AsyncStorage.setItem(storageKey, secureVal);
             }
+          } catch (migErr) {
+            console.warn('[AuthDiagnostic] SecureStore migration check non-fatal error:', migErr);
           }
+
+          // Register the auth listener BEFORE calling getSession(). The listener
+          // will fire INITIAL_SESSION once Supabase reads the stored session from
+          // AsyncStorage. We wait for that event via a Promise so we never treat
+          // a transient null (while AsyncStorage is still loading) as a real logout.
+          const initialSessionPromise = new Promise<void>((resolve) => {
+            resolveInitialSession = resolve;
+          });
 
           setupAuthListener();
 
           try {
-            const { data, error } = await supabase.auth.getSession();
-            const storageKey = `sb-lqzhfnsxgytwbeudtzks-auth-token`;
             const rawStored = await AsyncStorage.getItem(storageKey);
             console.log(
-              `[AuthDiagnostics] getSession Telemetry: sessionExists=${Boolean(data?.session)} tokenExists=${Boolean(data?.session?.access_token)} userId=${data?.session?.user?.id || 'none'} storageKeyExists=${Boolean(rawStored)} storageSize=${rawStored ? rawStored.length : 0}`
+              `[AuthDiagnostic] CASE D CHECK: AsyncStorage inspection storageKey=${storageKey} sessionInStorage=${Boolean(rawStored)} size=${rawStored ? rawStored.length : 0}`
+            );
+
+            const { data, error } = await supabase.auth.getSession();
+            console.log(
+              `[AuthDiagnostic] getSession: sessionExists=${Boolean(data?.session)} accessTokenExists=${Boolean(data?.session?.access_token)}`
             );
 
             if (error) {
-              console.warn('[AuthDiagnostics] Supabase getSession error:', error.message);
-            } else if (data.session?.user) {
-              const profile = await fetchProfile(data.session.user);
-              console.log(`[AuthDiagnostics] Restored session for user: ${data.session.user.id}`);
-              set({
-                user: profile,
+              console.warn('[AuthDiagnostic] Supabase getSession error:', error.message);
+            }
+
+            if (data?.session?.user) {
+              const supaUser = data.session.user;
+              const baseProfile: Profile = {
+                id: supaUser.id,
+                email: supaUser.email || '',
+                fullName:
+                  supaUser.user_metadata?.full_name ||
+                  supaUser.email?.split('@')[0] ||
+                  'Vault Member',
+                currency: 'INR',
+                createdAt: supaUser.created_at || new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
+
+              useAuthStore.setState({
+                user: baseProfile,
                 session: data.session,
                 token: data.session.access_token,
                 isAuthenticated: true,
                 isLoading: false,
                 isInitialized: true,
+                error: null,
                 isOfflineMode: false,
+                isRecoveryMode: false,
               });
-              try {
-                const { useItemStore } = require('./itemStore');
-                useItemStore.getState().hydrateFromCloud();
-              } catch (hydrateErr) {
-                console.warn('[AuthStore] initialize: hydrateFromCloud deferred:', hydrateErr);
+
+              if (resolveInitialSession) {
+                console.log('[AuthDiagnostic] getSession resolved session directly before listener');
+                resolveInitialSession();
+                resolveInitialSession = null;
               }
-              return;
+
+              fetchProfile(supaUser)
+                .then((fullProfile) => {
+                  useAuthStore.setState({ user: fullProfile });
+                })
+                .catch(() => {});
             }
           } catch (err) {
-            console.warn('[AuthDiagnostics] Session restore exception:', err);
+            console.warn('[AuthDiagnostic] Session restore exception:', err);
           }
+
+          // Safety timeout (5 s) in case INITIAL_SESSION never fires
+          const timeout = new Promise<void>((resolve) =>
+            setTimeout(() => {
+              console.warn('[AuthDiagnostic] INITIAL_SESSION timeout — resolving as unauthenticated');
+              if (resolveInitialSession) {
+                resolveInitialSession = null;
+                useAuthStore.setState({
+                  user: null,
+                  session: null,
+                  token: null,
+                  isAuthenticated: false,
+                  isLoading: false,
+                  isInitialized: true,
+                  isOfflineMode: false,
+                });
+              }
+              resolve();
+            }, 5000)
+          );
+
+          await Promise.race([initialSessionPromise, timeout]);
+          return;
         }
 
+        // Supabase not configured — CASE A
+        console.warn('[AuthDiagnostic] CASE A DETECTED: Supabase is unconfigured in APK build');
         set({
           user: null,
           session: null,
@@ -233,9 +335,10 @@ export const useAuthStore = create<AuthState>()(
           isAuthenticated: false,
           isLoading: false,
           isInitialized: true,
-          isOfflineMode: !isSupabaseConfigured,
+          isOfflineMode: true,
         });
       },
+
 
       signIn: async (email: string, password: string) => {
         set({ isLoading: true, error: null });
@@ -245,6 +348,8 @@ export const useAuthStore = create<AuthState>()(
           return { success: false, error: 'Please provide both email and password.' };
         }
 
+        console.log('[AuthDiagnostic] sign-in started');
+
         if (isSupabaseConfigured) {
           try {
             const { data, error } = await supabase.auth.signInWithPassword({
@@ -253,12 +358,16 @@ export const useAuthStore = create<AuthState>()(
             });
 
             if (error) {
-              console.warn(`[AuthDiagnostics] signIn failed for ${email.trim()}: ${error.message}`);
+              console.warn(`[AuthDiagnostic] CASE B: signIn failed: ${error.message}`);
               set({ isLoading: false, error: error.message });
               return { success: false, error: error.message };
             }
 
             if (data.user && data.session) {
+              console.log(
+                `[AuthDiagnostic] CASE C CHECK: sign-in response received: sessionExists=true accessTokenExists=${Boolean(data.session.access_token)} userExists=true`
+              );
+
               const authenticatedUser = await fetchProfile(data.user);
 
               set({
@@ -291,57 +400,45 @@ export const useAuthStore = create<AuthState>()(
                   }, cloudIds);
                 }
               } catch (migErr) {
-                console.warn('[AuthStore] signIn: offline migration error (non-fatal):', migErr);
+                console.warn('[AuthDiagnostic] signIn offline migration deferred:', migErr);
               }
 
               try {
                 const { useItemStore } = require('./itemStore');
                 useItemStore.getState().hydrateFromCloud();
               } catch (hydrateErr) {
-                console.warn('[AuthStore] signIn: hydrateFromCloud deferred:', hydrateErr);
+                console.warn('[AuthDiagnostic] signIn hydrateFromCloud deferred:', hydrateErr);
               }
 
-              const storageKey = `sb-lqzhfnsxgytwbeudtzks-auth-token`;
-              const rawStored = await AsyncStorage.getItem(storageKey);
-              console.log(
-                `[AuthDiagnostics] Login Telemetry: sessionExists=true tokenExists=${Boolean(data.session.access_token)} userId=${data.user.id} storageKeyExists=${Boolean(rawStored)} storageSize=${rawStored ? rawStored.length : 0}`
-              );
+              const projectRef = supabaseUrl.replace(/^https?:\/\//, '').split('.')[0];
+              const storageKey = `sb-${projectRef}-auth-token`;
+              AsyncStorage.getItem(storageKey).then((rawStored) => {
+                console.log(
+                  `[AuthDiagnostic] CASE C VERIFIED: session persistence in storage: storageKeyExists=${Boolean(rawStored)} size=${rawStored ? rawStored.length : 0}`
+                );
+              }).catch(() => {});
 
               return { success: true };
             }
 
             const noSessionErr = 'Sign in succeeded but session is missing.';
+            console.warn('[AuthDiagnostic] CASE B:', noSessionErr);
             set({ isLoading: false, error: noSessionErr });
             return { success: false, error: noSessionErr };
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : 'Network error during login';
-            console.warn(`[AuthDiagnostics] signIn exception: ${msg}`);
+            console.warn(`[AuthDiagnostic] CASE B: signIn exception: ${msg}`);
             set({ isLoading: false, error: msg });
             return { success: false, error: msg };
           }
         }
 
-        const localUser: Profile = {
-          id: 'user-' + email.replace(/[^a-zA-Z0-9]/g, '_'),
-          email: email.trim(),
-          fullName: email.split('@')[0] || 'Vault Member',
-          currency: 'INR',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        set({
-          user: localUser,
-          session: null,
-          token: 'local-vault-token',
-          isAuthenticated: true,
-          isLoading: false,
-          isInitialized: true,
-          error: null,
-          isOfflineMode: true,
-        });
-
-        return { success: true };
+        // Supabase NOT configured — do NOT fake authentication!
+        const configError =
+          'Authentication service is not configured. Missing Supabase credentials in application build.';
+        console.warn('[AuthDiagnostic] CASE A: signIn failed because Supabase is unconfigured');
+        set({ isLoading: false, error: configError });
+        return { success: false, error: configError };
       },
 
       signUp: async (email: string, password: string, fullName: string) => {
@@ -357,6 +454,8 @@ export const useAuthStore = create<AuthState>()(
           return { success: false, error: 'Password must be at least 6 characters.' };
         }
 
+        console.log('[AuthDiagnostic] sign-up started');
+
         if (isSupabaseConfigured) {
           try {
             const { data, error } = await supabase.auth.signUp({
@@ -370,12 +469,16 @@ export const useAuthStore = create<AuthState>()(
             });
 
             if (error) {
-              console.warn(`[AuthDiagnostics] signUp failed for ${email.trim()}: ${error.message}`);
+              console.warn(`[AuthDiagnostic] CASE B: signUp failed: ${error.message}`);
               set({ isLoading: false, error: error.message });
               return { success: false, error: error.message };
             }
 
             if (data.user && data.session) {
+              console.log(
+                `[AuthDiagnostic] CASE C CHECK: sign-up response received: sessionExists=true accessTokenExists=${Boolean(data.session.access_token)}`
+              );
+
               const newUser: Profile = {
                 id: data.user.id,
                 email: data.user.email || email,
@@ -396,17 +499,19 @@ export const useAuthStore = create<AuthState>()(
                 isOfflineMode: false,
               });
 
-              const storageKey = `sb-lqzhfnsxgytwbeudtzks-auth-token`;
-              const rawStored = await AsyncStorage.getItem(storageKey);
-              console.log(
-                `[AuthDiagnostics] Signup Telemetry: sessionExists=true tokenExists=${Boolean(data.session.access_token)} userId=${data.user.id} storageKeyExists=${Boolean(rawStored)} storageSize=${rawStored ? rawStored.length : 0}`
-              );
+              const projectRef = supabaseUrl.replace(/^https?:\/\//, '').split('.')[0];
+              const storageKey = `sb-${projectRef}-auth-token`;
+              AsyncStorage.getItem(storageKey).then((rawStored) => {
+                console.log(
+                  `[AuthDiagnostic] CASE C VERIFIED: signup persistence in storage: storageKeyExists=${Boolean(rawStored)} size=${rawStored ? rawStored.length : 0}`
+                );
+              }).catch(() => {});
 
               return { success: true };
             }
 
-            const incompleteMsg = 'Account created, but authentication is not complete.';
-            console.warn(`[AuthDiagnostics] signUp completed without session for user ${data?.user?.id || 'unknown'}`);
+            const incompleteMsg = 'Account created. Please check your email to confirm your account.';
+            console.log('[AuthDiagnostic] signUp completed, email confirmation may be required');
             set({
               user: null,
               session: null,
@@ -419,33 +524,18 @@ export const useAuthStore = create<AuthState>()(
             return { success: false, error: incompleteMsg };
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : 'Network error during signup';
-            console.warn(`[AuthDiagnostics] signUp exception: ${msg}`);
+            console.warn(`[AuthDiagnostic] CASE B: signUp exception: ${msg}`);
             set({ isLoading: false, error: msg });
             return { success: false, error: msg };
           }
         }
 
-        const newLocalUser: Profile = {
-          id: 'user-' + Date.now().toString(),
-          email: email.trim(),
-          fullName: fullName.trim(),
-          currency: 'INR',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        set({
-          user: newLocalUser,
-          session: null,
-          token: 'local-vault-token',
-          isAuthenticated: true,
-          isLoading: false,
-          isInitialized: true,
-          error: null,
-          isOfflineMode: true,
-        });
-
-        return { success: true };
+        // Supabase NOT configured — do NOT fake authentication!
+        const configError =
+          'Authentication service is not configured. Missing Supabase credentials in application build.';
+        console.warn('[AuthDiagnostic] CASE A: signUp failed because Supabase is unconfigured');
+        set({ isLoading: false, error: configError });
+        return { success: false, error: configError };
       },
 
       signOut: async () => {
@@ -453,21 +543,23 @@ export const useAuthStore = create<AuthState>()(
           try {
             await supabase.auth.signOut();
           } catch (e) {
-            console.warn('[AuthDiagnostics] Supabase signout failed', e);
+            console.warn('[AuthDiagnostic] Supabase signOut error:', e);
           }
         }
 
-        const storageKey = `sb-lqzhfnsxgytwbeudtzks-auth-token`;
-        const rawStored = await AsyncStorage.getItem(storageKey);
-        console.log(
-          `[AuthDiagnostics] SignOut Telemetry: sessionExists=false tokenExists=false storageKeyExists=${Boolean(rawStored)}`
-        );
+        const projectRef = supabaseUrl.replace(/^https?:\/\//, '').split('.')[0];
+        const storageKey = `sb-${projectRef}-auth-token`;
+        AsyncStorage.getItem(storageKey).then((rawStored) => {
+          console.log(
+            `[AuthDiagnostic] signOut status: sessionExists=false accessTokenExists=false storageCleared=${!rawStored}`
+          );
+        }).catch(() => {});
 
         try {
           const { useItemStore } = require('./itemStore');
           useItemStore.getState().clearUserData();
         } catch (e) {
-          console.warn('[AuthDiagnostics] clearUserData on signOut failed:', e);
+          console.warn('[AuthDiagnostic] clearUserData on signOut failed:', e);
         }
 
         set({
@@ -525,20 +617,20 @@ export const useAuthStore = create<AuthState>()(
 
             if (error) {
               const errorMsg = error.message || 'Account deletion failed on server.';
-              console.warn('[AuthDiagnostics] delete-account function error:', errorMsg);
+              console.warn('[AuthDiagnostic] delete-account function error:', errorMsg);
               throw new Error(errorMsg);
             }
 
             if (data && data.success === false) {
               const serverMsg = data.error || 'Account deletion was rejected by the server.';
-              console.warn('[AuthDiagnostics] delete-account server rejection:', serverMsg);
+              console.warn('[AuthDiagnostic] delete-account server rejection:', serverMsg);
               throw new Error(serverMsg);
             }
 
-            console.log('[AuthDiagnostics] Account successfully deleted via Edge Function.');
+            console.log('[AuthDiagnostic] Account successfully deleted via Edge Function.');
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : 'Unknown account deletion error';
-            console.warn('[AuthDiagnostics] deleteAccount failed:', msg);
+            console.warn('[AuthDiagnostic] deleteAccount failed:', msg);
             throw new Error(msg);
           }
         }
@@ -547,7 +639,7 @@ export const useAuthStore = create<AuthState>()(
           const { useItemStore } = require('./itemStore');
           useItemStore.getState().clearUserData();
         } catch (e) {
-          console.warn('[AuthDiagnostics] clearUserData on deleteAccount failed:', e);
+          console.warn('[AuthDiagnostic] clearUserData on deleteAccount failed:', e);
         }
 
         set({
@@ -576,13 +668,13 @@ export const useAuthStore = create<AuthState>()(
 
         if (isSupabaseConfigured) {
           try {
-            console.log(`[PasswordReset] Requesting password reset link for email`);
+            console.log('[AuthDiagnostic] Requesting password reset link for email');
             const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
               redirectTo: 'keepr://auth/reset-password',
             });
 
             if (error) {
-              console.warn(`[PasswordReset] resetPasswordForEmail error:`, error.message);
+              console.warn('[AuthDiagnostic] resetPasswordForEmail error:', error.message);
               if (error.status === 429 || error.message.toLowerCase().includes('rate')) {
                 return {
                   success: false,
@@ -592,10 +684,10 @@ export const useAuthStore = create<AuthState>()(
               return { success: true };
             }
 
-            console.log('[PasswordReset] Password reset request successfully received by Supabase');
+            console.log('[AuthDiagnostic] Password reset request successfully received by Supabase');
             return { success: true };
           } catch (err: any) {
-            console.error('[PasswordReset] resetPasswordForEmail exception:', err?.message);
+            console.error('[AuthDiagnostic] resetPasswordForEmail exception:', err?.message);
             return {
               success: false,
               error: 'Unable to connect. Please check your internet connection and try again.',
@@ -603,8 +695,9 @@ export const useAuthStore = create<AuthState>()(
           }
         }
 
-        console.log('[PasswordReset] Offline mode reset simulation');
-        return { success: true };
+        const configError = 'Authentication service is not configured.';
+        console.warn('[AuthDiagnostic] CASE A: resetPassword attempted but Supabase is unconfigured.');
+        return { success: false, error: configError };
       },
 
       updatePassword: async (newPassword: string) => {
@@ -622,33 +715,33 @@ export const useAuthStore = create<AuthState>()(
             const activeSession = sessionData?.session || get().session;
 
             if (!activeSession) {
-              console.warn('[PasswordReset] No active session found when updating password');
+              console.warn('[AuthDiagnostic] No active session found when updating password');
               return {
                 success: false,
                 error: 'Your reset link is no longer valid or has expired. Please request a new one.',
               };
             }
 
-            console.log('[PasswordReset] Invoking supabase.auth.updateUser to update password...');
+            console.log('[AuthDiagnostic] Invoking supabase.auth.updateUser to update password...');
             const { data, error } = await supabase.auth.updateUser({
               password: newPassword,
             });
 
             if (error) {
-              console.warn('[PasswordReset] updateUser error:', error.message);
+              console.warn('[AuthDiagnostic] updateUser error:', error.message);
               return {
                 success: false,
                 error: error.message || 'Unable to update your password. Please try again.',
               };
             }
 
-            console.log('[PasswordReset] Password successfully updated in Supabase');
+            console.log('[AuthDiagnostic] Password successfully updated in Supabase');
 
             // Sign out the recovery session cleanly so user logs in afresh with new credentials
             try {
               await supabase.auth.signOut();
             } catch (signOutErr) {
-              console.warn('[PasswordReset] Signout after password update warning:', signOutErr);
+              console.warn('[AuthDiagnostic] Signout after password update warning:', signOutErr);
             }
 
             set({
@@ -663,7 +756,7 @@ export const useAuthStore = create<AuthState>()(
 
             return { success: true };
           } catch (err: any) {
-            console.error('[PasswordReset] Network error during password update:', err?.message);
+            console.error('[AuthDiagnostic] Network error during password update:', err?.message);
             return {
               success: false,
               error: 'Unable to connect. Please check your internet connection and try again.',
@@ -671,8 +764,10 @@ export const useAuthStore = create<AuthState>()(
           }
         }
 
+        const configError = 'Authentication service is not configured.';
+        console.warn('[AuthDiagnostic] CASE A: updatePassword attempted but Supabase is unconfigured.');
         set({ isRecoveryMode: false });
-        return { success: true };
+        return { success: false, error: configError };
       },
     }),
     {

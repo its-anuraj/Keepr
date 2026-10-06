@@ -14,6 +14,13 @@ export const isSupabaseConfigured =
   Boolean(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_KEY) &&
   process.env.EXPO_PUBLIC_SUPABASE_URL !== 'https://placeholder-keepr.supabase.co';
 
+console.log('[AuthDiagnostic] Configuration Status:', {
+  supabaseConfigured: isSupabaseConfigured,
+  supabaseUrlConfigured: Boolean(process.env.EXPO_PUBLIC_SUPABASE_URL && process.env.EXPO_PUBLIC_SUPABASE_URL !== 'https://placeholder-keepr.supabase.co'),
+  supabaseKeyConfigured: Boolean(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_KEY),
+  authProvider: isSupabaseConfigured ? 'supabase' : 'unconfigured',
+});
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: AsyncStorage,

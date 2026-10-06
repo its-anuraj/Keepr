@@ -29,6 +29,7 @@ import {
 } from '../../src/store/receiptSessionStore';
 import { stabilizeReceiptImage } from '../../src/services/receiptFileService';
 import { ItemWithOwnerContext, RecentlyAddedEntry } from '../../src/types';
+import { hideSplashScreen } from '../../src/utils/splashCoordinator';
 
 const INITIAL_BATCH_SIZE = 4;
 const LOAD_MORE_BATCH_SIZE = 4;
@@ -219,8 +220,16 @@ export default function VaultDashboardScreen() {
     }
   };
 
+  useEffect(() => {
+    console.log('[StartupAuth] authenticated route ready');
+  }, []);
+
+  const handleLayout = useCallback(() => {
+    hideSplashScreen('vault');
+  }, []);
+
   return (
-    <View className="flex-1 bg-serene-surface">
+    <View className="flex-1 bg-serene-surface" onLayout={handleLayout}>
       <Header title="Keepr" />
 
       <ScrollView
