@@ -12,20 +12,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../lib/supabase';
-import { getCanonicalReceiptUri } from './receiptFileService';
-
-export {
-  BUCKET_ITEM_IMAGES,
-  BUCKET_ITEM_DOCUMENTS,
-  BUCKET_VAULT_DOCUMENTS,
-  signedUrlCache,
-  isStoragePath,
-  isLocalUri,
-  isRemoteUrl,
-  getCachedSignedUrl,
-  clearSignedUrlCache,
-  invalidateSignedUrlCache,
-} from '../utils/storageUtils';
+import { getCanonicalReceiptUri, getCanonicalDocumentUri } from './receiptFileService';
 
 import {
   BUCKET_ITEM_IMAGES,
@@ -35,8 +22,33 @@ import {
   isStoragePath,
   isLocalUri,
   isRemoteUrl,
+  isPdfDocument,
+  isImageDocument,
+  getCanonicalDocumentBucket,
+  logDocumentThumbnailDiagnostic,
   getCachedSignedUrl,
+  clearSignedUrlCache,
+  invalidateSignedUrlCache,
+  cleanStoragePath,
 } from '../utils/storageUtils';
+
+export {
+  BUCKET_ITEM_IMAGES,
+  BUCKET_ITEM_DOCUMENTS,
+  BUCKET_VAULT_DOCUMENTS,
+  signedUrlCache,
+  isStoragePath,
+  isLocalUri,
+  isRemoteUrl,
+  isPdfDocument,
+  isImageDocument,
+  getCanonicalDocumentBucket,
+  logDocumentThumbnailDiagnostic,
+  getCachedSignedUrl,
+  clearSignedUrlCache,
+  invalidateSignedUrlCache,
+  cleanStoragePath,
+};
 
 export type StorageBucket =
   | typeof BUCKET_ITEM_IMAGES
@@ -62,46 +74,72 @@ export async function createPrivateSignedUrl(
     return path;
   }
 
+  // Sanitize path: strip leading slashes and redundant bucket prefixes if present
+  let cleanPath = cleanStoragePath(path) || path.trim();
+  while (cleanPath.startsWith('/')) {
+    cleanPath = cleanPath.substring(1).trim();
+  }
+  if (cleanPath.startsWith(`${bucket}/`)) {
+    cleanPath = cleanPath.substring(bucket.length + 1).trim();
+  }
+
   try {
     const { data, error } = await supabase.storage
       .from(bucket)
-      .createSignedUrl(path, expiresIn);
+      .createSignedUrl(cleanPath, expiresIn);
 
     if (error || !data?.signedUrl) {
-      console.warn(`[StorageService] Failed to create signed URL for ${bucket}/${path}:`, error?.message || error);
+      console.warn(`[StorageService] Failed to create signed URL for ${bucket}/${cleanPath}:`, error?.message || error);
       return null;
     }
 
     return data.signedUrl;
   } catch (err) {
-    console.warn(`[StorageService] Exception creating signed URL for ${bucket}/${path}:`, err);
+    console.warn(`[StorageService] Exception creating signed URL for ${bucket}/${cleanPath}:`, err);
     return null;
   }
 }
 
 /**
  * Gets or creates a signed URL for an item product image in private item-images bucket.
- * Caches the URL in memory with TTL.
+ * Caches the URL in memory with TTL. Defensively falls back to item-documents or vault-documents if needed.
  */
 export async function getItemImageSignedUrl(
   path: string,
   expiresIn: number = 3600
 ): Promise<string | null> {
-  if (!path || !isStoragePath(path)) return null;
+  if (!path) return null;
+  const clean = cleanStoragePath(path) || (isStoragePath(path) ? path.trim() : null);
+  if (!clean || !isStoragePath(clean)) return null;
 
-  const cacheKey = `${BUCKET_ITEM_IMAGES}:${path}`;
-  const cached = getCachedSignedUrl(cacheKey) || getCachedSignedUrl(path);
+  const cacheKey = `${BUCKET_ITEM_IMAGES}:${clean}`;
+  const cached = getCachedSignedUrl(cacheKey) || getCachedSignedUrl(clean);
   if (cached) return cached;
 
-  const signed = await createPrivateSignedUrl(BUCKET_ITEM_IMAGES, path, expiresIn);
+  // 1. Try BUCKET_ITEM_IMAGES first (canonical bucket for item product photos)
+  let signed = await createPrivateSignedUrl(BUCKET_ITEM_IMAGES, clean, expiresIn);
+  let resolvedBucket: StorageBucket = BUCKET_ITEM_IMAGES;
+
+  // 2. Defensively check BUCKET_ITEM_DOCUMENTS and BUCKET_VAULT_DOCUMENTS if not found in item-images
+  if (!signed) {
+    signed = await createPrivateSignedUrl(BUCKET_ITEM_DOCUMENTS, clean, expiresIn);
+    if (signed) {
+      resolvedBucket = BUCKET_ITEM_DOCUMENTS;
+    } else {
+      signed = await createPrivateSignedUrl(BUCKET_VAULT_DOCUMENTS, clean, expiresIn);
+      if (signed) resolvedBucket = BUCKET_VAULT_DOCUMENTS;
+    }
+  }
+
   if (signed) {
-    signedUrlCache.set(cacheKey, {
+    const expiresAt = Date.now() + expiresIn * 1000;
+    signedUrlCache.set(`${resolvedBucket}:${clean}`, {
       url: signed,
-      expiresAt: Date.now() + expiresIn * 1000,
+      expiresAt,
     });
-    signedUrlCache.set(path, {
+    signedUrlCache.set(clean, {
       url: signed,
-      expiresAt: Date.now() + expiresIn * 1000,
+      expiresAt,
     });
     return signed;
   }
@@ -162,15 +200,21 @@ export async function getVaultDocumentSignedUrl(
     return null;
   }
 
-  const cacheKey = `${preferredBucket}:${path}`;
+  // Auto-detect canonical bucket: if path clearly belongs to an item, prefer item-documents
+  let actualPreferred = preferredBucket;
+  if (path.includes('/items/') && preferredBucket === BUCKET_VAULT_DOCUMENTS) {
+    actualPreferred = BUCKET_ITEM_DOCUMENTS;
+  }
+
+  const cacheKey = `${actualPreferred}:${path}`;
   const cached = getCachedSignedUrl(cacheKey) || getCachedSignedUrl(path);
   if (cached) return cached;
 
-  let signed = await createPrivateSignedUrl(preferredBucket, path, expiresIn);
-  let resolvedBucket: StorageBucket = preferredBucket;
+  let signed = await createPrivateSignedUrl(actualPreferred, path, expiresIn);
+  let resolvedBucket: StorageBucket = actualPreferred;
 
   if (!signed) {
-    const fallbackBucket = preferredBucket === BUCKET_VAULT_DOCUMENTS ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS;
+    const fallbackBucket = actualPreferred === BUCKET_VAULT_DOCUMENTS ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS;
     signed = await createPrivateSignedUrl(fallbackBucket, path, expiresIn);
     if (signed) resolvedBucket = fallbackBucket;
   }
@@ -261,40 +305,79 @@ export async function prefetchReceiptSignedUrls(
 }
 
 /**
- * Batch prefetches signed URLs for vault documents in vault-documents bucket.
+ * Batch prefetches signed URLs for vault documents across vault-documents and item-documents buckets.
  */
 export async function prefetchVaultDocumentSignedUrls(
   paths: string[],
   expiresIn: number = 3600
 ): Promise<void> {
   const uncached = Array.from(
-    new Set(paths.filter((p) => p && isStoragePath(p) && !getCachedSignedUrl(`${BUCKET_VAULT_DOCUMENTS}:${p}`) && !getCachedSignedUrl(p)))
+    new Set(paths.filter((p) => p && isStoragePath(p) && !getCachedSignedUrl(`${BUCKET_VAULT_DOCUMENTS}:${p}`) && !getCachedSignedUrl(`${BUCKET_ITEM_DOCUMENTS}:${p}`) && !getCachedSignedUrl(p)))
   );
   if (uncached.length === 0) return;
 
-  try {
-    const { data, error } = await supabase.storage
-      .from(BUCKET_VAULT_DOCUMENTS)
-      .createSignedUrls(uncached, expiresIn);
+  const itemDocPaths = uncached.filter((p) => p.includes('/items/'));
+  const vaultDocPaths = uncached.filter((p) => !p.includes('/items/'));
 
-    if (!error && Array.isArray(data)) {
-      const now = Date.now();
-      for (const item of data) {
-        if (item.path && item.signedUrl && !item.error) {
-          signedUrlCache.set(`${BUCKET_VAULT_DOCUMENTS}:${item.path}`, {
-            url: item.signedUrl,
-            expiresAt: now + expiresIn * 1000,
-          });
-          signedUrlCache.set(item.path, {
-            url: item.signedUrl,
-            expiresAt: now + expiresIn * 1000,
-          });
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[StorageService] prefetchVaultDocumentSignedUrls note:', err);
+  const tasks: Promise<any>[] = [];
+
+  if (vaultDocPaths.length > 0) {
+    tasks.push(
+      supabase.storage
+        .from(BUCKET_VAULT_DOCUMENTS)
+        .createSignedUrls(vaultDocPaths, expiresIn)
+        .then(({ data, error }) => {
+          if (!error && Array.isArray(data)) {
+            const now = Date.now();
+            for (const item of data) {
+              if (item.path && item.signedUrl && !item.error) {
+                signedUrlCache.set(`${BUCKET_VAULT_DOCUMENTS}:${item.path}`, {
+                  url: item.signedUrl,
+                  expiresAt: now + expiresIn * 1000,
+                });
+                signedUrlCache.set(item.path, {
+                  url: item.signedUrl,
+                  expiresAt: now + expiresIn * 1000,
+                });
+              }
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('[StorageService] prefetchVaultDocumentSignedUrls vault note:', err);
+        })
+    );
   }
+
+  if (itemDocPaths.length > 0) {
+    tasks.push(
+      supabase.storage
+        .from(BUCKET_ITEM_DOCUMENTS)
+        .createSignedUrls(itemDocPaths, expiresIn)
+        .then(({ data, error }) => {
+          if (!error && Array.isArray(data)) {
+            const now = Date.now();
+            for (const item of data) {
+              if (item.path && item.signedUrl && !item.error) {
+                signedUrlCache.set(`${BUCKET_ITEM_DOCUMENTS}:${item.path}`, {
+                  url: item.signedUrl,
+                  expiresAt: now + expiresIn * 1000,
+                });
+                signedUrlCache.set(item.path, {
+                  url: item.signedUrl,
+                  expiresAt: now + expiresIn * 1000,
+                });
+              }
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('[StorageService] prefetchVaultDocumentSignedUrls item note:', err);
+        })
+    );
+  }
+
+  await Promise.all(tasks);
 }
 
 /**
@@ -664,7 +747,7 @@ export async function resolveDocumentUri(doc?: {
   // 1. Try local physical file first if on the current device
   const localCandidate = doc.filePath || doc.fileUrl;
   if (localCandidate && isLocalUri(localCandidate)) {
-    const canonical = getCanonicalReceiptUri(localCandidate) || localCandidate;
+    const canonical = getCanonicalDocumentUri(localCandidate) || getCanonicalReceiptUri(localCandidate) || localCandidate;
     try {
       const info = await FileSystem.getInfoAsync(canonical).catch(() => null);
       if (info?.exists && !info.isDirectory) {

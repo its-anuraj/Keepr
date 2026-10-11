@@ -745,7 +745,7 @@ export default function ItemsCatalogScreen() {
           title="Your collection is empty"
           description="Add the things you buy to keep warranty, return dates, and receipts in one place."
           actionText="Add your first item"
-          onActionPress={() => router.push('/(tabs)/add')}
+          onActionPress={() => router.push({ pathname: '/(tabs)/add', params: { reset: Date.now().toString() } } as any)}
         />
       );
     }

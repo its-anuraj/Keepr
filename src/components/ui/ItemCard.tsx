@@ -53,11 +53,19 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 }) => {
   const [imageError, setImageError] = React.useState(false);
 
-  const { resolvedUri } = useResolvedItemImage(item);
+  const { resolvedUri, retry } = useResolvedItemImage(item);
 
   React.useEffect(() => {
     setImageError(false);
   }, [resolvedUri]);
+
+  const handleImageError = () => {
+    if (retry) {
+      retry();
+    } else {
+      setImageError(true);
+    }
+  };
 
   const categoryName =
     typeof item.category === 'object' && item.category?.name
@@ -102,7 +110,7 @@ export const ItemCard: React.FC<ItemCardProps> = ({
                   source={{ uri: resolvedUri }}
                   style={{ width: 48, height: 48 }}
                   resizeMode="cover"
-                  onError={() => setImageError(true)}
+                  onError={handleImageError}
                 />
               ) : (
                 <View
@@ -232,7 +240,7 @@ export const ItemCard: React.FC<ItemCardProps> = ({
                 source={{ uri: resolvedUri }}
                 style={{ width: 48, height: 48 }}
                 resizeMode="cover"
-                onError={() => setImageError(true)}
+                onError={handleImageError}
               />
             ) : (
               <View

@@ -5,7 +5,7 @@
 // into usable display URIs with memory caching, TTL refresh, and graceful fallback.
 // ==============================================================================
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   isStoragePath,
@@ -14,12 +14,18 @@ import {
   getItemImageSignedUrl,
   getVaultDocumentSignedUrl,
   getCachedSignedUrl,
+  invalidateSignedUrlCache,
+  getCanonicalDocumentBucket,
+  BUCKET_ITEM_IMAGES,
+  BUCKET_ITEM_DOCUMENTS,
+  BUCKET_VAULT_DOCUMENTS,
 } from '../services/storageService';
 import {
   extractItemImageCandidates,
   extractDocumentImageCandidates,
+  cleanStoragePath,
 } from '../utils/storageUtils';
-import { getCanonicalReceiptUri } from '../services/receiptFileService';
+import { getCanonicalReceiptUri, getCanonicalDocumentUri } from '../services/receiptFileService';
 import type { Item, VaultDocument, RecentlyAddedEntry } from '../types';
 
 export interface ResolvedImageResult {
@@ -27,6 +33,7 @@ export interface ResolvedImageResult {
   isLoading: boolean;
   isUnavailable: boolean;
   isLocal: boolean;
+  retry?: () => Promise<void>;
 }
 
 /**
@@ -56,10 +63,9 @@ export function useResolvedItemImage(
 
   const { storagePath, remoteUrl, localUri } = candidates;
 
-  // Synchronous cache check to prevent render flicker
   const initialUri = useMemo(() => {
     if (storagePath) {
-      const cached = getCachedSignedUrl(storagePath);
+      const cached = getCachedSignedUrl(storagePath) || getCachedSignedUrl(`${BUCKET_ITEM_IMAGES}:${storagePath}`);
       if (cached) return cached;
     }
     if (remoteUrl) return remoteUrl;
@@ -72,84 +78,80 @@ export function useResolvedItemImage(
   );
   const [isUnavailable, setIsUnavailable] = useState<boolean>(false);
   const [isLocal, setIsLocal] = useState<boolean>(false);
+  const retryCountRef = useRef<number>(0);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    async function resolve() {
-      // 1. Try local URI first if provided (fastest on device that captured it)
-      if (localUri) {
-        const canonicalLocal = getCanonicalReceiptUri(localUri) || localUri;
-        try {
-          const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
-          if (info?.exists && !info.isDirectory) {
-            if (isMounted) {
-              setResolvedUri(canonicalLocal);
-              setIsLoading(false);
-              setIsUnavailable(false);
-              setIsLocal(true);
-            }
-            return;
-          }
-        } catch {}
-        // If local file does not exist on this device (e.g. cross-device session),
-        // proceed directly to durable cloud storage without failing!
-      }
-
-      // 2. Try durable Supabase Storage path from private bucket
-      if (storagePath && isStoragePath(storagePath)) {
-        const cached = getCachedSignedUrl(storagePath);
-        if (cached) {
-          if (isMounted) {
-            setResolvedUri(cached);
-            setIsLoading(false);
-            setIsUnavailable(false);
-            setIsLocal(false);
-          }
+  const resolve = useCallback(async (isRefresh: boolean = false) => {
+    // 1. Try local URI first if provided (fastest on device that captured it)
+    if (localUri) {
+      const canonicalLocal = getCanonicalReceiptUri(localUri) || localUri;
+      try {
+        const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
+        if (info?.exists && !info.isDirectory) {
+          setResolvedUri(canonicalLocal);
+          setIsLoading(false);
+          setIsUnavailable(false);
+          setIsLocal(true);
           return;
         }
+      } catch {}
+      // If local file does not exist on this device (e.g. cross-device session),
+      // proceed directly to durable cloud storage without failing!
+    }
 
-        if (isMounted) setIsLoading(true);
-        const signed = await getItemImageSignedUrl(storagePath);
-        if (isMounted) {
-          if (signed) {
-            setResolvedUri(signed);
-            setIsUnavailable(false);
-            setIsLoading(false);
-            setIsLocal(false);
-            return;
-          }
-        }
-      }
-
-      // 3. Try remote HTTP/HTTPS URL
-      if (remoteUrl && (isRemoteUrl(remoteUrl) || remoteUrl.startsWith('data:'))) {
-        if (isMounted) {
-          setResolvedUri(remoteUrl);
+    // 2. Try durable Supabase Storage path from private bucket
+    if (storagePath && isStoragePath(storagePath)) {
+      if (!isRefresh) {
+        const cached = getCachedSignedUrl(storagePath) || getCachedSignedUrl(`${BUCKET_ITEM_IMAGES}:${storagePath}`);
+        if (cached) {
+          setResolvedUri(cached);
           setIsLoading(false);
           setIsUnavailable(false);
           setIsLocal(false);
+          return;
         }
-        return;
+      } else {
+        invalidateSignedUrlCache(storagePath);
       }
 
-      // 4. No valid cloud or local image found
-      if (isMounted) {
-        setResolvedUri(null);
+      setIsLoading(true);
+      const signed = await getItemImageSignedUrl(storagePath);
+      if (signed) {
+        setResolvedUri(signed);
+        setIsUnavailable(false);
         setIsLoading(false);
-        setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
         setIsLocal(false);
+        return;
       }
     }
 
-    resolve();
+    // 3. Try remote HTTP/HTTPS URL
+    if (remoteUrl && (isRemoteUrl(remoteUrl) || remoteUrl.startsWith('data:'))) {
+      setResolvedUri(remoteUrl);
+      setIsLoading(false);
+      setIsUnavailable(false);
+      setIsLocal(false);
+      return;
+    }
 
-    return () => {
-      isMounted = false;
-    };
-  }, [storagePath, remoteUrl, localUri]);
+    // 4. No valid cloud or local image found
+    setResolvedUri(null);
+    setIsLoading(false);
+    setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
+    setIsLocal(false);
+  }, [localUri, storagePath, remoteUrl]);
 
-  return { resolvedUri, isLoading, isUnavailable, isLocal };
+  useEffect(() => {
+    retryCountRef.current = 0;
+    resolve(false);
+  }, [resolve]);
+
+  const retry = useCallback(async () => {
+    if (retryCountRef.current >= 1) return; // Single retry guarantee (no infinite loop)
+    retryCountRef.current += 1;
+    await resolve(true);
+  }, [resolve]);
+
+  return { resolvedUri, isLoading, isUnavailable, isLocal, retry };
 }
 
 /**
@@ -159,11 +161,19 @@ export function useResolvedDocumentImage(
   docOrStoragePath?: Partial<VaultDocument> | string | null,
   localFallbackUri?: string | null
 ): ResolvedImageResult {
+  const preferredBucket = useMemo(() => {
+    return getCanonicalDocumentBucket(docOrStoragePath);
+  }, [
+    typeof docOrStoragePath === 'object' && docOrStoragePath !== null
+      ? `${docOrStoragePath.itemId || ''}:${docOrStoragePath.storagePath || ''}`
+      : docOrStoragePath,
+  ]);
+
   const candidates = useMemo(() => {
     return extractDocumentImageCandidates(docOrStoragePath, localFallbackUri);
   }, [
     typeof docOrStoragePath === 'object' && docOrStoragePath !== null
-      ? `${docOrStoragePath.id || ''}:${docOrStoragePath.storagePath || ''}:${docOrStoragePath.filePath || ''}:${docOrStoragePath.fileUrl || ''}`
+      ? `${docOrStoragePath.id || ''}:${docOrStoragePath.storagePath || ''}:${docOrStoragePath.filePath || ''}:${docOrStoragePath.fileUrl || ''}:${docOrStoragePath.thumbnailPath || ''}`
       : docOrStoragePath,
     localFallbackUri,
   ]);
@@ -172,12 +182,12 @@ export function useResolvedDocumentImage(
 
   const initialUri = useMemo(() => {
     if (storagePath) {
-      const cached = getCachedSignedUrl(storagePath);
+      const cached = getCachedSignedUrl(`${preferredBucket}:${storagePath}`) || getCachedSignedUrl(storagePath);
       if (cached) return cached;
     }
     if (remoteUrl) return remoteUrl;
     return null;
-  }, [storagePath, remoteUrl]);
+  }, [storagePath, remoteUrl, preferredBucket]);
 
   const [resolvedUri, setResolvedUri] = useState<string | null>(initialUri);
   const [isLoading, setIsLoading] = useState<boolean>(
@@ -185,82 +195,78 @@ export function useResolvedDocumentImage(
   );
   const [isUnavailable, setIsUnavailable] = useState<boolean>(false);
   const [isLocal, setIsLocal] = useState<boolean>(false);
+  const retryCountRef = useRef<number>(0);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    async function resolve() {
-      // 1. Check local file on this device
-      if (localUri) {
-        const canonicalLocal = getCanonicalReceiptUri(localUri) || localUri;
-        try {
-          const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
-          if (info?.exists && !info.isDirectory) {
-            if (isMounted) {
-              setResolvedUri(canonicalLocal);
-              setIsLoading(false);
-              setIsUnavailable(false);
-              setIsLocal(true);
-            }
-            return;
-          }
-        } catch {}
-      }
-
-      // 2. Supabase Storage signed URL from private 'vault-documents'
-      if (storagePath && isStoragePath(storagePath)) {
-        const cached = getCachedSignedUrl(storagePath);
-        if (cached) {
-          if (isMounted) {
-            setResolvedUri(cached);
-            setIsLoading(false);
-            setIsUnavailable(false);
-            setIsLocal(false);
-          }
+  const resolve = useCallback(async (isRefresh: boolean = false) => {
+    // 1. Check local file on this device
+    if (localUri) {
+      const canonicalLocal = getCanonicalDocumentUri(localUri) || getCanonicalReceiptUri(localUri) || localUri;
+      try {
+        const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
+        if (info?.exists && !info.isDirectory) {
+          setResolvedUri(canonicalLocal);
+          setIsLoading(false);
+          setIsUnavailable(false);
+          setIsLocal(true);
           return;
         }
+      } catch {}
+    }
 
-        if (isMounted) setIsLoading(true);
-        const signed = await getVaultDocumentSignedUrl(storagePath);
-        if (isMounted) {
-          if (signed) {
-            setResolvedUri(signed);
-            setIsUnavailable(false);
-            setIsLoading(false);
-            setIsLocal(false);
-            return;
-          }
-        }
-      }
-
-      // 3. Remote URL
-      if (remoteUrl && (isRemoteUrl(remoteUrl) || remoteUrl.startsWith('data:'))) {
-        if (isMounted) {
-          setResolvedUri(remoteUrl);
+    // 2. Supabase Storage signed URL from canonical bucket
+    if (storagePath && isStoragePath(storagePath)) {
+      if (!isRefresh) {
+        const cached = getCachedSignedUrl(`${preferredBucket}:${storagePath}`) || getCachedSignedUrl(storagePath);
+        if (cached) {
+          setResolvedUri(cached);
           setIsLoading(false);
           setIsUnavailable(false);
           setIsLocal(false);
+          return;
         }
-        return;
+      } else {
+        invalidateSignedUrlCache(storagePath);
       }
 
-      // 4. Unavailable
-      if (isMounted) {
-        setResolvedUri(null);
+      setIsLoading(true);
+      const signed = await getVaultDocumentSignedUrl(storagePath, preferredBucket);
+      if (signed) {
+        setResolvedUri(signed);
+        setIsUnavailable(false);
         setIsLoading(false);
-        setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
         setIsLocal(false);
+        return;
       }
     }
 
-    resolve();
+    // 3. Remote URL
+    if (remoteUrl && (isRemoteUrl(remoteUrl) || remoteUrl.startsWith('data:'))) {
+      setResolvedUri(remoteUrl);
+      setIsLoading(false);
+      setIsUnavailable(false);
+      setIsLocal(false);
+      return;
+    }
 
-    return () => {
-      isMounted = false;
-    };
-  }, [storagePath, remoteUrl, localUri]);
+    // 4. Unavailable
+    setResolvedUri(null);
+    setIsLoading(false);
+    setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
+    setIsLocal(false);
+  }, [localUri, storagePath, remoteUrl, preferredBucket]);
 
-  return { resolvedUri, isLoading, isUnavailable, isLocal };
+  useEffect(() => {
+    retryCountRef.current = 0;
+    resolve(false);
+  }, [resolve]);
+
+  const retry = useCallback(async () => {
+    if (retryCountRef.current >= 1) return; // Prevent endless retry loop
+    retryCountRef.current += 1;
+    await resolve(true);
+  }, [resolve]);
+
+  return { resolvedUri, isLoading, isUnavailable, isLocal, retry };
 }
 
 /**
@@ -312,9 +318,15 @@ export function useResolvedItemPhotos(photos?: string[] | null): {
       const results: ResolvedPhotoEntry[] = [];
       for (const p of photos) {
         if (!p) continue;
+        const clean = cleanStoragePath(p);
 
-        if (isRemoteUrl(p) || p.startsWith('data:')) {
-          results.push({ original: p, resolvedUri: p, isUnavailable: false });
+        if (clean && isStoragePath(clean)) {
+          const signed = await getItemImageSignedUrl(clean);
+          results.push({
+            original: p,
+            resolvedUri: signed,
+            isUnavailable: !signed,
+          });
         } else if (isStoragePath(p)) {
           const signed = await getItemImageSignedUrl(p);
           results.push({
@@ -322,6 +334,8 @@ export function useResolvedItemPhotos(photos?: string[] | null): {
             resolvedUri: signed,
             isUnavailable: !signed,
           });
+        } else if (isRemoteUrl(p) || p.startsWith('data:')) {
+          results.push({ original: p, resolvedUri: p, isUnavailable: false });
         } else {
           const canonical = getCanonicalReceiptUri(p) || p;
           try {

@@ -30,6 +30,14 @@ import { VaultDocument } from '../../src/types';
 import { formatCurrency, formatDate } from '../../src/utils/currency';
 import { getCanonicalDocumentUri } from '../../src/services/receiptFileService';
 import { getDocumentCategoryMeta } from '../../src/constants/documentCategories';
+import { useResolvedDocumentImage } from '../../src/hooks/useResolvedImage';
+import {
+  isPdfDocument,
+  getCanonicalDocumentBucket,
+  logDocumentThumbnailDiagnostic,
+  isStoragePath,
+} from '../../src/utils/storageUtils';
+import { prefetchVaultDocumentSignedUrls } from '../../src/services/storageService';
 import {
   DocSortModal,
   DocSortOption,
@@ -64,6 +72,156 @@ interface SelectableDocumentCardProps {
   onLongPress: () => void;
 }
 
+interface DocumentCardThumbnailProps {
+  item: VaultDocument;
+  fallbackIcon: string;
+}
+
+const DocumentCardThumbnail = React.memo(function DocumentCardThumbnail({
+  item,
+  fallbackIcon,
+}: DocumentCardThumbnailProps) {
+  const [imageError, setImageError] = useState(false);
+  const [retryAttempted, setRetryAttempted] = useState(false);
+
+  // Always invoke resolution with the actual document object.
+  // extractDocumentImageCandidates will prioritize thumbnailPath if available,
+  // resolve image files, and safely return null candidates for PDFs without image previews.
+  const { resolvedUri, isLoading, retry } = useResolvedDocumentImage(item);
+
+  useEffect(() => {
+    setImageError(false);
+    setRetryAttempted(false);
+  }, [item.id, resolvedUri]);
+
+  // Loading state (never leave a permanently blank box!)
+  if (isLoading) {
+    return (
+      <View style={styles.thumbInner}>
+        <ActivityIndicator size="small" color={SereneColors.primary} />
+      </View>
+    );
+  }
+
+  // Resolvable image (actual scanned receipt/image OR PDF with generated thumbnail preview)
+  if (resolvedUri && !imageError) {
+    return (
+      <Image
+        source={{ uri: resolvedUri }}
+        style={StyleSheet.absoluteFill}
+        resizeMode="cover"
+        onLoad={() => {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            logDocumentThumbnailDiagnostic({
+              documentId: item.id,
+              mimeType: item.mimeType,
+              fileType: item.fileType,
+              bucket: getCanonicalDocumentBucket(item),
+              hasObjectPath: true,
+              signedUrlSuccess: true,
+              imageLoadSuccess: true,
+              caseType: 'OK',
+              details: 'Document thumbnail rendered successfully',
+            });
+          }
+        }}
+        onError={async () => {
+          if (!retryAttempted && retry) {
+            setRetryAttempted(true);
+            if (typeof __DEV__ !== 'undefined' && __DEV__) {
+              logDocumentThumbnailDiagnostic({
+                documentId: item.id,
+                mimeType: item.mimeType,
+                fileType: item.fileType,
+                bucket: getCanonicalDocumentBucket(item),
+                hasObjectPath: true,
+                signedUrlSuccess: true,
+                imageLoadSuccess: false,
+                caseType: 'D',
+                details: 'Image load error; refreshing signed URL once',
+              });
+            }
+            await retry();
+          } else {
+            setImageError(true);
+            if (typeof __DEV__ !== 'undefined' && __DEV__) {
+              logDocumentThumbnailDiagnostic({
+                documentId: item.id,
+                mimeType: item.mimeType,
+                fileType: item.fileType,
+                bucket: getCanonicalDocumentBucket(item),
+                hasObjectPath: true,
+                signedUrlSuccess: true,
+                imageLoadSuccess: false,
+                caseType: 'D',
+                details: 'Image load failed; displaying fallback icon',
+              });
+            }
+          }
+        }}
+      />
+    );
+  }
+
+  // Fallbacks:
+  // Case A: The document is a genuine PDF without a thumbnail preview
+  const isPdf = isPdfDocument(item);
+  if (isPdf) {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      logDocumentThumbnailDiagnostic({
+        documentId: item.id,
+        mimeType: item.mimeType,
+        fileType: item.fileType,
+        bucket: getCanonicalDocumentBucket(item),
+        hasObjectPath: Boolean(item.storagePath || item.filePath || item.fileUrl),
+        caseType: 'A',
+        details: 'Genuine PDF document (no image preview)',
+      });
+    }
+    return (
+      <View style={styles.thumbInner}>
+        <MaterialIcons name="picture-as-pdf" size={24} color={SereneColors.error} />
+        <Text style={styles.thumbPdfLabel}>PDF</Text>
+      </View>
+    );
+  }
+
+  // Non-PDF image document whose image is missing or unavailable:
+  const hasObjectRef = Boolean(item.storagePath || item.filePath || item.fileUrl);
+  if (typeof __DEV__ !== 'undefined' && __DEV__) {
+    if (!hasObjectRef) {
+      logDocumentThumbnailDiagnostic({
+        documentId: item.id,
+        mimeType: item.mimeType,
+        fileType: item.fileType,
+        bucket: getCanonicalDocumentBucket(item),
+        hasObjectPath: false,
+        caseType: 'B',
+        details: 'Canonical path is missing',
+      });
+    } else {
+      logDocumentThumbnailDiagnostic({
+        documentId: item.id,
+        mimeType: item.mimeType,
+        fileType: item.fileType,
+        bucket: getCanonicalDocumentBucket(item),
+        hasObjectPath: true,
+        signedUrlSuccess: false,
+        caseType: 'C',
+        details: 'Signed URL generation failed or file unavailable',
+      });
+    }
+  }
+
+  return (
+    <MaterialIcons
+      name={(fallbackIcon as any) || 'description'}
+      size={24}
+      color={SereneColors.primary}
+    />
+  );
+});
+
 const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
   item,
   linkedItem,
@@ -73,11 +231,6 @@ const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
   onLongPress,
 }: SelectableDocumentCardProps) {
   const meta = getDocumentCategoryMeta(item.category);
-  const canonicalUri = getCanonicalDocumentUri(item.fileUrl || item.filePath);
-  const isPdf =
-    (item.mimeType && item.mimeType.includes('pdf')) ||
-    (canonicalUri && canonicalUri.toLowerCase().endsWith('.pdf')) ||
-    (item.title && item.title.toLowerCase().endsWith('.pdf'));
 
   // Use expiryDate for expiry badge; dueDate is semantically different (bill due)
   const expiryBadge = getExpiryBadge(item.expiryDate, item.category);
@@ -130,16 +283,7 @@ const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
 
       <View style={styles.cardRow}>
         <View style={styles.thumb}>
-          {isPdf ? (
-            <View style={styles.thumbInner}>
-              <MaterialIcons name="picture-as-pdf" size={24} color={SereneColors.error} />
-              <Text style={styles.thumbPdfLabel}>PDF</Text>
-            </View>
-          ) : canonicalUri ? (
-            <Image source={{ uri: canonicalUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-          ) : (
-            <MaterialIcons name={(meta.icon as any) || 'description'} size={24} color={SereneColors.primary} />
-          )}
+          <DocumentCardThumbnail item={item} fallbackIcon={(meta.icon as any) || 'description'} />
         </View>
 
         <View style={styles.cardContent}>
@@ -273,6 +417,25 @@ export default function DocumentsVaultScreen() {
       return true;
     });
   }, [documents, user?.id, session?.user?.id]);
+
+  useEffect(() => {
+    const pathsToPrefetch: string[] = [];
+    for (const d of userDocuments) {
+      if (isPdfDocument(d)) continue;
+      const sp =
+        (d.storagePath && isStoragePath(d.storagePath))
+          ? d.storagePath
+          : (d.filePath && isStoragePath(d.filePath))
+          ? d.filePath
+          : (d.fileUrl && isStoragePath(d.fileUrl))
+          ? d.fileUrl
+          : null;
+      if (sp) pathsToPrefetch.push(sp);
+    }
+    if (pathsToPrefetch.length > 0) {
+      prefetchVaultDocumentSignedUrls(pathsToPrefetch).catch(() => {});
+    }
+  }, [userDocuments]);
 
   useEffect(() => {
     if (isSelectionMode && selectedDocIds.size > 0) {

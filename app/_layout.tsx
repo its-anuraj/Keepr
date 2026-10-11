@@ -5,6 +5,7 @@ import { Stack, router, useSegments, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, Platform } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
+import { NavigationBar } from 'expo-navigation-bar';
 import { useAuthStore } from '../src/store/authStore';
 import { useItemStore } from '../src/store/itemStore';
 import { SereneColors } from '../src/constants/theme';
@@ -39,6 +40,11 @@ export default function RootLayout() {
   // ── Auth Initialization ────────────────────────────────────────────────────
   useEffect(() => {
     async function prepare() {
+      if (Platform.OS === 'android') {
+        try {
+          NavigationBar.setStyle('dark');
+        } catch {}
+      }
       console.log('[StartupAuth] auth initialization started');
       try {
         await initializeAuth();
@@ -244,6 +250,7 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <View className="flex-1 bg-serene-surface">
         <StatusBar style="dark" />
+        {Platform.OS === 'android' && <NavigationBar style="dark" />}
         <Stack
           screenOptions={{
             headerShown: false,

@@ -6,7 +6,7 @@ import {
   extractItemImageCandidates,
   extractDocumentImageCandidates,
   BUCKET_ITEM_IMAGES,
-  BUCKET_RECEIPTS,
+  BUCKET_ITEM_DOCUMENTS,
 } from '../src/utils/storageUtils';
 import {
   mapDbRowToItem,
@@ -14,8 +14,8 @@ import {
   mapDbRowToDocument,
   mapDocumentToDbRow,
   mapDbRowToWarranty,
-  mapWarrantyToDbRow,
 } from '../src/services/vaultRowMappers';
+import { mapWarrantyToDbRow } from '../src/services/cloudSyncService';
 import type { Item, VaultDocument, Warranty, RecentlyAddedEntry } from '../src/types';
 import type { CloudVaultData } from '../src/services/cloudSyncService';
 import { SyncOpType } from '../src/services/syncQueueService';
@@ -99,11 +99,11 @@ console.log('\n--- 2. Independent Entity Query Failure Protection ---');
 test('Supabase error for items query preserves existing documents and local items', () => {
   const currentState = {
     items: [
-      { id: 'it-1', userId: 'u1', name: 'Item 1', purchasePrice: 100, purchaseDate: '2026-01-01', createdAt: '2026-01-01' } as Item,
+      { id: 'it-1', userId: 'u1', name: 'Item 1', purchasePrice: 100, purchaseDate: '2026-01-01', createdAt: '2026-01-01' } as unknown as Item,
     ],
     documents: [
-      { id: 'dc-1', userId: 'u1', title: 'Policy', category: 'Insurance', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as VaultDocument,
-      { id: 'dc-2', userId: 'u1', title: 'Lease', category: 'Property', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as VaultDocument,
+      { id: 'dc-1', userId: 'u1', title: 'Policy', category: 'Insurance', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as unknown as VaultDocument,
+      { id: 'dc-2', userId: 'u1', title: 'Lease', category: 'Property', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as unknown as VaultDocument,
     ],
   };
 
@@ -111,8 +111,8 @@ test('Supabase error for items query preserves existing documents and local item
     items: [],
     warranties: [],
     documents: [
-      { id: 'dc-1', userId: 'u1', title: 'Policy', category: 'Insurance', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as VaultDocument,
-      { id: 'dc-2', userId: 'u1', title: 'Lease', category: 'Property', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as VaultDocument,
+      { id: 'dc-1', userId: 'u1', title: 'Policy', category: 'Insurance', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as unknown as VaultDocument,
+      { id: 'dc-2', userId: 'u1', title: 'Lease', category: 'Property', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as unknown as VaultDocument,
     ],
     receipts: [],
     maintenanceRecords: [],
@@ -161,11 +161,11 @@ test('Supabase error for items query preserves existing documents and local item
 test('Supabase error for documents query preserves existing items and documents backup', () => {
   const currentState = {
     items: [
-      { id: 'it-1', userId: 'u1', name: 'MacBook Pro', purchasePrice: 200000, purchaseDate: '2026-01-01', createdAt: '2026-01-01' } as Item,
-      { id: 'it-2', userId: 'u1', name: 'LG OLED TV', purchasePrice: 150000, purchaseDate: '2026-01-01', createdAt: '2026-01-01' } as Item,
+      { id: 'it-1', userId: 'u1', name: 'MacBook Pro', purchasePrice: 200000, purchaseDate: '2026-01-01', createdAt: '2026-01-01' } as unknown as Item,
+      { id: 'it-2', userId: 'u1', name: 'LG OLED TV', purchasePrice: 150000, purchaseDate: '2026-01-01', createdAt: '2026-01-01' } as unknown as Item,
     ],
     documents: [
-      { id: 'dc-1', userId: 'u1', title: 'Passport', category: 'Personal', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as VaultDocument,
+      { id: 'dc-1', userId: 'u1', title: 'Passport', category: 'Personal', createdAt: '2026-01-01', updatedAt: '2026-01-01' } as unknown as VaultDocument,
     ],
   };
 
@@ -231,7 +231,7 @@ test('User isolation prevents User B from seeing User A records', () => {
     { id: 'item-A1', userId: userA_Id, name: 'Item A1', purchasePrice: 10, purchaseDate: '2026-01-01', createdAt: '2026-01-01' },
     { id: 'item-A2', userId: userA_Id, name: 'Item A2', purchasePrice: 20, purchaseDate: '2026-01-01', createdAt: '2026-01-01' },
     { id: 'item-B1', userId: userB_Id, name: 'Item B1', purchasePrice: 30, purchaseDate: '2026-01-01', createdAt: '2026-01-01' },
-  ];
+  ] as unknown as Item[];
 
   const verifyOwnership = <T extends { userId?: string }>(records: T[], currentUid: string): T[] =>
     records.filter((r) => !r.userId || r.userId === currentUid);
@@ -253,13 +253,13 @@ test('Recently Added combines Items and Documents in strict descending chronolog
   const items: Item[] = [
     { id: 'item-1', name: 'Item Old', purchasePrice: 100, purchaseDate: '2026-01-01', createdAt: '2026-01-01T12:00:00Z' },
     { id: 'item-2', name: 'Item Latest', purchasePrice: 200, purchaseDate: '2026-03-01', createdAt: '2026-03-01T12:00:00Z' },
-  ];
+  ] as unknown as Item[];
 
   const docs: VaultDocument[] = [
-    { id: 'doc-1', title: 'Doc Middle', category: 'Bills', createdAt: '2026-02-01T12:00:00Z', updatedAt: '2026-02-01T12:00:00Z' },
-  ];
+    { id: 'doc-1', title: 'Doc Middle', category: 'Other Important Documents', createdAt: '2026-02-01T12:00:00Z', updatedAt: '2026-02-01T12:00:00Z' },
+  ] as unknown as VaultDocument[];
 
-  const entries: RecentlyAddedEntry[] = [
+  const entries: any[] = [
     ...items.map((i) => ({ ...i, entryType: 'item' as const })),
     ...docs.map((d) => ({ ...d, entryType: 'document' as const })),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -287,9 +287,9 @@ test('UserVaultBackup structure contains all vault entities', () => {
   }
 
   const backup: UserVaultBackup = {
-    items: [{ id: 'i1', name: 'Item', purchasePrice: 50, purchaseDate: '2026-01-01', createdAt: '2026-01-01' }],
-    documents: [{ id: 'd1', title: 'Doc', category: 'Legal', createdAt: '2026-01-01', updatedAt: '2026-01-01' }],
-    warranties: [{ id: 'w1', itemId: 'i1', provider: 'Apple', startDate: '2026-01-01', endDate: '2027-01-01', status: 'active', createdAt: '2026-01-01', updatedAt: '2026-01-01' }],
+    items: [{ id: 'i1', name: 'Item', purchasePrice: 50, purchaseDate: '2026-01-01', createdAt: '2026-01-01' }] as unknown as Item[],
+    documents: [{ id: 'd1', title: 'Doc', category: 'Other Important Documents', createdAt: '2026-01-01', updatedAt: '2026-01-01' }] as unknown as VaultDocument[],
+    warranties: [{ id: 'w1', itemId: 'i1', provider: 'Apple', startDate: '2026-01-01', endDate: '2027-01-01', createdAt: '2026-01-01', updatedAt: '2026-01-01' }] as unknown as Warranty[],
     receipts: [],
     maintenanceRecords: [],
     expenses: [],

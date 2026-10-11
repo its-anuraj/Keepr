@@ -37,6 +37,7 @@ import {
 } from './storageService';
 import { mapDbRowToItem, mapDbRowToDocument, mapDbRowToReceipt } from './vaultRowMappers';
 import { getCanonicalReceiptUri, getCanonicalDocumentUri } from './receiptFileService';
+import { canonicalizeProductPhotos } from '../utils/storageUtils';
 import type {
   Item,
   Warranty,
@@ -474,41 +475,41 @@ export async function migrateLocalDataToCloud(
     const newItemId = migratedItemIdMap.get(item.id);
     if (!newItemId) continue; // item failed to migrate
 
-    const photoUri = item.imageUrl || item.photoUri;
-    if (photoUri && (photoUri.startsWith('file://') || photoUri.startsWith('content://'))) {
-      const ext = getExtension(photoUri);
-      const storagePath = `${userId}/items/${newItemId}/photo${ext}`;
-      const mimeType = inferMimeType(photoUri);
-      const uploaded = await uploadLocalFileToStorage(
-        photoUri,
-        BUCKET_ITEM_IMAGES,
-        storagePath,
-        mimeType
-      );
-      if (uploaded) {
-        result.mediaUploaded++;
-        // For private bucket, store the user-scoped storage path
-        const updatedItem: Item = { ...item, id: newItemId, userId, imageUrl: uploaded };
-        await cloudUpsertItem(updatedItem, userId).catch(() => {});
-      } else if (photoUri) {
-        result.mediaFailed++;
-      }
-    }
+    const canonicalPhotos = canonicalizeProductPhotos(item);
+    const durablePhotos: string[] = [];
 
-    if (Array.isArray(item.productPhotos)) {
-      for (let i = 0; i < item.productPhotos.length; i++) {
-        const photoU = item.productPhotos[i];
-        if (!photoU || (!photoU.startsWith('file://') && !photoU.startsWith('content://'))) continue;
+    for (let i = 0; i < canonicalPhotos.length; i++) {
+      const photoU = canonicalPhotos[i];
+      if (!photoU) continue;
+      if (isStoragePath(photoU)) {
+        durablePhotos.push(photoU);
+        continue;
+      }
+      if (photoU.startsWith('file://') || photoU.startsWith('content://')) {
         const ext = getExtension(photoU);
         const storagePath = `${userId}/items/${newItemId}/photo_${i}${ext}`;
         const mimeType = inferMimeType(photoU);
         const uploaded = await uploadLocalFileToStorage(photoU, BUCKET_ITEM_IMAGES, storagePath, mimeType);
         if (uploaded) {
           result.mediaUploaded++;
+          durablePhotos.push(uploaded);
         } else {
           result.mediaFailed++;
         }
       }
+    }
+
+    if (durablePhotos.length > 0) {
+      const primaryStorage = durablePhotos[0];
+      const updatedItem: Item = {
+        ...item,
+        id: newItemId,
+        userId,
+        imageUrl: primaryStorage,
+        imageStoragePath: primaryStorage,
+        productPhotos: durablePhotos,
+      };
+      await cloudUpsertItem(updatedItem, userId).catch(() => {});
     }
   }
 
@@ -626,34 +627,104 @@ export async function reconcileAndMigrateItemImages(
     const updatedItems: Item[] = [];
 
     for (const item of itemsToProcess) {
-      // Gather all distinct candidate photo paths/URIs across productPhotos, photoUri, and imageUrl
-      const rawCandidates: string[] = [];
-      if (Array.isArray(item.productPhotos)) {
-        for (const p of item.productPhotos) {
-          if (p && typeof p === 'string' && !rawCandidates.includes(p)) {
-            rawCandidates.push(p);
+      // 1. Authoritative canonical product photos (never append primary scalar mirrors photoUri/imageUrl)
+      let canonicalPhotos = canonicalizeProductPhotos(item);
+
+      // 2. Safe repair for existing records with duplicate migration re-uploads (e.g. Lenovo IdeaPad Slim 3):
+      // If an item has multiple storage photos in its folder (e.g. photo_0.jpg, photo_1.jpg, photo_2.jpg),
+      // verify their byte sizes via Supabase Storage. If photo_1 / photo_2 have the exact same size as photo_0,
+      // collapse them because they are proven re-uploads of the same image file.
+      if (userId && isSupabaseConfigured && canonicalPhotos.length > 1) {
+        const storagePhotos = canonicalPhotos.filter((p) => isStoragePath(p));
+        if (storagePhotos.length > 1) {
+          try {
+            const folder = `${userId}/items/${item.id}`;
+            const { data: storageFiles } = await supabase.storage
+              .from(BUCKET_ITEM_IMAGES)
+              .list(folder);
+
+            if (storageFiles && storageFiles.length > 1) {
+              const sizeMap = new Map<string, number>();
+              for (const f of storageFiles) {
+                if (f.name && f.metadata && typeof (f.metadata as any).size === 'number') {
+                  sizeMap.set(f.name, (f.metadata as any).size);
+                }
+              }
+
+              // Base photo is the first storage photo
+              const baseName = storagePhotos[0].split('/').pop();
+              const baseSize = baseName ? sizeMap.get(baseName) : undefined;
+
+              if (baseSize !== undefined && baseSize > 0) {
+                const verifiedList: string[] = [storagePhotos[0]];
+                for (let sIdx = 1; sIdx < storagePhotos.length; sIdx++) {
+                  const sPath = storagePhotos[sIdx];
+                  const sName = sPath.split('/').pop();
+                  const sSize = sName ? sizeMap.get(sName) : undefined;
+                  if (sSize !== undefined && sSize === baseSize) {
+                    console.log(
+                      `[ImageMigration] Verified duplicate photo upload for "${item.name}": ${sPath} (${sSize} bytes == ${baseName}). Collapsing duplicate.`
+                    );
+                  } else {
+                    verifiedList.push(sPath);
+                  }
+                }
+                const nonStorage = canonicalPhotos.filter((p) => !isStoragePath(p));
+                canonicalPhotos = [...verifiedList, ...nonStorage];
+              }
+            }
+          } catch (listErr) {
+            console.warn('[ImageMigration] Storage duplicate inspection note:', listErr);
           }
         }
       }
-      if (item.imageStoragePath && !rawCandidates.includes(item.imageStoragePath)) {
-        rawCandidates.unshift(item.imageStoragePath);
-      }
-      if (item.imageUrl && !rawCandidates.includes(item.imageUrl)) {
-        rawCandidates.push(item.imageUrl);
-      }
-      if (item.photoUri && !rawCandidates.includes(item.photoUri)) {
-        rawCandidates.push(item.photoUri);
-      }
 
-      if (rawCandidates.length === 0) {
-        continue;
+      if (canonicalPhotos.length === 0) {
+        // Self-heal check: If DB row metadata was previously lost or cleared,
+        // but the item folder in Supabase Storage actually contains uploaded photos,
+        // recover the canonical photos directly from Supabase Storage.
+        if (userId && isSupabaseConfigured) {
+          try {
+            const folder = `${userId}/items/${item.id}`;
+            const { data: storageFiles } = await supabase.storage
+              .from(BUCKET_ITEM_IMAGES)
+              .list(folder);
+
+            if (storageFiles && storageFiles.length > 0) {
+              const imageFiles = storageFiles
+                .filter(
+                  (f) =>
+                    f.name &&
+                    !f.name.startsWith('.') &&
+                    !f.name.toLowerCase().includes('receipt') &&
+                    !f.name.toLowerCase().includes('invoice') &&
+                    !f.name.toLowerCase().endsWith('.pdf')
+                )
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              if (imageFiles.length > 0) {
+                canonicalPhotos = imageFiles.map((f) => `${folder}/${f.name}`);
+                console.log(
+                  `[ImageMigration] Self-healed missing product photos for "${item.name}" from Storage:`,
+                  canonicalPhotos
+                );
+              }
+            }
+          } catch (healErr) {
+            console.warn('[ImageMigration] Storage self-heal check note:', healErr);
+          }
+        }
+
+        if (canonicalPhotos.length === 0) {
+          continue;
+        }
       }
 
       const durablePhotos: string[] = [];
       let itemUploadedAny = false;
 
-      for (let idx = 0; idx < rawCandidates.length; idx++) {
-        const candidate = rawCandidates[idx];
+      for (let idx = 0; idx < canonicalPhotos.length; idx++) {
+        const candidate = canonicalPhotos[idx];
 
         // CASE A: already in Supabase Storage
         if (isStoragePath(candidate)) {
@@ -708,32 +779,38 @@ export async function reconcileAndMigrateItemImages(
                 );
               } else {
                 caseC++;
-                console.warn(
-                  `[ImageMigration] CASE B upload error for "${item.name}":`,
-                  uploadRes.error
-                );
+                if (!durablePhotos.includes(candidate)) {
+                  durablePhotos.push(candidate);
+                }
               }
             } catch (uErr) {
               caseC++;
-              console.warn(`[ImageMigration] CASE B exception for "${item.name}":`, uErr);
+              if (!durablePhotos.includes(candidate)) {
+                durablePhotos.push(candidate);
+              }
             }
           } else {
             // CASE C: Local file does not exist on this device
             caseC++;
-            console.log(
-              `[ImageMigration] CASE C: Local file missing on this device for "${item.name}" (${candidate})`
-            );
+            if (!durablePhotos.includes(candidate)) {
+              durablePhotos.push(candidate);
+            }
           }
         }
       }
 
       // If durable photos exist or were newly uploaded:
       if (durablePhotos.length > 0) {
-        const primaryStoragePath = durablePhotos[0];
+        const cleanDurable = canonicalizeProductPhotos(durablePhotos, {
+          receiptPath: item.receiptPath,
+          receiptUri: item.receiptUri,
+        });
+        const primaryStoragePath = cleanDurable.find((p) => isStoragePath(p)) || cleanDurable[0];
         const needsDbUpdate =
           itemUploadedAny ||
           item.imageStoragePath !== primaryStoragePath ||
-          !item.imageStoragePath;
+          !item.imageStoragePath ||
+          JSON.stringify(item.productPhotos || []) !== JSON.stringify(cleanDurable);
 
         if (needsDbUpdate) {
           const { error: updateErr } = await supabase
@@ -741,7 +818,7 @@ export async function reconcileAndMigrateItemImages(
             .update({
               image_storage_path: primaryStoragePath,
               image_url: primaryStoragePath,
-              product_photos: JSON.stringify(durablePhotos),
+              product_photos: cleanDurable,
               updated_at: new Date().toISOString(),
             })
             .eq('id', item.id)
@@ -758,7 +835,7 @@ export async function reconcileAndMigrateItemImages(
           ...item,
           imageStoragePath: primaryStoragePath,
           imageUrl: primaryStoragePath,
-          productPhotos: durablePhotos,
+          productPhotos: cleanDurable,
         });
       } else {
         // CASE C for entire item: Local file is missing.
@@ -958,12 +1035,19 @@ export async function reconcileAndMigrateReceiptsAndDocuments(
 
           if (uploadRes.storagePath) {
             result.documents.caseB++;
+            const cleanMigrated = uploadRes.storagePath.trim().split(/[?#]/)[0].toLowerCase();
+            const isMigratedPdf = cleanMigrated.endsWith('.pdf');
+            const migratedFileType = isMigratedPdf ? 'pdf' : 'image';
+            const migratedMimeType = isMigratedPdf ? 'application/pdf' : cleanMigrated.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
             await supabase
               .from('documents')
               .update({
                 storage_path: uploadRes.storagePath,
                 file_path: uploadRes.storagePath,
                 file_url: uploadRes.storagePath,
+                file_type: migratedFileType,
+                mime_type: migratedMimeType,
                 updated_at: new Date().toISOString(),
               })
               .eq('id', doc.id)
@@ -974,6 +1058,8 @@ export async function reconcileAndMigrateReceiptsAndDocuments(
               storagePath: uploadRes.storagePath,
               filePath: uploadRes.storagePath,
               fileUrl: uploadRes.storagePath,
+              fileType: migratedFileType,
+              mimeType: migratedMimeType,
             });
             console.log(`[DocMigration] Migrated document "${doc.title}" -> ${uploadRes.storagePath}`);
           } else {

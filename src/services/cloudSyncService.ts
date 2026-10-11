@@ -10,6 +10,12 @@ import {
   prefetchReceiptSignedUrls,
   prefetchVaultDocumentSignedUrls,
 } from './storageService';
+import {
+  canonicalizeProductPhotos,
+  cleanStoragePath,
+  isImageDocument,
+  isPdfDocument,
+} from '../utils/storageUtils';
 import { getCanonicalReceiptUri } from './receiptFileService';
 import type {
   Item,
@@ -242,24 +248,24 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
     isMultiProduct: Boolean(products && products.length > 1),
     productCount: products ? products.length : undefined,
     imageUrl: (() => {
-      const dbStorage = row.image_storage_path as string | undefined;
-      const dbImg = row.image_url as string | undefined;
+      const dbStorage = cleanStoragePath(row.image_storage_path as string | undefined);
+      const dbImg = cleanStoragePath(row.image_url as string | undefined);
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
       const rawPhotos = normalizeProductPhotos(row.product_photos);
-      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      const photoStorage = rawPhotos.map((p) => cleanStoragePath(p) || p).find((p) => isStoragePath(p));
       if (photoStorage) return photoStorage;
       if (dbImg) return dbImg;
       if (rawPhotos[0]) return rawPhotos[0];
       return undefined;
     })(),
     imageStoragePath: (() => {
-      const dbStorage = row.image_storage_path as string | undefined;
-      const dbImg = row.image_url as string | undefined;
+      const dbStorage = cleanStoragePath(row.image_storage_path as string | undefined);
+      const dbImg = cleanStoragePath(row.image_url as string | undefined);
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
       const rawPhotos = normalizeProductPhotos(row.product_photos);
-      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      const photoStorage = rawPhotos.map((p) => cleanStoragePath(p) || p).find((p) => isStoragePath(p));
       if (photoStorage) return photoStorage;
       return undefined;
     })(),
@@ -267,11 +273,30 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
     receiptId: (row.receipt_id && typeof row.receipt_id === 'string' && isValidUUID(row.receipt_id))
       ? row.receipt_id
       : undefined,
-    receiptUri: (row.receipt_uri as string) || undefined,
-    receiptPath: (row.receipt_path as string) || undefined,
+    receiptUri: (() => {
+      const rPath = cleanStoragePath(row.receipt_path as string | undefined) || (row.receipt_path as string | undefined);
+      const rUri = cleanStoragePath(row.receipt_uri as string | undefined) || (row.receipt_uri as string | undefined);
+      if (rPath && isStoragePath(rPath)) return rPath;
+      if (rUri && isStoragePath(rUri)) return rUri;
+      return rUri || undefined;
+    })(),
+    receiptPath: (() => {
+      const rPath = cleanStoragePath(row.receipt_path as string | undefined) || (row.receipt_path as string | undefined);
+      const rUri = cleanStoragePath(row.receipt_uri as string | undefined) || (row.receipt_uri as string | undefined);
+      if (rPath && isStoragePath(rPath)) return rPath;
+      if (rUri && isStoragePath(rUri)) return rUri;
+      return undefined;
+    })(),
     receiptName: (row.receipt_name as string) || undefined,
     receiptType: (row.receipt_type as 'receipt' | 'invoice') || undefined,
-    productPhotos: normalizeProductPhotos(row.product_photos),
+    productPhotos: canonicalizeProductPhotos(
+      normalizeProductPhotos(row.product_photos).map((p) => cleanStoragePath(p) || p),
+      {
+        receiptPath: cleanStoragePath(row.receipt_path as string | undefined) || (row.receipt_path as string) || undefined,
+        receiptUri: cleanStoragePath(row.receipt_uri as string | undefined) || (row.receipt_uri as string) || undefined,
+        imageStoragePath: cleanStoragePath(row.image_storage_path as string | undefined) || (row.image_storage_path as string) || undefined,
+      }
+    ),
     returnUntil: (row.return_until as string) || null,
     warrantyUntil: (row.warranty_until as string) || null,
     warrantyProvider: (row.warranty_provider as string) || undefined,
@@ -533,40 +558,68 @@ export function mapItemToDbRow(item: Item, userId: string): Record<string, unkno
       return baseNotes;
     })(),
     image_url: (() => {
-      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
-      if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      const cleanStorage = cleanStoragePath(item.imageStoragePath);
+      if (cleanStorage && isStoragePath(cleanStorage)) return cleanStorage;
+      const cleanImg = cleanStoragePath(item.imageUrl);
+      if (cleanImg && isStoragePath(cleanImg)) return cleanImg;
       if (Array.isArray(item.productPhotos)) {
-        const found = item.productPhotos.find((p) => isStoragePath(p));
-        if (found) return found;
+        for (const p of item.productPhotos) {
+          const cp = cleanStoragePath(p) || p;
+          if (isStoragePath(cp)) return cp;
+        }
       }
       return null;
     })(),
     image_storage_path: (() => {
-      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
-      if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      const cleanStorage = cleanStoragePath(item.imageStoragePath);
+      if (cleanStorage && isStoragePath(cleanStorage)) return cleanStorage;
+      const cleanImg = cleanStoragePath(item.imageUrl);
+      if (cleanImg && isStoragePath(cleanImg)) return cleanImg;
       if (Array.isArray(item.productPhotos)) {
-        const found = item.productPhotos.find((p) => isStoragePath(p));
-        if (found) return found;
+        for (const p of item.productPhotos) {
+          const cp = cleanStoragePath(p) || p;
+          if (isStoragePath(cp)) return cp;
+        }
       }
       return null;
     })(),
     status: item.status || 'active',
     receipt_id: (item.receiptId && isValidUUID(item.receiptId)) ? item.receiptId : null,
-    receipt_uri: (item.receiptUri && !item.receiptUri.startsWith('file:') && !item.receiptUri.startsWith('content:'))
-      ? item.receiptUri
-      : null,
-    receipt_path: (item.receiptPath && !item.receiptPath.startsWith('file:') && !item.receiptPath.startsWith('content:'))
-      ? item.receiptPath
-      : null,
+    receipt_uri: (() => {
+      const cleanReceiptPath = cleanStoragePath(item.receiptPath);
+      if (cleanReceiptPath && isStoragePath(cleanReceiptPath)) return cleanReceiptPath;
+      const cleanReceiptUri = cleanStoragePath(item.receiptUri);
+      if (cleanReceiptUri && isStoragePath(cleanReceiptUri)) return cleanReceiptUri;
+      return null;
+    })(),
+    receipt_path: (() => {
+      const cleanReceiptPath = cleanStoragePath(item.receiptPath);
+      if (cleanReceiptPath && isStoragePath(cleanReceiptPath)) return cleanReceiptPath;
+      const cleanReceiptUri = cleanStoragePath(item.receiptUri);
+      if (cleanReceiptUri && isStoragePath(cleanReceiptUri)) return cleanReceiptUri;
+      return null;
+    })(),
     receipt_name: item.receiptName || null,
     receipt_type: item.receiptType || null,
     product_photos: (() => {
-      const validStoragePhotos = Array.isArray(item.productPhotos)
-        ? item.productPhotos.filter((p) => p && isStoragePath(p))
-        : [];
+      const canonical = canonicalizeProductPhotos(
+        Array.isArray(item.productPhotos)
+          ? item.productPhotos.map((p) => cleanStoragePath(p) || p)
+          : [],
+        {
+          receiptPath: cleanStoragePath(item.receiptPath) || item.receiptPath,
+          receiptUri: cleanStoragePath(item.receiptUri) || item.receiptUri,
+          imageStoragePath: cleanStoragePath(item.imageStoragePath) || item.imageStoragePath,
+          photoUri: cleanStoragePath(item.photoUri) || item.photoUri,
+        }
+      );
+      const validStoragePhotos = canonical
+        .map((p) => cleanStoragePath(p) || p)
+        .filter((p) => isStoragePath(p));
       if (validStoragePhotos.length > 0) return JSON.stringify(validStoragePhotos);
-      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) {
-        return JSON.stringify([item.imageStoragePath]);
+      const cleanStorage = cleanStoragePath(item.imageStoragePath);
+      if (cleanStorage && isStoragePath(cleanStorage)) {
+        return JSON.stringify([cleanStorage]);
       }
       return '[]';
     })(),
@@ -644,9 +697,36 @@ export function mapDocumentToDbRow(doc: VaultDocument, userId: string): Record<s
     notes: doc.notes || null,
     file_path: doc.filePath,
     file_url: doc.fileUrl,
-    file_type: doc.fileType || 'pdf',
+    file_type: (() => {
+      if (doc.fileType && (doc.fileType === 'image' || doc.fileType === 'pdf')) {
+        if (doc.fileType === 'pdf' && isImageDocument(doc)) {
+          return 'image';
+        }
+        return doc.fileType;
+      }
+      if (isImageDocument(doc)) return 'image';
+      if (isPdfDocument(doc)) return 'pdf';
+      return 'image';
+    })(),
     file_size_bytes: doc.fileSizeBytes || 0,
-    mime_type: doc.mimeType || 'application/octet-stream',
+    mime_type: (() => {
+      const clean = (doc.storagePath || doc.filePath || doc.fileUrl || '').trim().split(/[?#]/)[0].toLowerCase();
+      if (doc.mimeType && doc.mimeType !== 'application/octet-stream') {
+        if (doc.mimeType.toLowerCase().includes('pdf') && isImageDocument(doc)) {
+          if (clean.endsWith('.png')) return 'image/png';
+          if (clean.endsWith('.webp')) return 'image/webp';
+          return 'image/jpeg';
+        }
+        return doc.mimeType;
+      }
+      if (isImageDocument(doc)) {
+        if (clean.endsWith('.png')) return 'image/png';
+        if (clean.endsWith('.webp')) return 'image/webp';
+        return 'image/jpeg';
+      }
+      if (isPdfDocument(doc)) return 'application/pdf';
+      return 'application/octet-stream';
+    })(),
     thumbnail_path: doc.thumbnailPath || null,
     storage_path: storagePath,
   };
@@ -1124,13 +1204,14 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
     }
 
     // 2. Background upload local product photos to private BUCKET_ITEM_IMAGES
-    const candidatePhotos = Array.isArray(item.productPhotos) && item.productPhotos.length > 0
-      ? item.productPhotos
-      : item.photoUri
-      ? [item.photoUri]
-      : item.imageUrl
-      ? [item.imageUrl]
-      : [];
+    const candidatePhotos = canonicalizeProductPhotos({
+      ...item,
+      productPhotos: Array.isArray(item.productPhotos) && item.productPhotos.length > 0
+        ? item.productPhotos
+        : (item.photoUri ? [item.photoUri] : (item.imageUrl ? [item.imageUrl] : [])),
+      receiptPath: effectiveReceiptPath || item.receiptPath,
+      receiptUri: item.receiptUri,
+    });
 
     for (let i = 0; i < candidatePhotos.length; i++) {
       const candidate = candidatePhotos[i];
@@ -1140,6 +1221,7 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
         durablePhotos.push(candidate);
         if (!effectiveImageStoragePath) effectiveImageStoragePath = candidate;
       } else if (candidate.startsWith('file:') || candidate.startsWith('content:') || candidate.startsWith('/')) {
+        let uploadedPath: string | null = null;
         try {
           const canonical = getCanonicalReceiptUri(candidate) || candidate;
           const fileInfo = await FileSystem.getInfoAsync(canonical).catch(() => null);
@@ -1159,7 +1241,7 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
               .upload(userScopedPath, bytes, { contentType: ext === '.png' ? 'image/png' : 'image/jpeg', upsert: true });
 
             if (!uploadError) {
-              durablePhotos.push(userScopedPath);
+              uploadedPath = userScopedPath;
               if (!effectiveImageStoragePath || i === 0) {
                 effectiveImageStoragePath = userScopedPath;
               }
@@ -1169,11 +1251,22 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
         } catch (photoUploadErr) {
           console.warn('[CloudSync] Product photo upload note:', photoUploadErr);
         }
+        durablePhotos.push(uploadedPath || candidate);
+      } else {
+        durablePhotos.push(candidate);
       }
     }
 
-    if (!effectiveImageStoragePath && durablePhotos.length > 0) {
-      effectiveImageStoragePath = durablePhotos[0];
+    const finalDurablePhotos = canonicalizeProductPhotos(
+      durablePhotos.length > 0 ? durablePhotos : candidatePhotos,
+      {
+        receiptPath: effectiveReceiptPath || item.receiptPath,
+        receiptUri: item.receiptUri,
+      }
+    );
+
+    if (!effectiveImageStoragePath && finalDurablePhotos.length > 0) {
+      effectiveImageStoragePath = finalDurablePhotos.find((p) => isStoragePath(p)) || undefined;
     }
 
     const payload = mapItemToDbRow({
@@ -1182,7 +1275,7 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
       receiptPath: effectiveReceiptPath,
       imageStoragePath: effectiveImageStoragePath,
       imageUrl: effectiveImageStoragePath || item.imageUrl,
-      productPhotos: durablePhotos.length > 0 ? durablePhotos : item.productPhotos,
+      productPhotos: finalDurablePhotos,
     }, userId);
 
     let { error } = await supabase

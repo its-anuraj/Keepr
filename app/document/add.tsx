@@ -260,6 +260,9 @@ export default function AddDocumentScreen() {
     try {
       const cleanAmount = amount ? parseFloat(amount.replace(/[^0-9.]/g, '')) : undefined;
 
+      const cleanUri = (attachedFileUri || '').trim().split(/[?#]/)[0].toLowerCase();
+      const isPdf = attachedMimeType?.toLowerCase().includes('pdf') || cleanUri.endsWith('.pdf');
+
       const docPayload = {
         title: title.trim(),
         category,
@@ -276,7 +279,8 @@ export default function AddDocumentScreen() {
         fileUrl: attachedFileUri || '',
         filePathBack: attachedFileUriBack || undefined,
         fileUrlBack: attachedFileUriBack || undefined,
-        mimeType: attachedMimeType || 'image/jpeg',
+        fileType: isPdf ? 'pdf' : 'image',
+        mimeType: attachedMimeType || (isPdf ? 'application/pdf' : cleanUri.endsWith('.png') ? 'image/png' : 'image/jpeg'),
         notes: notes.trim() || undefined,
       };
 

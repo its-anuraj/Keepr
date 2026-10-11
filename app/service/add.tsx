@@ -176,6 +176,7 @@ export default function AddServiceScreen() {
               fileUrl: persisted.uri,
               storagePath: persisted.storagePath,
               fileSizeBytes: persisted.fileSize || 0,
+              fileType: 'image',
               mimeType: 'image/jpeg',
               amount: parsedAmount > 0 ? parsedAmount : undefined,
             });
@@ -261,6 +262,7 @@ export default function AddServiceScreen() {
         fileUrl: persisted.uri,
         storagePath: persisted.storagePath,
         fileSizeBytes: persisted.fileSize || 0,
+        fileType: mimeType?.includes('pdf') || fileName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image',
         mimeType: mimeType,
         amount: cleanCost > 0 ? cleanCost : undefined,
       });

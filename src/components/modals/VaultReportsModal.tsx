@@ -9,7 +9,10 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { SereneColors } from '../../constants/theme';
 import { useItemStore } from '../../store/itemStore';
@@ -73,8 +76,13 @@ function getExportFilename(format: 'pdf' | 'csv', scope: ExportScope, fromStr?: 
 
 
 export function VaultReportsModal({ visible, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const items = useItemStore((s) => s.items);
   const user = useAuthStore((s) => s.user);
+
+  const headerTopPadding = Platform.OS === 'android'
+    ? Math.max(insets.top, 24) + 8
+    : 16;
 
   const [scope, setScope] = useState<ExportScope>('all');
   const [dateFrom, setDateFrom] = useState<string>(oneYearAgo());
@@ -237,10 +245,15 @@ export function VaultReportsModal({ visible, onClose }: Props) {
       animationType="slide"
       presentationStyle="pageSheet"
       onRequestClose={handleClose}
+      statusBarTranslucent
     >
+      <StatusBar style="dark" />
       <View className="flex-1 bg-serene-surface">
-        <View className="flex-row items-center justify-between px-4 pt-5 pb-3 border-b border-serene-subtle-border">
-          <View>
+        <View
+          className="flex-row items-center justify-between px-4 pb-3 border-b border-serene-subtle-border"
+          style={{ paddingTop: headerTopPadding }}
+        >
+          <View className="flex-1 mr-3">
             <Text className="text-lg font-bold text-serene-on-surface">Vault Reports</Text>
             <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
               Export your purchase history
@@ -250,13 +263,18 @@ export function VaultReportsModal({ visible, onClose }: Props) {
             onPress={handleClose}
             className="w-9 h-9 items-center justify-center rounded-full bg-serene-surface-container-low"
             accessibilityLabel="Close"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            activeOpacity={0.7}
           >
             <MaterialIcons name="close" size={20} color={SereneColors.onSurfaceVariant} />
           </TouchableOpacity>
         </View>
 
         <ScrollView
-          contentContainerClassName="px-4 py-5 gap-5"
+          contentContainerClassName="px-4 pt-5 gap-5"
+          contentContainerStyle={{
+            paddingBottom: Math.max(insets.bottom + 20, 36),
+          }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >

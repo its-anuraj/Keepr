@@ -67,6 +67,12 @@ import {
   isStoragePath,
 } from '../services/storageService';
 import {
+  canonicalizeProductPhotos,
+  isLocalUri,
+  isRemoteUrl,
+  cleanStoragePath,
+} from '../utils/storageUtils';
+import {
   reconcileAndMigrateItemImages,
   reconcileAndMigrateReceiptsAndDocuments,
 } from '../services/offlineMigrationService';
@@ -519,11 +525,25 @@ export const useItemStore = create<ItemState>()(
               // Map cloud items, merging local media paths where available
               const mappedItems = cloudItemsOwned.map((cloudItem) => {
                 const localItem = currentState.items.find((i) => i.id === cloudItem.id);
+                const canonicalPhotos = canonicalizeProductPhotos({
+                  ...cloudItem,
+                  productPhotos: (cloudItem.productPhotos && cloudItem.productPhotos.length > 0)
+                    ? cloudItem.productPhotos
+                    : localItem?.productPhotos,
+                  receiptPath: cloudItem.receiptPath || localItem?.receiptPath,
+                  receiptUri: localItem?.receiptUri || cloudItem.receiptUri,
+                });
+                const primaryStorage =
+                  canonicalPhotos.find((p) => isStoragePath(p)) ||
+                  cleanStoragePath(cloudItem.imageStoragePath || localItem?.imageStoragePath || cloudItem.imageUrl || localItem?.imageUrl) ||
+                  undefined;
+                const effectiveImage = primaryStorage || canonicalPhotos[0] || cloudItem.imageUrl || localItem?.imageUrl;
                 return {
                   ...cloudItem,
                   photoUri: localItem?.photoUri || cloudItem.photoUri,
-                  imageStoragePath: cloudItem.imageStoragePath || localItem?.imageStoragePath,
-                  imageUrl: cloudItem.imageStoragePath || cloudItem.imageUrl || localItem?.imageUrl,
+                  imageStoragePath: primaryStorage,
+                  imageUrl: effectiveImage,
+                  productPhotos: canonicalPhotos,
                   receiptUri: localItem?.receiptUri || cloudItem.receiptUri,
                   receiptPath: cloudItem.receiptPath || localItem?.receiptPath,
                   receiptName: cloudItem.receiptName || localItem?.receiptName,
@@ -916,17 +936,31 @@ export const useItemStore = create<ItemState>()(
         const determinedReceiptType: 'receipt' | 'invoice' = params.receiptType || (isInvoice ? 'invoice' : 'receipt');
 
         // Product photo must NEVER be contaminated by receipt image (Requirement 22)
-        const rawProductPhotos: string[] = [];
+        const rawCandidates: string[] = [];
         if (params.productPhotos && params.productPhotos.length > 0) {
-          for (const p of params.productPhotos) {
-            if (p && p !== params.receiptUri && p !== persistentReceiptUri) {
-              rawProductPhotos.push(p);
-            }
-          }
-        } else if (params.photoUri && params.photoUri !== params.receiptUri && params.photoUri !== persistentReceiptUri) {
-          rawProductPhotos.push(params.photoUri);
-        } else if (params.imageUrl && params.imageUrl !== params.receiptUri && params.imageUrl !== persistentReceiptUri) {
-          rawProductPhotos.push(params.imageUrl);
+          rawCandidates.push(...params.productPhotos);
+        } else if (params.photoUri) {
+          rawCandidates.push(params.photoUri);
+        } else if (params.imageUrl) {
+          rawCandidates.push(params.imageUrl);
+        }
+
+        const rawProductPhotos = canonicalizeProductPhotos(rawCandidates, {
+          receiptPath: persistentStoragePath || params.receiptPath,
+          receiptUri: persistentReceiptUri || params.receiptUri,
+        });
+
+        if (typeof __DEV__ !== 'undefined' ? __DEV__ : false) {
+          console.log('[ItemStore:addItem] Product photo validation trace:', {
+            incomingProductPhotosCount: params.productPhotos?.length ?? 0,
+            photoUriPresent: Boolean(params.photoUri),
+            imageUrlPresent: Boolean(params.imageUrl),
+            rawCandidatesCount: rawCandidates.length,
+            canonicalizedCount: rawProductPhotos.length,
+            candidateTypes: rawCandidates.map((c) =>
+              isStoragePath(c) ? 'storagePath' : isLocalUri(c) ? 'localUri' : isRemoteUrl(c) ? 'remoteUrl' : 'other'
+            ),
+          });
         }
 
         // Requirement 1 & 13: Product Image is strictly REQUIRED for Purchased Items!
@@ -956,36 +990,44 @@ export const useItemStore = create<ItemState>()(
         }
 
         // Upload product photos to private Supabase Storage (item-images) with stable item ID
-        const storageProductPhotos: string[] = [];
-        const localProductPhotos: string[] = [];
+        // Maintain strict 1-to-1 correspondence with user photos; do NOT append duplicates!
+        const finalPhotos: string[] = [];
 
         for (let idx = 0; idx < persistedProductPhotos.length; idx++) {
           const ph = persistedProductPhotos[idx];
           if (isStoragePath(ph)) {
-            storageProductPhotos.push(ph);
-          } else {
-            localProductPhotos.push(ph);
-            if (userId && isSupabaseConfigured) {
-              try {
-                const uRes = await uploadItemPhoto(userId, id, ph, idx);
-                if (uRes.storagePath) {
-                  storageProductPhotos.push(uRes.storagePath);
-                }
-              } catch (uErr) {
-                console.warn('[ItemStore] Background photo upload notice:', uErr);
+            finalPhotos.push(ph);
+          } else if (userId && isSupabaseConfigured) {
+            try {
+              const uRes = await uploadItemPhoto(userId, id, ph, idx);
+              if (uRes.storagePath) {
+                finalPhotos.push(uRes.storagePath);
+              } else {
+                finalPhotos.push(ph);
               }
+            } catch (uErr) {
+              console.warn('[ItemStore] Background photo upload notice:', uErr);
+              finalPhotos.push(ph);
             }
+          } else {
+            finalPhotos.push(ph);
           }
         }
 
-        const primaryStoragePath = storageProductPhotos[0] || undefined;
-        const primaryLocalPhoto = localProductPhotos[0] || persistedProductPhotos[0] || undefined;
-        const finalPhotos = storageProductPhotos.length > 0
-          ? storageProductPhotos
-          : (params.products && params.products.length > 0
-            ? Array.from(new Set([...persistedProductPhotos, ...params.products.flatMap((p) => p.productPhotos)]))
-            : persistedProductPhotos);
-        const primaryProductPhoto = finalPhotos[0] || undefined;
+        const canonicalFinalPhotos = canonicalizeProductPhotos(
+          finalPhotos.length > 0
+            ? finalPhotos
+            : (params.products && params.products.length > 0
+              ? Array.from(new Set([...persistedProductPhotos, ...params.products.flatMap((p) => p.productPhotos)]))
+              : persistedProductPhotos),
+          {
+            receiptPath: persistentStoragePath || params.receiptPath,
+            receiptUri: persistentReceiptUri || params.receiptUri,
+          }
+        );
+
+        const primaryStoragePath = canonicalFinalPhotos.find((p) => isStoragePath(p)) || undefined;
+        const primaryLocalPhoto = persistedProductPhotos.find((p) => !isStoragePath(p)) || primaryStoragePath;
 
         const isMulti = Boolean(params.products && params.products.length > 1);
         const pCount = params.products ? params.products.length : undefined;
@@ -1042,7 +1084,7 @@ export const useItemStore = create<ItemState>()(
           photoUri: primaryLocalPhoto,
           imageUrl: primaryStoragePath || primaryLocalPhoto,
           imageStoragePath: primaryStoragePath,
-          productPhotos: finalPhotos,
+          productPhotos: canonicalFinalPhotos,
           products: params.products,
           isMultiProduct: isMulti,
           productCount: pCount,
@@ -1254,35 +1296,49 @@ export const useItemStore = create<ItemState>()(
               ? lineTotal / qty
               : lineTotal;
 
-          const rawPhotos = it.productPhotos && it.productPhotos.length > 0 ? it.productPhotos : (it.photoUri ? [it.photoUri] : []);
+          const rawCandidates = it.productPhotos && it.productPhotos.length > 0 ? it.productPhotos : (it.photoUri ? [it.photoUri] : []);
+          const rawPhotos = canonicalizeProductPhotos(rawCandidates, {
+            receiptPath: durableReceiptStoragePath || receipt.fileUri,
+            receiptUri: persistentReceiptUri || receipt.fileUri,
+          });
           const persistedPhotos: string[] = [];
           for (const ph of rawPhotos) {
-            if (ph && ph !== receipt.fileUri && ph !== persistentReceiptUri) {
-              try {
-                const pRes = await persistProductPhotoToVault(ph, 'product_photo.jpg');
-                persistedPhotos.push(pRes.persisted && pRes.uri ? pRes.uri : ph);
-              } catch {
-                persistedPhotos.push(ph);
-              }
+            try {
+              const pRes = await persistProductPhotoToVault(ph, 'product_photo.jpg');
+              persistedPhotos.push(pRes.persisted && pRes.uri ? pRes.uri : ph);
+            } catch {
+              persistedPhotos.push(ph);
             }
           }
 
-          const storagePhotos: string[] = [];
+          const finalItemPhotos: string[] = [];
           for (let pIdx = 0; pIdx < persistedPhotos.length; pIdx++) {
             const pUri = persistedPhotos[pIdx];
             if (isStoragePath(pUri)) {
-              storagePhotos.push(pUri);
+              finalItemPhotos.push(pUri);
             } else if (userId && isSupabaseConfigured) {
               try {
                 const uRes = await uploadItemPhoto(userId, purchaseId, pUri, pIdx);
                 if (uRes.storagePath) {
-                  storagePhotos.push(uRes.storagePath);
+                  finalItemPhotos.push(uRes.storagePath);
+                } else {
+                  finalItemPhotos.push(pUri);
                 }
-              } catch {}
+              } catch {
+                finalItemPhotos.push(pUri);
+              }
+            } else {
+              finalItemPhotos.push(pUri);
             }
           }
 
-          const productFinalPhotos = storagePhotos.length > 0 ? storagePhotos : persistedPhotos;
+          const productFinalPhotos = canonicalizeProductPhotos(
+            finalItemPhotos.length > 0 ? finalItemPhotos : persistedPhotos,
+            {
+              receiptPath: durableReceiptStoragePath || receipt.fileUri,
+              receiptUri: persistentReceiptUri || receipt.fileUri,
+            }
+          );
 
           const itemWarranty = it.warrantyUntil ? (normalizeDateToIso(it.warrantyUntil) || it.warrantyUntil) : null;
           const itemReturn = it.returnUntil ? (normalizeDateToIso(it.returnUntil) || it.returnUntil) : null;
@@ -1327,7 +1383,13 @@ export const useItemStore = create<ItemState>()(
           }
         }
 
-        const allProductPhotos = purchasedProducts.flatMap((p) => p.productPhotos);
+        const allProductPhotos = canonicalizeProductPhotos(
+          purchasedProducts.flatMap((p) => p.productPhotos),
+          {
+            receiptPath: durableReceiptStoragePath || receipt.fileUri,
+            receiptUri: persistentReceiptUri || receipt.fileUri,
+          }
+        );
         const primaryPhoto = allProductPhotos[0] || undefined;
         const primaryStoragePath = allProductPhotos.find((p) => isStoragePath(p)) || undefined;
         const totalPurchasePrice = receipt.totalAmount || purchasedProducts.reduce((sum, p) => sum + p.lineTotal, 0);
@@ -1523,9 +1585,14 @@ export const useItemStore = create<ItemState>()(
         let updatedStoragePath = updates.imageStoragePath ?? currentItem?.imageStoragePath;
 
         if (updates.productPhotos && Array.isArray(updates.productPhotos)) {
+          const sanitizedCandidates = canonicalizeProductPhotos(updates.productPhotos, {
+            receiptPath: updatedReceiptPath || currentItem?.receiptPath,
+            receiptUri: updates.receiptUri || currentItem?.receiptUri,
+          });
+
           const finalPhotos: string[] = [];
-          for (let pIdx = 0; pIdx < updates.productPhotos.length; pIdx++) {
-            const p = updates.productPhotos[pIdx];
+          for (let pIdx = 0; pIdx < sanitizedCandidates.length; pIdx++) {
+            const p = sanitizedCandidates[pIdx];
             if (isStoragePath(p)) {
               finalPhotos.push(p);
             } else if (userId && isSupabaseConfigured) {
@@ -1543,20 +1610,13 @@ export const useItemStore = create<ItemState>()(
               finalPhotos.push(p);
             }
           }
-          updatedPhotos = finalPhotos;
-          const firstStorage = finalPhotos.find((p) => isStoragePath(p));
+          updatedPhotos = canonicalizeProductPhotos(finalPhotos, {
+            receiptPath: updatedReceiptPath || currentItem?.receiptPath,
+            receiptUri: updates.receiptUri || currentItem?.receiptUri,
+          });
+          const firstStorage = updatedPhotos.find((p) => isStoragePath(p));
           if (firstStorage) {
             updatedStoragePath = firstStorage;
-          }
-
-          // Clean up any removed photos from Supabase Storage
-          if (currentItem?.productPhotos) {
-            const removedPaths = currentItem.productPhotos.filter(
-              (oldP) => isStoragePath(oldP) && !finalPhotos.includes(oldP)
-            );
-            if (removedPaths.length > 0) {
-              deleteItemPhotosFromStorage(removedPaths).catch(() => {});
-            }
           }
         }
 
@@ -2060,7 +2120,10 @@ export const useItemStore = create<ItemState>()(
         }
         const fileSizeBytes = docData.fileSizeBytes || 0;
         const filePath = docData.filePath || docData.fileUrl || '';
-        const mimeType = docData.mimeType || (docData.fileUrl?.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+        const cleanCandidate = (filePath || docData.storagePath || docData.fileUrl || '').trim().split(/[?#]/)[0].toLowerCase();
+        const isPdf = cleanCandidate.endsWith('.pdf') || docData.mimeType?.toLowerCase().includes('pdf');
+        const mimeType = docData.mimeType || (isPdf ? 'application/pdf' : cleanCandidate.endsWith('.png') ? 'image/png' : cleanCandidate.endsWith('.webp') ? 'image/webp' : 'image/jpeg');
+        const fileType = docData.fileType || (isPdf ? 'pdf' : 'image');
 
         let durableStoragePath = docData.storagePath && isStoragePath(docData.storagePath) ? docData.storagePath : undefined;
         if (filePath && !durableStoragePath && !isStoragePath(filePath) && isSupabaseConfigured && userId) {
@@ -2089,6 +2152,7 @@ export const useItemStore = create<ItemState>()(
           filePath: durableStoragePath || filePath,
           fileUrl: durableStoragePath || docData.fileUrl || filePath,
           storagePath: durableStoragePath,
+          fileType,
           mimeType,
           fileSizeBytes,
           title,
@@ -2169,12 +2233,20 @@ export const useItemStore = create<ItemState>()(
           }
         }
 
+        const effectiveFilePath = durableStoragePath || updates.filePath || current.filePath || '';
+        const cleanCandidate = (effectiveFilePath || updates.fileUrl || current.fileUrl || '').trim().split(/[?#]/)[0].toLowerCase();
+        const isPdf = cleanCandidate.endsWith('.pdf') || (updates.mimeType || current.mimeType)?.toLowerCase().includes('pdf');
+        const fileType = updates.fileType || (isPdf ? 'pdf' : 'image');
+        const mimeType = updates.mimeType || (isPdf ? 'application/pdf' : cleanCandidate.endsWith('.png') ? 'image/png' : cleanCandidate.endsWith('.webp') ? 'image/webp' : (current.mimeType && current.mimeType !== 'application/pdf' && current.mimeType !== 'application/octet-stream') ? current.mimeType : 'image/jpeg');
+
         const updatedDoc: VaultDocument = {
           ...current,
           ...updates,
           storagePath: durableStoragePath,
-          filePath: durableStoragePath || updates.filePath || current.filePath,
+          filePath: effectiveFilePath,
           fileUrl: durableStoragePath || updates.fileUrl || current.fileUrl,
+          fileType,
+          mimeType,
           title: updates.title || updates.name || current.title,
           name: updates.title || updates.name || current.title,
           updatedAt: now,

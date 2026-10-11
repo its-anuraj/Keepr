@@ -30,7 +30,7 @@ import {
   verifyReceiptFileExists,
   logReceiptDiagnostics,
 } from '../../src/services/receiptFileService';
-import { isStoragePath } from '../../src/utils/storageUtils';
+import { isStoragePath, canonicalizeProductPhotos } from '../../src/utils/storageUtils';
 import { getItemReceiptSignedUrl } from '../../src/services/storageService';
 
 export default function ItemDetailScreen() {
@@ -118,18 +118,16 @@ export default function ItemDetailScreen() {
   const { resolvedUri: resolvedMainPhoto } = useResolvedItemImage(itemForImage);
 
   const rawPhotoCandidateList = useMemo(() => {
-    if (item.productPhotos && item.productPhotos.length > 0) {
-      return item.productPhotos;
-    }
-    return primaryPhotoCandidate ? [primaryPhotoCandidate] : [];
-  }, [item.productPhotos, primaryPhotoCandidate]);
+    return canonicalizeProductPhotos(item);
+  }, [item]);
 
   const { resolvedPhotos } = useResolvedItemPhotos(rawPhotoCandidateList);
 
   const allProductPhotos: string[] = useMemo(() => {
-    return resolvedPhotos
+    const uris = resolvedPhotos
       .map((p) => p.resolvedUri)
       .filter((u): u is string => Boolean(u));
+    return Array.from(new Set(uris));
   }, [resolvedPhotos]);
 
   // Fallback status for older items where local file was removed or created on another device

@@ -274,17 +274,17 @@ test('document image candidates extracted accurately for Recently Added document
     category: 'Warranty & Guarantee',
     documentType: 'Warranty Certificate',
     fileType: 'warranty_card',
-    filePath: 'user-abc/documents/doc-123/card.pdf',
-    fileUrl: 'user-abc/documents/doc-123/card.pdf',
-    storagePath: 'user-abc/documents/doc-123/card.pdf',
+    filePath: 'user-abc/documents/doc-123/card.jpg',
+    fileUrl: 'user-abc/documents/doc-123/card.jpg',
+    storagePath: 'user-abc/documents/doc-123/card.jpg',
     fileSizeBytes: 1024,
-    mimeType: 'application/pdf',
+    mimeType: 'image/jpeg',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
   const candidate = extractDocumentImageCandidates(doc);
-  assert.strictEqual(candidate.storagePath, 'user-abc/documents/doc-123/card.pdf');
+  assert.strictEqual(candidate.storagePath, 'user-abc/documents/doc-123/card.jpg');
   assert.strictEqual(candidate.remoteUrl, null);
   assert.strictEqual(candidate.localUri, null);
 });

@@ -14,6 +14,7 @@ import { useNotificationReadStore } from '../../store/notificationReadStore';
 interface HeaderProps {
   title?: string;
   showBack?: boolean;
+  onBackPress?: () => void;
   rightAction?: React.ReactNode;
 }
 
@@ -37,7 +38,7 @@ function useActiveNotificationIds(): string[] {
 }
 
 
-export const Header: React.FC<HeaderProps> = ({ title = 'Keepr', showBack = false, rightAction }) => {
+export const Header: React.FC<HeaderProps> = ({ title = 'Keepr', showBack = false, onBackPress, rightAction }) => {
   const insets = useSafeAreaInsets();
   const user = useAuthStore((s) => s.user);
 
@@ -54,7 +55,7 @@ export const Header: React.FC<HeaderProps> = ({ title = 'Keepr', showBack = fals
         <View className="flex-row items-center gap-2 flex-1 mr-2">
           {showBack && (
             <TouchableOpacity
-              onPress={() => router.back()}
+              onPress={onBackPress || (() => router.back())}
               className="w-8 h-8 rounded-full bg-serene-surface-container-high items-center justify-center -ml-1 mr-1"
               activeOpacity={0.7}
             >

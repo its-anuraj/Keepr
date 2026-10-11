@@ -1,4 +1,10 @@
-import { isStoragePath } from '../utils/storageUtils';
+import {
+  isStoragePath,
+  canonicalizeProductPhotos,
+  cleanStoragePath,
+  isImageDocument,
+  isPdfDocument,
+} from '../utils/storageUtils';
 import type {
   Item,
   PurchasedProduct,
@@ -105,64 +111,60 @@ export function normalizeProductPhotos(raw: unknown): string[] {
     return [];
   }
 
+  let list: string[] = [];
+
   // 1. Direct array
   if (Array.isArray(raw)) {
-    return raw
+    list = raw
       .filter((item): item is string => typeof item === 'string')
       .map((item) => item.trim())
       .filter((item) => item.length > 0);
-  }
-
-  // 2. Non-string primitives (numbers, booleans, objects) -> safe fallback []
-  if (typeof raw !== 'string') {
+  } else if (typeof raw !== 'string') {
+    // 2. Non-string primitives (numbers, booleans, objects) -> safe fallback []
     return [];
-  }
-
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  // 3. PostgreSQL array syntax: starts with '{' and ends with '}'
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try {
-      const parsed = parsePostgresArray(trimmed);
-      return parsed;
-    } catch {
-      console.warn('[CloudSync] Non-fatal: failed to parse postgres array in product_photos');
+  } else {
+    const trimmed = raw.trim();
+    if (!trimmed) {
       return [];
     }
-  }
 
-  // 4. JSON array or JSON string
-  if (
-    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
-    (trimmed.startsWith('"') && trimmed.endsWith('"'))
-  ) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) {
-        return parsed
-          .filter((item): item is string => typeof item === 'string')
-          .map((item) => item.trim())
-          .filter((item) => item.length > 0);
+    // 3. PostgreSQL array syntax: starts with '{' and ends with '}'
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        list = parsePostgresArray(trimmed);
+      } catch {
+        console.warn('[CloudSync] Non-fatal: failed to parse postgres array in product_photos');
+        return [];
       }
-      if (typeof parsed === 'string') {
-        const clean = parsed.trim();
-        return clean.length > 0 ? [clean] : [];
+    } else if (
+      // 4. JSON array or JSON string
+      (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    ) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          list = parsed
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0);
+        } else if (typeof parsed === 'string') {
+          const clean = parsed.trim();
+          list = clean.length > 0 ? [clean] : [];
+        }
+      } catch {
+        list = trimmed.startsWith('[') || trimmed.startsWith('{') ? [] : [trimmed];
       }
-    } catch {
-      // JSON parse failed; fall through to evaluate as plain string path if not broken syntax
+    } else if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      // 5. Malformed structured syntax -> safe fallback []
+      return [];
+    } else {
+      // 6. Plain non-empty path, URI, or single string
+      list = [trimmed];
     }
   }
 
-  // 5. Malformed structured syntax (e.g. unclosed '[' or '{') -> safe fallback []
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    return [];
-  }
-
-  // 6. Plain non-empty path, URI, or single string
-  return [trimmed];
+  return canonicalizeProductPhotos(list);
 }
 
 /**
@@ -227,24 +229,24 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
     isMultiProduct: Boolean(products && products.length > 1),
     productCount: products ? products.length : undefined,
     imageUrl: (() => {
-      const dbStorage = row.image_storage_path as string | undefined;
-      const dbImg = row.image_url as string | undefined;
+      const dbStorage = cleanStoragePath(row.image_storage_path as string | undefined);
+      const dbImg = cleanStoragePath(row.image_url as string | undefined);
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
       const rawPhotos = normalizeProductPhotos(row.product_photos);
-      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      const photoStorage = rawPhotos.map((p) => cleanStoragePath(p) || p).find((p) => isStoragePath(p));
       if (photoStorage) return photoStorage;
       if (dbImg) return dbImg;
       if (rawPhotos[0]) return rawPhotos[0];
       return undefined;
     })(),
     imageStoragePath: (() => {
-      const dbStorage = row.image_storage_path as string | undefined;
-      const dbImg = row.image_url as string | undefined;
+      const dbStorage = cleanStoragePath(row.image_storage_path as string | undefined);
+      const dbImg = cleanStoragePath(row.image_url as string | undefined);
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
       const rawPhotos = normalizeProductPhotos(row.product_photos);
-      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      const photoStorage = rawPhotos.map((p) => cleanStoragePath(p) || p).find((p) => isStoragePath(p));
       if (photoStorage) return photoStorage;
       return undefined;
     })(),
@@ -253,22 +255,29 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
       ? row.receipt_id
       : undefined,
     receiptUri: (() => {
-      const rPath = row.receipt_path as string | undefined;
-      const rUri = row.receipt_uri as string | undefined;
+      const rPath = cleanStoragePath(row.receipt_path as string | undefined) || (row.receipt_path as string | undefined);
+      const rUri = cleanStoragePath(row.receipt_uri as string | undefined) || (row.receipt_uri as string | undefined);
       if (rPath && isStoragePath(rPath)) return rPath;
       if (rUri && isStoragePath(rUri)) return rUri;
       return rUri || undefined;
     })(),
     receiptPath: (() => {
-      const rPath = row.receipt_path as string | undefined;
-      const rUri = row.receipt_uri as string | undefined;
+      const rPath = cleanStoragePath(row.receipt_path as string | undefined) || (row.receipt_path as string | undefined);
+      const rUri = cleanStoragePath(row.receipt_uri as string | undefined) || (row.receipt_uri as string | undefined);
       if (rPath && isStoragePath(rPath)) return rPath;
       if (rUri && isStoragePath(rUri)) return rUri;
       return undefined;
     })(),
     receiptName: (row.receipt_name as string) || undefined,
     receiptType: (row.receipt_type as 'receipt' | 'invoice') || undefined,
-    productPhotos: normalizeProductPhotos(row.product_photos),
+    productPhotos: canonicalizeProductPhotos(
+      normalizeProductPhotos(row.product_photos).map((p) => cleanStoragePath(p) || p),
+      {
+        receiptPath: cleanStoragePath(row.receipt_path as string | undefined) || (row.receipt_path as string) || undefined,
+        receiptUri: cleanStoragePath(row.receipt_uri as string | undefined) || (row.receipt_uri as string) || undefined,
+        imageStoragePath: cleanStoragePath(row.image_storage_path as string | undefined) || (row.image_storage_path as string) || undefined,
+      }
+    ),
     returnUntil: (row.return_until as string) || null,
     warrantyUntil: (row.warranty_until as string) || null,
     warrantyProvider: (row.warranty_provider as string) || undefined,
@@ -343,9 +352,57 @@ export function mapDbRowToDocument(row: Record<string, unknown>): VaultDocument 
       if (fp && isStoragePath(fp)) return fp;
       return fu || fp || '';
     })(),
-    fileType: (row.file_type as string) || 'pdf',
+    fileType: (() => {
+      const candidatePaths = [
+        row.storage_path as string | undefined,
+        row.file_path as string | undefined,
+        row.file_url as string | undefined,
+        row.thumbnail_path as string | undefined,
+      ];
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.gif'];
+      const hasImageExt = candidatePaths.some((p) => {
+        if (!p || typeof p !== 'string') return false;
+        const clean = p.trim().split(/[?#]/)[0].toLowerCase();
+        return imageExtensions.some((ext) => clean.endsWith(ext));
+      });
+      const mime = typeof row.mime_type === 'string' ? row.mime_type.toLowerCase() : '';
+      if (hasImageExt || mime.startsWith('image/')) {
+        return 'image';
+      }
+      const hasPdfExt = candidatePaths.some((p) => {
+        if (!p || typeof p !== 'string') return false;
+        const clean = p.trim().split(/[?#]/)[0].toLowerCase();
+        return clean.endsWith('.pdf');
+      });
+      if (hasPdfExt || mime.includes('pdf')) {
+        return 'pdf';
+      }
+      return (row.file_type as string) || 'image';
+    })(),
     fileSizeBytes: Number(row.file_size_bytes) || 0,
-    mimeType: (row.mime_type as string) || 'application/octet-stream',
+    mimeType: (() => {
+      const rawMime = (row.mime_type as string) || '';
+      const candidatePaths = [
+        row.storage_path as string | undefined,
+        row.file_path as string | undefined,
+        row.file_url as string | undefined,
+      ];
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.gif'];
+      const hasImageExt = candidatePaths.some((p) => {
+        if (!p || typeof p !== 'string') return false;
+        const clean = p.trim().split(/[?#]/)[0].toLowerCase();
+        return imageExtensions.some((ext) => clean.endsWith(ext));
+      });
+      if (hasImageExt) {
+        if (!rawMime || rawMime === 'application/octet-stream' || rawMime.includes('pdf')) {
+          const matchExt = candidatePaths.find((p) => p && typeof p === 'string')?.trim().split(/[?#]/)[0].toLowerCase();
+          if (matchExt?.endsWith('.png')) return 'image/png';
+          if (matchExt?.endsWith('.webp')) return 'image/webp';
+          return 'image/jpeg';
+        }
+      }
+      return rawMime || 'application/octet-stream';
+    })(),
     thumbnailPath: (row.thumbnail_path as string) || null,
     storagePath: (() => {
       const sp = row.storage_path as string | undefined;
@@ -504,38 +561,60 @@ export function mapItemToDbRow(item: Item, userId: string): Record<string, unkno
       return baseNotes;
     })(),
     image_url: (() => {
-      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
-      if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      const cleanStorage = cleanStoragePath(item.imageStoragePath);
+      if (cleanStorage && isStoragePath(cleanStorage)) return cleanStorage;
+      const cleanImg = cleanStoragePath(item.imageUrl);
+      if (cleanImg && isStoragePath(cleanImg)) return cleanImg;
       if (Array.isArray(item.productPhotos)) {
-        const found = item.productPhotos.find((p) => isStoragePath(p));
-        if (found) return found;
+        for (const p of item.productPhotos) {
+          const cp = cleanStoragePath(p) || p;
+          if (isStoragePath(cp)) return cp;
+        }
       }
       return null;
     })(),
     image_storage_path: (() => {
-      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
-      if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      const cleanStorage = cleanStoragePath(item.imageStoragePath);
+      if (cleanStorage && isStoragePath(cleanStorage)) return cleanStorage;
+      const cleanImg = cleanStoragePath(item.imageUrl);
+      if (cleanImg && isStoragePath(cleanImg)) return cleanImg;
       if (Array.isArray(item.productPhotos)) {
-        const found = item.productPhotos.find((p) => isStoragePath(p));
-        if (found) return found;
+        for (const p of item.productPhotos) {
+          const cp = cleanStoragePath(p) || p;
+          if (isStoragePath(cp)) return cp;
+        }
       }
       return null;
     })(),
     status: item.status || 'active',
     receipt_id: (item.receiptId && isValidUUID(item.receiptId)) ? item.receiptId : null,
     receipt_uri: (() => {
-      if (item.receiptPath && isStoragePath(item.receiptPath)) return item.receiptPath;
-      if (item.receiptUri && isStoragePath(item.receiptUri)) return item.receiptUri;
+      const cleanReceiptPath = cleanStoragePath(item.receiptPath);
+      if (cleanReceiptPath && isStoragePath(cleanReceiptPath)) return cleanReceiptPath;
+      const cleanReceiptUri = cleanStoragePath(item.receiptUri);
+      if (cleanReceiptUri && isStoragePath(cleanReceiptUri)) return cleanReceiptUri;
       return null;
     })(),
     receipt_path: (() => {
-      if (item.receiptPath && isStoragePath(item.receiptPath)) return item.receiptPath;
-      if (item.receiptUri && isStoragePath(item.receiptUri)) return item.receiptUri;
+      const cleanReceiptPath = cleanStoragePath(item.receiptPath);
+      if (cleanReceiptPath && isStoragePath(cleanReceiptPath)) return cleanReceiptPath;
+      const cleanReceiptUri = cleanStoragePath(item.receiptUri);
+      if (cleanReceiptUri && isStoragePath(cleanReceiptUri)) return cleanReceiptUri;
       return null;
     })(),
     receipt_name: item.receiptName || null,
     receipt_type: item.receiptType || null,
-    product_photos: Array.isArray(item.productPhotos) ? item.productPhotos : [],
+    product_photos: canonicalizeProductPhotos(
+      Array.isArray(item.productPhotos)
+        ? item.productPhotos.map((p) => cleanStoragePath(p) || p)
+        : [],
+      {
+        receiptPath: cleanStoragePath(item.receiptPath) || item.receiptPath,
+        receiptUri: cleanStoragePath(item.receiptUri) || item.receiptUri,
+        imageStoragePath: cleanStoragePath(item.imageStoragePath) || item.imageStoragePath,
+        photoUri: cleanStoragePath(item.photoUri) || item.photoUri,
+      }
+    ),
     product_type: item.productType || null,
     category_confidence: item.categoryConfidence || null,
     imei: item.imei || null,
@@ -591,9 +670,36 @@ export function mapDocumentToDbRow(doc: VaultDocument, userId: string): Record<s
     notes: doc.notes || null,
     file_path: effectiveCloudFileRef,
     file_url: effectiveCloudFileRef,
-    file_type: doc.fileType || 'pdf',
+    file_type: (() => {
+      if (doc.fileType && (doc.fileType === 'image' || doc.fileType === 'pdf')) {
+        if (doc.fileType === 'pdf' && isImageDocument(doc)) {
+          return 'image';
+        }
+        return doc.fileType;
+      }
+      if (isImageDocument(doc)) return 'image';
+      if (isPdfDocument(doc)) return 'pdf';
+      return 'image';
+    })(),
     file_size_bytes: doc.fileSizeBytes || 0,
-    mime_type: doc.mimeType || 'application/octet-stream',
+    mime_type: (() => {
+      const clean = (doc.storagePath || doc.filePath || doc.fileUrl || '').trim().split(/[?#]/)[0].toLowerCase();
+      if (doc.mimeType && doc.mimeType !== 'application/octet-stream') {
+        if (doc.mimeType.toLowerCase().includes('pdf') && isImageDocument(doc)) {
+          if (clean.endsWith('.png')) return 'image/png';
+          if (clean.endsWith('.webp')) return 'image/webp';
+          return 'image/jpeg';
+        }
+        return doc.mimeType;
+      }
+      if (isImageDocument(doc)) {
+        if (clean.endsWith('.png')) return 'image/png';
+        if (clean.endsWith('.webp')) return 'image/webp';
+        return 'image/jpeg';
+      }
+      if (isPdfDocument(doc)) return 'application/pdf';
+      return 'application/octet-stream';
+    })(),
     thumbnail_path: doc.thumbnailPath && isStoragePath(doc.thumbnailPath) ? doc.thumbnailPath : null,
     storage_path: storagePath,
   };

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,9 +13,10 @@ import {
   Platform,
   Image,
   Modal,
+  BackHandler,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
@@ -45,6 +46,57 @@ import { normalizeDateToIso } from '../../src/services/receiptParser';
 import { formatDate } from '../../src/utils/currency';
 import { isNoWarrantyCategory } from '../../src/utils/warranty';
 import { resolveItemImageUri } from '../../src/services/storageService';
+import {
+  canonicalizeProductPhotos,
+  isStoragePath,
+  isLocalUri,
+  isRemoteUrl,
+} from '../../src/utils/storageUtils';
+
+function AddProductPhotoThumbnail({
+  photoUri,
+  index,
+  onPress,
+  onRemove,
+}: {
+  photoUri: string;
+  index: number;
+  onPress: (resolvedUri: string) => void;
+  onRemove: () => void;
+}) {
+  const [displayUri, setDisplayUri] = useState<string>(photoUri);
+
+  useEffect(() => {
+    let isMounted = true;
+    resolveItemImageUri(photoUri).then((resolved) => {
+      if (isMounted && resolved) {
+        setDisplayUri(resolved);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [photoUri]);
+
+  return (
+    <View className="relative">
+      <TouchableOpacity
+        className="w-20 h-20 rounded-serene-md overflow-hidden bg-black/5 border border-serene-subtle-border"
+        activeOpacity={0.88}
+        onPress={() => onPress(displayUri)}
+      >
+        <Image source={{ uri: displayUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+      </TouchableOpacity>
+      <TouchableOpacity
+        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-black/75 items-center justify-center shadow-sm"
+        activeOpacity={0.8}
+        onPress={onRemove}
+      >
+        <MaterialIcons name="close" size={12} color="#FFFFFF" />
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 export default function AddOrEditItemScreen() {
   const params = useLocalSearchParams<{
@@ -79,6 +131,7 @@ export default function AddOrEditItemScreen() {
     scannedSerialNumber?: string;
     scannedNotes?: string;
     categoryId?: string;
+    reset?: string;
   }>();
 
   const isEditMode = Boolean(params.editId);
@@ -214,6 +267,205 @@ export default function AddOrEditItemScreen() {
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const isPickerActiveRef = useRef<boolean>(false);
+  const lastResetParamRef = useRef<string | null>(null);
+
+  const resetFormState = useCallback(() => {
+    setCategoryId(null);
+    setCategoryConfidence(null);
+    setName('');
+    setProductType('');
+    setPurchasePrice('');
+    setPurchaseDate(new Date().toISOString().split('T')[0]);
+    setMerchant('');
+    setSubtotal('');
+    setDiscount('');
+    setGstTax('');
+    setGstRate('');
+    setCgst('');
+    setSgst('');
+    setIgst('');
+    setQuantity('1');
+    setUnitPrice('');
+    setSellerAddress('');
+    setGstin('');
+    setInvoiceNumber('');
+    setBrand('');
+    setModel('');
+    setSerialNumber('');
+    setImei('');
+    setSize('');
+    setColor('');
+    setMaterial('');
+    setRegistrationNumber('');
+    setVinChassisNumber('');
+    setEngineNumber('');
+    setVariant('');
+    setDealer('');
+    setInsuranceExpiry('');
+    setPucDate('');
+    setReturnEnabled(true);
+    setReturnUntil('');
+    setWarrantyEnabled(true);
+    setWarrantyUntil('');
+    setWarrantyProvider('');
+    setEnableReminder(true);
+    setProductPhotos([]);
+    setAttachedReceiptUri(null);
+    setAttachedReceiptPath(null);
+    setAttachedReceiptName(null);
+    setReceiptStatus('none');
+    setAdditionalReceiptPhotos([]);
+    setPreviewModalUri(null);
+    setNotes('');
+    setShowMoreDetails(false);
+    setFieldErrors({});
+    setSaveStatus('idle');
+    setSaveErrorMessage(null);
+    setFormError(null);
+    clearActiveReceiptSession();
+  }, []);
+
+  const hasMeaningfulUnsavedData = useCallback(() => {
+    if (isEditMode) return false;
+    return Boolean(
+      name.trim() ||
+      purchasePrice.trim() ||
+      merchant.trim() ||
+      productPhotos.length > 0 ||
+      (attachedReceiptUri && !isFromScan) ||
+      notes.trim() ||
+      brand.trim() ||
+      model.trim() ||
+      serialNumber.trim() ||
+      invoiceNumber.trim() ||
+      sellerAddress.trim() ||
+      gstin.trim() ||
+      subtotal.trim() ||
+      discount.trim() ||
+      imei.trim() ||
+      registrationNumber.trim() ||
+      vinChassisNumber.trim() ||
+      engineNumber.trim() ||
+      variant.trim() ||
+      dealer.trim()
+    );
+  }, [
+    isEditMode,
+    isFromScan,
+    name,
+    purchasePrice,
+    merchant,
+    productPhotos.length,
+    attachedReceiptUri,
+    notes,
+    brand,
+    model,
+    serialNumber,
+    invoiceNumber,
+    sellerAddress,
+    gstin,
+    subtotal,
+    discount,
+    imei,
+    registrationNumber,
+    vinChassisNumber,
+    engineNumber,
+    variant,
+    dealer,
+  ]);
+
+  const confirmDiscardIfUnsaved = useCallback((onConfirm: () => void) => {
+    if (hasMeaningfulUnsavedData()) {
+      Alert.alert(
+        'Discard Purchase?',
+        'You have unsaved changes. Are you sure you want to discard them?',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: onConfirm,
+          },
+        ]
+      );
+    } else {
+      onConfirm();
+    }
+  }, [hasMeaningfulUnsavedData]);
+
+  const handleChangeCategory = useCallback(() => {
+    confirmDiscardIfUnsaved(() => {
+      resetFormState();
+    });
+  }, [confirmDiscardIfUnsaved, resetFormState]);
+
+  const handleCancel = useCallback(() => {
+    if (isEditMode) {
+      router.back();
+      return;
+    }
+    confirmDiscardIfUnsaved(() => {
+      resetFormState();
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.push('/(tabs)/');
+      }
+    });
+  }, [isEditMode, confirmDiscardIfUnsaved, resetFormState]);
+
+  const handleBack = useCallback(() => {
+    if (isEditMode) {
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.push('/(tabs)/items');
+      }
+      return true;
+    }
+
+    if (categoryId) {
+      confirmDiscardIfUnsaved(() => {
+        resetFormState();
+      });
+      return true;
+    }
+
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.push('/(tabs)/');
+    }
+    return true;
+  }, [isEditMode, categoryId, confirmDiscardIfUnsaved, resetFormState]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const onHardwareBack = () => {
+        return handleBack();
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+
+      return () => {
+        subscription.remove();
+        if (!isPickerActiveRef.current && !isEditMode && !isFromScan) {
+          resetFormState();
+        }
+      };
+    }, [handleBack, isEditMode, isFromScan, resetFormState])
+  );
+
+  useEffect(() => {
+    if (params.reset && params.reset !== lastResetParamRef.current) {
+      lastResetParamRef.current = params.reset;
+      if (!isEditMode && !isFromScan) {
+        resetFormState();
+      }
+    }
+  }, [params.reset, isEditMode, isFromScan, resetFormState]);
+
   useEffect(() => {
     if (!isFromScan && !isEditMode) {
       clearActiveReceiptSession();
@@ -248,24 +500,9 @@ export default function AddOrEditItemScreen() {
           setReturnUntil(existing.returnUntil);
         }
 
-        const initialPhotos =
-          existing.productPhotos && existing.productPhotos.length > 0
-            ? existing.productPhotos
-            : existing.imageStoragePath
-            ? [existing.imageStoragePath]
-            : (existing.photoUri || existing.imageUrl) &&
-              (existing.photoUri || existing.imageUrl) !== existing.receiptUri
-            ? [existing.photoUri || existing.imageUrl!]
-            : [];
-
+        const initialPhotos = canonicalizeProductPhotos(existing);
         if (initialPhotos.length > 0) {
           setProductPhotos(initialPhotos);
-          Promise.all(initialPhotos.map((p) => resolveItemImageUri(p))).then((resolved) => {
-            const valid = resolved.filter((r): r is string => Boolean(r));
-            if (valid.length > 0) {
-              setProductPhotos(valid);
-            }
-          });
         }
 
         const rUri = existing.receiptUri || existing.documents?.[0]?.fileUrl;
@@ -467,6 +704,7 @@ export default function AddOrEditItemScreen() {
   };
 
   const handleCaptureProductPhoto = async () => {
+    isPickerActiveRef.current = true;
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
@@ -485,10 +723,15 @@ export default function AddOrEditItemScreen() {
       }
     } catch (err) {
       console.warn('Product camera error:', err);
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
     }
   };
 
   const handlePickProductPhotoGallery = async () => {
+    isPickerActiveRef.current = true;
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -510,6 +753,10 @@ export default function AddOrEditItemScreen() {
       }
     } catch (err) {
       console.warn('Product gallery error:', err);
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
     }
   };
 
@@ -518,6 +765,7 @@ export default function AddOrEditItemScreen() {
   };
 
   const handleCaptureReceipt = async () => {
+    isPickerActiveRef.current = true;
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
@@ -557,10 +805,15 @@ export default function AddOrEditItemScreen() {
       }
     } catch (err) {
       console.warn('Receipt camera error:', err);
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
     }
   };
 
   const handlePickReceiptGallery = async () => {
+    isPickerActiveRef.current = true;
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -605,10 +858,15 @@ export default function AddOrEditItemScreen() {
       }
     } catch (err) {
       console.warn('Receipt gallery error:', err);
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
     }
   };
 
   const handleChooseFromGalleryEntry = async () => {
+    isPickerActiveRef.current = true;
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -651,10 +909,15 @@ export default function AddOrEditItemScreen() {
     } catch (err) {
       console.warn('[AddScreen] Choose from gallery error:', err);
       Alert.alert('Gallery Notice', 'Could not open gallery on this device.');
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
     }
   };
 
   const handlePickReceiptDocument = async () => {
+    isPickerActiveRef.current = true;
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: ['application/pdf', 'image/*'],
@@ -674,6 +937,10 @@ export default function AddOrEditItemScreen() {
       }
     } catch (err) {
       console.warn('Document picker error:', err);
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
     }
   };
 
@@ -749,6 +1016,15 @@ export default function AddOrEditItemScreen() {
         }
       }
       return;
+    }
+
+    if (typeof __DEV__ !== 'undefined' ? __DEV__ : false) {
+      console.log('[AddScreen:handleSave] Photo Selection State:', {
+        selectedPhotoCount: productPhotos.length,
+        candidateTypes: productPhotos.map((p) =>
+          isStoragePath(p) ? 'storagePath' : isLocalUri(p) ? 'localUri' : isRemoteUrl(p) ? 'remoteUrl' : 'other'
+        ),
+      });
     }
 
     setFieldErrors({});
@@ -872,7 +1148,14 @@ export default function AddOrEditItemScreen() {
     } catch (err: unknown) {
       console.error('[AddScreen] Save error:', err);
       setSaveStatus('error');
-      setSaveErrorMessage("Couldn't save this purchase. Your entered details are safe.");
+      const errMessage = err instanceof Error ? err.message : '';
+      if (errMessage.includes('Product photo is strictly required')) {
+        setSaveErrorMessage('At least one product photo is required before saving.');
+        setFormError('At least one product photo is required before saving.');
+        setFieldErrors((prev) => ({ ...prev, productPhotos: 'At least one product photo is required.' }));
+      } else {
+        setSaveErrorMessage("Couldn't save this purchase. Your entered details are safe.");
+      }
     }
   };
 
@@ -885,7 +1168,11 @@ export default function AddOrEditItemScreen() {
         className="flex-1 bg-serene-surface"
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <Header title="Add Item" showBack={false} />
+        <Header
+          title="Add Item"
+          showBack={true}
+          onBackPress={handleBack}
+        />
 
         <ScrollView
           contentContainerClassName="px-4 py-4 pb-20 gap-4"
@@ -961,7 +1248,8 @@ export default function AddOrEditItemScreen() {
     >
       <Header
         title={isEditMode ? 'Edit Item' : `${selectedCatName} Record`}
-        showBack={isEditMode}
+        showBack={true}
+        onBackPress={handleBack}
       />
 
       <ScrollView
@@ -982,7 +1270,7 @@ export default function AddOrEditItemScreen() {
 
             {!isEditMode && (
               <TouchableOpacity
-                onPress={() => setCategoryId(null)}
+                onPress={handleChangeCategory}
                 className="px-3 py-1.5 rounded-full bg-serene-surface-container-high border border-serene-subtle-border flex-row items-center gap-1"
                 activeOpacity={0.8}
               >
@@ -994,13 +1282,7 @@ export default function AddOrEditItemScreen() {
 
           <View className="flex-row items-center gap-2.5 mt-3">
             <TouchableOpacity
-              onPress={() => {
-                if (!isEditMode && categoryId) {
-                  setCategoryId(null);
-                } else {
-                  router.back();
-                }
-              }}
+              onPress={handleCancel}
               activeOpacity={0.75}
               className="px-4 py-2.5 rounded-serene-md border border-serene-outline-variant/60 bg-serene-surface items-center justify-center min-h-[44px]"
             >
@@ -1964,25 +2246,16 @@ export default function AddOrEditItemScreen() {
                 contentContainerClassName="py-1 gap-2.5 items-center"
               >
                 {productPhotos.map((photoUri, index) => (
-                  <View key={`photo-${index}-${photoUri}`} className="relative">
-                    <TouchableOpacity
-                      className="w-20 h-20 rounded-serene-md overflow-hidden bg-black/5 border border-serene-subtle-border"
-                      activeOpacity={0.88}
-                      onPress={() => {
-                        setPreviewModalTitle(`Product Photo ${index + 1}`);
-                        setPreviewModalUri(photoUri);
-                      }}
-                    >
-                      <Image source={{ uri: photoUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-black/75 items-center justify-center shadow-sm"
-                      activeOpacity={0.8}
-                      onPress={() => handleRemoveProductPhoto(index)}
-                    >
-                      <MaterialIcons name="close" size={12} color="#FFFFFF" />
-                    </TouchableOpacity>
-                  </View>
+                  <AddProductPhotoThumbnail
+                    key={`photo-${index}-${photoUri}`}
+                    photoUri={photoUri}
+                    index={index}
+                    onPress={(resolvedUri) => {
+                      setPreviewModalTitle(`Product Photo ${index + 1}`);
+                      setPreviewModalUri(resolvedUri);
+                    }}
+                    onRemove={() => handleRemoveProductPhoto(index)}
+                  />
                 ))}
 
                 <View className="flex-row gap-1.5">

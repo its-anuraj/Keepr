@@ -386,7 +386,7 @@ export default function VaultDashboardScreen() {
             <TouchableOpacity
               className="flex-1 h-12 bg-serene-primary rounded-serene-lg flex-row items-center justify-center gap-2 shadow-sm"
               activeOpacity={0.88}
-              onPress={() => router.push('/(tabs)/add')}
+              onPress={() => router.push({ pathname: '/(tabs)/add', params: { reset: Date.now().toString() } } as any)}
             >
               <MaterialIcons name="add" size={20} color="#FFFFFF" />
               <Text className="text-[14px] font-semibold text-white">Add Item</Text>
@@ -614,7 +614,7 @@ export default function VaultDashboardScreen() {
                 <TouchableOpacity
                   className="flex-row items-center gap-1.5 bg-serene-primary px-4 py-2 rounded-serene-lg shadow-sm"
                   activeOpacity={0.85}
-                  onPress={() => router.push('/(tabs)/add')}
+                  onPress={() => router.push({ pathname: '/(tabs)/add', params: { reset: Date.now().toString() } } as any)}
                 >
                   <MaterialIcons name="add" size={16} color="#FFFFFF" />
                   <Text className="text-[13px] font-semibold text-white">Add Item</Text>
