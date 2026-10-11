@@ -1,254 +1,405 @@
 # Keepr
 
-A digital ownership and document management vault for keeping track of purchased products, receipts, warranties, returns, and important ownership records.
+**Your purchases, documents, warranties, and service history — organized in one place.**
+
+Keepr is a personal ownership vault for Android (and iOS-ready) built with React Native and Expo. It gives people a single, organized place to store purchase records, receipts, warranties, service logs, and the important documents that tend to get lost after the sale is over.
 
 ---
 
-## Overview
+## Table of Contents
 
-Consumers regularly purchase valuable electronics, appliances, vehicles, and home goods, but critical post-purchase information quickly becomes fragmented or lost:
+1. [The Problem](#the-problem)
+2. [The Solution](#the-solution)
+3. [Key Features](#key-features)
+4. [Screenshots](#screenshots)
+5. [Architecture](#architecture)
+6. [Technology Stack](#technology-stack)
+7. [Getting Started](#getting-started)
+8. [Environment Variables](#environment-variables)
+9. [Project Structure](#project-structure)
+10. [Testing and Quality](#testing-and-quality)
+11. [Known Limitations](#known-limitations)
+12. [Roadmap](#roadmap)
+13. [License](#license)
 
-- Purchase dates, acquisition costs, and seller/merchant details
-- Receipts, invoices, and proof-of-purchase documents
-- Return windows and deadline reminders
-- Manufacturer and extended warranty terms
-- Vehicle registrations, service logs, and insurance documents
-- Utility bills, fee receipts, and municipal records
+---
 
-**Keepr** solves this problem by providing a unified, secure, local-first digital ownership vault. It organizes user assets into distinct, structured records:
+## The Problem
 
-- **Purchased Items**: Tangible products with acquisition details, product images, warranty timelines, and cost-of-ownership tracking.
-- **Documents**: Standalone or item-linked records across specialized categories (invoices, vehicle registrations, warranties, utility bills).
-- **Recently Added**: A unified, high-performance mixed presentation feed reflecting recent vault activity.
-- **Proactive Reminders**: Local scheduling for upcoming return deadlines, warranty expirations, and scheduled maintenance.
-- **Fast Search & Filter**: Real-time multi-field search and category filtering across the entire catalog.
+Most people buy valuable items — electronics, appliances, furniture, vehicles, clothing — but quickly lose track of:
+
+- When they bought something and what they paid for it.
+- Receipts and invoices needed for returns, warranty claims, and accounting.
+- Return deadlines that expire within days of purchase.
+- Warranty periods and what they actually cover.
+- Vehicle registrations, insurance documents, and utility bills.
+- Service and repair history for items maintained over time.
+
+This information ends up scattered across email threads, shoeboxes, phone photos, and forgotten folders.
+
+---
+
+## The Solution
+
+Keepr brings ownership records into one place. For each purchased item, a user can record acquisition details, attach a product photo, link the original receipt, set warranty and return dates, and log every service event over the item's lifetime.
+
+The Documents vault handles standalone paperwork — utility bills, fee receipts, vehicle registration certificates, warranty cards — that are important but not always tied to a single purchase.
+
+A local-first design means the app reads and writes immediately on-device, with Supabase cloud sync running in the background when a network connection is available.
 
 ---
 
 ## Key Features
 
-### Authentication & Account Security
-- **Supabase Authentication**: Email/password registration, secure login, and session persistence using `AsyncStorage`.
-- **Password Reset**: Automated password recovery flow via email links.
-- **Account Deletion**: Server-side authenticated account deletion through a Supabase Edge Function (`delete-account`), purging user records and authentication data in compliance with privacy guidelines.
+### Authentication and Account Management
 
-### Purchased Items Management
-- **Detailed Asset Records**: Tracks product title, category, brand, model number, serial number, purchase date, acquisition price, and merchant.
-- **Visual Assets**: Photo capture and gallery picker with image optimization (`expo-image-manipulator`).
-- **Warranty Tracking**: Visual warranty progress gauge calculating elapsed duration and remaining days.
-- **Total Cost of Ownership (TCO)**: Aggregates initial acquisition price with logged maintenance and upkeep expenses.
-- **Return Tracking**: Return window tracking with proactive deadline alerts.
+- **Email/password registration and login** via Supabase Auth, with JWT sessions persisted to `AsyncStorage`.
+- **Password reset** via email magic link (`forgot-password` → `reset-password` flow).
+- **Account deletion** executed by a Supabase Edge Function (`delete-account`) that verifies the caller's JWT and purges all user data server-side using the service-role key — the key is never exposed to the client.
 
-### Receipt Scanning & Classification
-- **Server-Side AI Pipeline**: Scans purchase receipts and invoices via Google Gemini through a dedicated server-side architecture (Supabase Edge Function or Node.js proxy), preventing client-side API credential exposure.
-- **Structured Extraction**: Extracts merchant name, transaction date, currency, line items, taxes, and total amounts.
-- **Multi-Product Purchases**: A single receipt containing multiple items is parsed into a grouped purchase with discrete item lines rather than creating disjointed, disconnected records.
-- **Interactive Review**: Users review, edit, and confirm extracted fields before committing them to the vault.
-- **Dual Deployment Options**: Supports Supabase Edge Functions in production and a local Node.js server (`server/receipt-server.js`) for development.
+### Purchased Items
+
+- Records product name, category, brand, model, serial number, purchase date, price, currency, merchant, and seller address.
+- Supports category-specific fields: IMEI for mobile phones; VIN, chassis number, and engine number for vehicles; size and color for fashion items.
+- Attaches product photos via camera or gallery with `expo-image-manipulator` used for image optimization before upload.
+- Item images are stored in a private Supabase Storage bucket (`item-images`) at durable paths (`{userId}/items/{itemId}/photo_n.jpg`). The storage path is persisted in the database so images can be retrieved on any signed-in device via a short-lived signed URL.
+- Item status lifecycle: `active`, `archived`, `resold`, `disposed`.
+
+### Warranty and Return Tracking
+
+- Records warranty start and end dates, provider name, warranty type (manufacturer, extended, third-party, AMC), and coverage details.
+- A visual warranty progress gauge shows elapsed time and remaining days.
+- Return deadline tracking with status classification: `active`, `expiring_soon`, `expired`.
+- Local notifications are scheduled at 30-day and 7-day warranty expiry warnings, and at the return deadline, via `expo-notifications`.
+
+> **Android Expo Go note:** `expo-notifications` is disabled inside Expo Go on Android from SDK 53 onwards. A native development build (`npx expo run:android`) is required to test local notification scheduling on Android.
+
+### Receipt Scanning and AI Extraction
+
+- Users photograph or pick a receipt or invoice from their gallery.
+- The image is sent to a Supabase Edge Function (`scan-receipt`) that calls the Google Gemini multimodal API server-side. The Gemini API key is stored in the Supabase Secret Vault and is never bundled into the client.
+- Gemini first validates whether the image is a genuine document. Non-documents (selfies, landscapes, chat screenshots) are rejected with a clear error message.
+- For valid purchase receipts and invoices, Gemini extracts merchant name, purchase date, invoice number, line items, quantities, subtotal, tax (including GST breakdown for Indian receipts), and total amount.
+- **Multi-product receipts:** A single receipt with multiple line items is structured as one grouped purchase with individual product records, preserving the shared transaction context.
+- **Document classification:** Non-purchase documents (utility bills, fee receipts, vehicle registration certificates) are classified and routed to the Documents vault rather than creating spurious item records.
+- Extracted fields are presented for user review and editing before being saved.
+- For local development without a deployed Edge Function, a Node.js proxy (`server/receipt-server.js`) can substitute, started with `npm run server:receipt`.
 
 ### Documents Vault
-- **Specialized Categorization**:
-  - Receipts & Invoices
-  - Vehicle Documents (registration, insurance, inspection)
-  - Warranty & Guarantee Certificates
-  - Fees & Payments
-  - Bills & Utilities
-  - Ownership & Purchase Agreements
-  - Other Important Documents
-- **Relational Flexibility**: Documents can exist independently (e.g., utility bills, tax records) or be linked to a specific Purchased Item (e.g., item invoice, extended warranty certificate).
 
-### Multi-Product Purchases
-A single receipt or invoice containing multiple distinct products is structured as one grouped purchase event with individual item lines. This preserves the transactional context (shared date, seller, receipt attachment) while allowing each purchased item to have its own category, serial number, and warranty lifecycle.
+Documents can exist independently or be linked to a purchased item via an optional foreign key.
 
-### Search, Filter & Sort
-- **Multi-Field Search**: Real-time substring matching across item names, merchants, serial numbers, categories, and notes.
-- **Filter Modals**: Granular filtering by category and warranty status (`Active`, `Expiring Soon`, `Expired`).
-- **Multi-Criteria Sorting**: Sort by acquisition date (newest/oldest), price (high-to-low / low-to-high), and alphabetical order.
-- **Recently Added Feed**: Unified chronological presentation combining items and documents into a cohesive activity view.
+| Category | Example Document Types |
+|---|---|
+| Receipts & Invoices | Purchase receipts, tax invoices |
+| Vehicle Documents | RC, insurance policy, PUC certificate |
+| Warranty & Guarantee | Warranty cards, extended warranty certificates |
+| Fees & Payments | College fee receipts, payment challans |
+| Bills & Utilities | Electricity, water, internet, gas bills |
+| Ownership & Purchase | Purchase agreements, delivery documents |
+| Other Important Documents | General administrative records |
 
-### Reminders & Notifications
-- **Deterministic Scheduling**: Proactive local notifications for warranty expiration (30-day and 7-day warnings), return window deadlines, and scheduled maintenance.
-- **Local-Only Architecture**: Leverages `expo-notifications` for device-local scheduling without requiring external push services.
-- **Reconciliation Engine**: Automatic cancellation and rescheduling when item details or maintenance dates are modified.
+Document files are stored in a private Supabase Storage bucket (`vault-documents`) with user-scoped paths.
 
-### Offline-First Architecture & Sync Queue
-- **Local-First State**: Zustand stores backed by `AsyncStorage` ensure all read and write interactions complete immediately without network latency.
-- **Durable Sync Queue**: Network mutations are enqueued in `syncQueueService` with deterministic operation keys (`op-${entityType}-${entityId}-${operation}`).
-- **Automatic Retry**: The queue retries failed operations upon network reconnection, app launch, or user session restoration.
-- **User-Scoped Isolation**: Sync queue state is isolated per user ID to prevent data leakage across account switches.
-- **Known Limitation**: Local data that has not yet synchronized with the cloud backend will be lost if the application is uninstalled before synchronization completes.
+### Service and Repair History
 
----
+The Services tab lists all maintenance and repair records across the vault. Each record captures:
 
-## Security Architecture
+- **Service type:** Repair, Maintenance, Servicing, Inspection, Part Replacement, Software/Technical, Cleaning, Other.
+- Problem description, work performed, parts replaced, and technician notes.
+- Service provider name, address, and phone number.
+- Amount paid and currency.
+- Warranty coverage status (yes / no / unknown) and coverage reference number.
+- Post-service warranty and guarantee end dates.
+- Linked item — optional. Records can exist for items not yet in the vault.
 
-Keepr enforces strict data protection and credential isolation standards:
+### Search, Sort, and Filter
 
-```
-┌────────────────────────────────────────────────────────┐
-│                   Mobile Client                        │
-│   • Expo / React Native UI                             │
-│   • Zustand Local State (AsyncStorage)                 │
-│   • Anon Key only (No service-role access)             │
-└───────────────────────────┬────────────────────────────┘
-                            │ HTTPS / JWT
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│                   Supabase Cloud                       │
-│   • Row Level Security (RLS) on all PostgreSQL tables  │
-│   • Private Storage Buckets (item-images, documents)   │
-│   • User-scoped Storage Paths: /{userId}/*             │
-└───────────────┬───────────────────────────┬────────────┘
-                │                           │
-                ▼                           ▼
-┌──────────────────────────────┐ ┌───────────────────────┐
-│ Edge Function: scan-receipt  │ │ Edge: delete-account  │
-│ • Reads GEMINI_API_KEY from  │ │ • Reads SERVICE_ROLE  │
-│   Supabase Secret Vault      │ │   from Secret Vault   │
-│ • Client never sees API keys │ │ • Purges user data    │
-└──────────────────────────────┘ └───────────────────────┘
-```
+Implemented across the Items and Services screens:
 
-- **Row Level Security (RLS)**: Every database table (`items`, `documents`, `maintenance_logs`, `expense_logs`) enforces `auth.uid() = user_id` for `SELECT`, `INSERT`, `UPDATE`, and `DELETE`.
-- **Private Storage Buckets**: Supabase Storage buckets (`item-images`, `item-documents`) are strictly private. Access requires valid user session tokens, and bucket policies restrict access to files located within the user's specific directory prefix (`{userId}/*`).
-- **Server-Side Credential Isolation**: The Google Gemini API key (`GEMINI_API_KEY`) and Supabase Service Role key (`SUPABASE_SERVICE_ROLE_KEY`) are exclusively stored in server environment variables / Supabase Secret Vault. Neither key is ever bundled into the client application.
-- **Authenticated Edge Functions**: Server functions verify the caller's JWT before executing privileged operations such as AI processing or account termination.
-- **No Unverifiable Claims**: Security is achieved through industry-standard architectural separation, authenticated protocols, and database-level authorization.
+- **Real-time search** across item name, merchant, brand, model, serial number, and notes.
+- **Sort options:** Recently added, purchase date (newest/oldest), price (high/low), alphabetical (A–Z / Z–A).
+- **Filter modal:** Filter by category and warranty status (Active, Expiring Soon, Expired).
+- **Recently Added feed** on the Vault dashboard combines items and documents chronologically, with incremental batch loading.
+
+### Local-First State and Sync Queue
+
+- All reads and writes go to Zustand stores backed by `AsyncStorage`, completing immediately without waiting for the network.
+- When a cloud write fails, the operation is enqueued in `syncQueueService` under a deterministic ID (`${type}::${entityId}`). A delete for the same entity automatically supersedes any queued upsert.
+- The queue is flushed on reconnection, app launch, and session restoration. Each operation is retried independently.
+- Queue state is namespaced per user ID, preventing cross-account data leakage on shared devices.
+
+### Vault Dashboard
+
+The home screen displays summary metrics (total items, total documents, active warranties, warranties expiring soon, items with active return windows, total replacement value), a pull-to-refresh recently-added feed, and upcoming deadline highlights.
 
 ---
 
-## Tech Stack
+## Screenshots
 
-| Layer | Technology | Description |
-|---|---|---|
-| **Frontend Framework** | React Native `0.86.3` / Expo `~57.0.23` | Cross-platform native mobile foundation |
-| **Navigation** | Expo Router `~57.0.0` | File-based typed routing architecture |
-| **Language** | TypeScript `~5.8.2` | Strict compile-time type safety across the entire codebase |
-| **Styling** | NativeWind `^4.2.7` / Tailwind CSS `^3.4.19` | Utility-first responsive component styling |
-| **State Management** | Zustand `^5.0.3` | Lightweight modular state with `AsyncStorage` persistence |
-| **Backend & Database** | Supabase / PostgreSQL | Managed relational database with Row Level Security |
-| **Cloud Functions** | Supabase Edge Functions (Deno) | Authenticated serverless execution for AI scanning & account deletion |
-| **AI / OCR Engine** | Google Gemini | Multimodal document parsing executed securely server-side |
-| **Cloud Storage** | Supabase Storage | Isolated private storage for photos and PDF/image documents |
-| **Notifications** | Expo Notifications `~57.0.0` | Deterministic local device notification scheduling |
-| **Build & Release** | EAS (Expo Application Services) | Cloud-based preview APK and production AAB compilation |
+> *Screenshots are not currently committed to this repository. To preview the application, build a development client with `npx expo run:android` and connect a physical device or emulator.*
 
 ---
 
 ## Architecture
 
-The diagram below illustrates the relationship between client-side components and server-side cloud services:
+### Data Flow
 
 ```
 [ User Interaction ]
-         │
-         ▼
+        |
+        v
 [ React Native / Expo UI ]
-  ├── App Screens (app/)
-  ├── Reusable Components (src/components/)
-  └── Modals & Workflows
-         │
-         ▼
-[ Zustand State Stores ] ──(Local Cache)──► [ AsyncStorage ]
-  ├── itemStore
-  ├── authStore
-  └── receiptSessionStore
-         │
-         ▼
-[ Offline Sync Queue ] ──(Deterministic Op IDs)──► [ syncQueueService ]
-         │
-         ├──(Online Sync)──► [ Supabase PostgreSQL + RLS ]
-         │                   ├── items
-         │                   ├── documents
-         │                   └── maintenance_logs
-         │
-         ├──(File Upload)──► [ Supabase Storage (Private) ]
-         │                   ├── item-images/{userId}/*
-         │                   └── item-documents/{userId}/*
-         │
-         └──(AI Processing)─► [ Supabase Edge Function ]
-                             └── Gemini Vision API (Protected Key)
+  +-- App Screens  (app/)
+  +-- Reusable Components  (src/components/)
+  +-- Modals & Workflows
+        |
+        v
+[ Zustand Stores ] --(AsyncStorage persistence)--> [ Device Storage ]
+  +-- itemStore       - items, documents, warranties, maintenance records, receipts
+  +-- authStore       - session, profile, sign-in/out, account deletion
+  +-- receiptSessionStore - active scan-and-review session
+        |
+        +--[Online sync]--> [ Supabase PostgreSQL + RLS ]
+        |                    +-- items, warranties, documents, receipts
+        |                    +-- maintenance_records, expenses, activity_logs
+        |
+        +--[Failed writes]--> [ syncQueueService (AsyncStorage) ]
+        |                      +-- Retried on reconnect / app launch / session restore
+        |
+        +--[File upload]--> [ Supabase Storage (Private Buckets) ]
+        |                    +-- item-images     / {userId}/items/{itemId}/photo_n.jpg
+        |                    +-- vault-documents / {userId}/vault/{docId}/photo_n.jpg
+        |
+        +--[AI scanning]--> [ Supabase Edge Function: scan-receipt ]
+                              +-- Google Gemini Multimodal API (key in Supabase Vault)
 ```
 
----
-
-## Data Model & Entity Routing
-
-Keepr implements a strict separation of concerns between its two primary data entities:
+### Security Boundaries
 
 ```
-┌──────────────────────────────────────┐       ┌──────────────────────────────────────┐
-│            PURCHASED_ITEM            │       │               DOCUMENT               │
-├──────────────────────────────────────┤       ├──────────────────────────────────────┤
-│ • id (UUID)                          │       │ • id (UUID)                          │
-│ • title, brand, model, serial_number │       │ • title, category, document_type     │
-│ • price, purchase_date, merchant     │◄──┐   │ • file_url, file_name, file_size     │
-│ • category, image_url                │   └───│ • item_id (Optional foreign key)     │
-│ • return_deadline, warranty_expiry   │       │ • expiry_date, notes                 │
-│ • user_id (RLS boundary)             │       │ • user_id (RLS boundary)             │
-└──────────────────────────────────────┘       └──────────────────────────────────────┘
++--------------------------------------------------------+
+|                    Mobile Client                       |
+|  * Anon key only (EXPO_PUBLIC_SUPABASE_ANON_KEY)       |
+|  * Session JWT attached to every Supabase request      |
+|  * No Gemini key, no service-role key                  |
++--------------------+-----------------------------------+
+                     | HTTPS / JWT
+                     v
++--------------------------------------------------------+
+|                  Supabase Cloud                        |
+|  * RLS on every table (auth.uid() = user_id)           |
+|  * All 3 storage buckets: public = false               |
+|  * Storage paths enforced: {auth.uid()}/...            |
++--------------+--------------------------+--------------+
+               |                          |
+               v                          v
++-------------------------+  +----------------------------+
+| Edge Fn: scan-receipt   |  | Edge Fn: delete-account    |
+| * GEMINI_API_KEY from   |  | * SERVICE_ROLE_KEY from    |
+|   Supabase Vault        |  |   Supabase Vault           |
+| * Verifies caller JWT   |  | * Purges all user data     |
++-------------------------+  +----------------------------+
 ```
 
-1. **`PURCHASED_ITEM`**: Represents physical assets acquired by the user. Owns warranty gauges, total cost of ownership calculations, and return deadline workflows.
-2. **`DOCUMENT`**: Represents physical or digital paperwork (receipts, contracts, registrations, certificates). A document may reference an item via `item_id`, but linking a document to an item does **not** convert the document into an item.
-3. **`Recently Added`**: A high-performance, dynamic in-memory merge feed derived from canonical item and document records. It is **not** a separate database entity, preventing data duplication and synchronization divergence.
+Row Level Security is enabled on all tables (`items`, `documents`, `warranties`, `receipts`, `maintenance_records`, `expenses`, `activity_logs`, `profiles`, `reminder_preferences`). Every `SELECT`, `INSERT`, `UPDATE`, and `DELETE` policy checks `auth.uid() = user_id`.
+
+All three Supabase Storage buckets are configured `public = false` and further protected by storage RLS policies that enforce `auth.uid()::text = (storage.foldername(name))[1]`, so the first path segment of every stored file must match the authenticated user's ID.
+
+### Data Model
+
+```
+PURCHASED_ITEM                          DOCUMENT
+------------------------------          ------------------------------
+id (UUID)                               id (UUID)
+name, category, brand, model            title, category, document_type
+serial_number, purchase_date            document_date, issuer_name
+purchase_price, currency                reference_number, amount
+merchant, image_storage_path            expiry_date, due_date
+return_until, warranty_until  <---+     file_path, storage_path
+status, user_id (RLS boundary)    +---- item_id (optional FK)
+                                        user_id (RLS boundary)
+          |
+          +-- MAINTENANCE_RECORD (linked or standalone)
+          |     service_type, work_performed, parts_replaced
+          |     service_provider, amount_paid, warranty_covered
+          |     post_service_warranty_until, post_service_guarantee_until
+          |
+          +-- WARRANTY (start_date, end_date, provider, type, duration_months)
+          |
+          +-- EXPENSE (expense_type, amount, expense_date)
+```
+
+`RECEIPT` is a first-class entity holding shared purchase metadata (merchant, date, total, GST breakdown) and references to the item records created from it.
+
+The recently-added feed is computed in-memory from canonical item and document records. It is not a separate database table.
 
 ---
 
-## Engineering Highlights
+## Technology Stack
 
-- **Virtualized List Rendering**: The Items screen (`app/(tabs)/items.tsx`) utilizes React Native `FlatList` with `initialNumToRender={10}`, `maxToRenderPerBatch={10}`, and `windowSize={5}` to maintain constant memory overhead at 500+ items.
-- **Memoized Component Hierarchy**: Asset cards (`ItemCard`) and Document tiles (`DocumentTile`) are wrapped in `React.memo` to eliminate unnecessary re-renders during search input changes and sorting toggles.
-- **Deterministic Sync Queue**: Mutation operations generate deterministic keys (`op-${entityType}-${entityId}-${operation}`) ensuring idempotent retries and preventing duplicate records during network fluctuations.
-- **Idempotent Upserts**: Cloud synchronization calls use Supabase `upsert` semantics with explicit conflict resolution on primary keys (`id`).
-- **User-Scoped Queue State**: Sync queue persistence keys are namespaced by the authenticated user's ID, guaranteeing zero cross-account data leakage on shared devices.
-- **Deterministic Notification Identifiers**: Local notification IDs are computed deterministically (e.g., `maint-${itemId}-${index}-${timestamp}`), allowing targeted cancellation and preventing phantom notification duplicates.
-- **Multi-Product Purchase Grouping**: Receipts containing multiple line items are recognized as a composite purchase event, preserving individual item details under a unified transaction envelope.
-- **Comprehensive Type Safety**: The codebase operates under strict TypeScript configuration with zero `any` emissions in application domain models.
+### Mobile Application
+
+| Technology | Version | Role |
+|---|---|---|
+| React Native | `0.86.3` | Core mobile framework |
+| Expo | `~57.0.27` | Native module integration and build tooling |
+| Expo Router | `~57.0.25` | File-based typed navigation |
+| TypeScript | `~6.0.3` | Static type safety |
+| NativeWind | `^4.2.7` | Tailwind CSS utility classes in React Native |
+| Zustand | `^5.0.3` | Modular state management with persistence |
+| AsyncStorage | `^2.1.2` | Local state persistence |
+| React Native Reanimated | `4.5.1` | Animations |
+
+### Backend and Database
+
+| Technology | Role |
+|---|---|
+| Supabase / PostgreSQL | Managed relational database with Row Level Security |
+| Supabase Auth | Email/password authentication and JWT session management |
+| Supabase Edge Functions (Deno) | `scan-receipt` (AI extraction) and `delete-account` (account purge) |
+
+### File and Image Storage
+
+| Technology | Role |
+|---|---|
+| Supabase Storage | Three private buckets: `item-images`, `item-documents`, `vault-documents` |
+| expo-image-manipulator | Client-side image resizing before upload |
+| expo-image-picker | Camera capture and gallery selection |
+| expo-document-picker | PDF and file document selection |
+| expo-file-system | Local file operations and URI resolution |
+
+### Receipt and Document Processing
+
+| Technology | Role |
+|---|---|
+| Google Gemini (multimodal) | Server-side document parsing via Edge Function |
+| Node.js receipt-server | Local development proxy for Gemini API calls |
+
+### Notifications
+
+| Technology | Role |
+|---|---|
+| expo-notifications `~57.0.22` | Local device notification scheduling only |
+
+> Remote push notifications (APNs / FCM) are not currently implemented.
+
+### Build and Release
+
+| Tool | Role |
+|---|---|
+| EAS (Expo Application Services) | Cloud builds — preview APK and production AAB |
 
 ---
 
-## Performance
+## Getting Started
 
-The application data operations and in-memory algorithms were verified through the project benchmark suite (`test/benchmark_harness.ts`):
+### Prerequisites
 
-| Operation | Benchmark Conditions | Measurement | Status |
-|---|---|---|---|
-| **Full-Text Catalog Search** | 500 in-memory items (title, merchant, serial) | `< 1.0 ms` | Verified |
-| **Multi-Criteria Sorting** | 500 items (Price, Date, Alphabetical) | `< 1.0 ms` | Verified |
-| **Recently Added Feed Merge** | 1,000 entities (500 items + 500 documents) | `~1.5 ms` | Verified |
-| **List Virtualization** | Items collection screen (`FlatList`) | Bounded allocation | Implemented |
+- **Node.js** 18 or later
+- **npm** (bundled with Node.js)
+- A **Supabase project** (free tier is sufficient for development)
+- An **Android device or emulator** (iOS simulator also supported on macOS)
 
-> **Note on Device Profiling**: List virtualization is implemented for the Items screen; frame-level Android device profiling remains a release-validation task on physical target devices.
+### 1. Clone and Install
+
+```bash
+git clone https://github.com/its-anuraj/Keepr.git
+cd Keepr
+npm install
+```
+
+### 2. Configure Environment Variables
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and fill in your Supabase credentials:
+
+```env
+EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+EXPO_PUBLIC_SUPABASE_KEY=your-anon-key-here
+
+# Optional: local receipt scanning server (development only)
+EXPO_PUBLIC_BACKEND_SCAN_URL=http://localhost:3001/api/scan-receipt
+```
+
+Use only the **anon key** in the client. Never place the service-role key in `.env` or any file that reaches the device.
+
+### 3. Configure Supabase
+
+#### Apply database migrations
+
+Open the SQL Editor in your Supabase dashboard and run the migration files in order:
+
+```
+supabase/migrations/001_initial_schema.sql
+supabase/migrations/002_documents_vault_schema.sql
+supabase/migrations/003_production_readiness.sql
+supabase/migrations/004_fix_storage_rls.sql
+supabase/migrations/005_enforce_storage_security.sql
+supabase/migrations/006_reconcile_live_database.sql
+supabase/migrations/007_extend_maintenance_records.sql
+supabase/migrations/008_service_repair_unlinked_support.sql
+supabase/migrations/009_item_image_storage_path.sql
+```
+
+Or with the Supabase CLI:
+
+```bash
+supabase db push
+```
+
+#### Deploy Edge Functions
+
+```bash
+supabase functions deploy scan-receipt
+supabase functions deploy delete-account
+```
+
+#### Set Edge Function secrets
+
+In the Supabase dashboard under **Project Settings -> Edge Functions -> Secrets**, or via the CLI:
+
+```bash
+supabase secrets set GEMINI_API_KEY=your-gemini-api-key
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
+
+These keys are stored in the Supabase Secret Vault and are never accessible to the mobile client.
+
+### 4. Start the Development Server
+
+```bash
+npx expo start
+
+# Open directly on Android emulator or connected device
+npm run android
+
+# Optional: start local receipt scanning proxy
+npm run server:receipt
+```
+
+The local receipt server requires `GEMINI_API_KEY` set in `server/.env` (not committed to version control).
+
+> **For local notifications on Android:** Use a native development build — `npx expo run:android` — instead of Expo Go.
 
 ---
 
-## Testing & Quality Assurance
+## Environment Variables
 
-The codebase includes automated static verification and benchmark test harnesses:
+| Variable | Scope | Purpose |
+|---|---|---|
+| `EXPO_PUBLIC_SUPABASE_URL` | Client | Supabase project URL |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Client | Supabase anon (publishable) key |
+| `EXPO_PUBLIC_SUPABASE_KEY` | Client | Alias for anon key (both are read by the client) |
+| `EXPO_PUBLIC_BACKEND_SCAN_URL` | Client | Local Node.js receipt proxy URL (development only) |
+| `GEMINI_API_KEY` | **Server-side only** | Google Gemini API key — Supabase Vault secret, never in client |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Server-side only** | Service-role key — Supabase Vault secret, never in client |
 
-1. **Static Type Verification**:
-   ```bash
-   npx tsc --noEmit
-   ```
-   *Result*: Exits with code 0 (clean compilation across all screens, stores, and services).
-
-2. **Algorithmic Benchmark Harness**:
-   ```bash
-   node test/benchmark_harness.js
-   ```
-   *Result*: Validates sub-millisecond execution for search, sort, and entity-merging algorithms.
-
-3. **Receipt Processing Corpus**:
-   - `test/receipt-corpus/ground_truth.json`: Structured ground truth corpus containing multi-product and single-product receipt samples used to evaluate parser accuracy and edge cases.
-
----
-
-## Known Limitations
-
-- **Physical Device Frame Profiling**: Frame-rate validation (confirming 60fps/120fps under stress) requires a physical Android device build and has not been performed in an automated headless environment.
-- **Remote Push Notifications**: Currently, all notifications are scheduled device-locally via `expo-notifications`. Remote server-triggered push notification infrastructure (e.g., APNs / FCM push relays) is not currently implemented.
-- **Unsynced Offline Data on App Uninstall**: Data created locally during offline usage is stored in device `AsyncStorage`. If a user uninstalls the application before connecting to the internet, unsynchronized local-only records cannot be recovered.
+`.env` and `server/.env` are excluded from version control by `.gitignore`. Only `.env.example` is committed.
 
 ---
 
@@ -256,99 +407,143 @@ The codebase includes automated static verification and benchmark test harnesses
 
 ```
 keepr/
-├── app/                           # Expo Router screens & navigation layouts
-│   ├── (auth)/                    # Authentication screens (login, signup, reset)
-│   ├── (tabs)/                    # Main bottom navigation tabs (home, items, documents, profile)
-│   ├── document/                  # Document detail and creation views
-│   ├── item/                      # Item detail and management views
-│   ├── modals/                    # Creation and configuration modals
-│   └── scan-receipt/              # Receipt camera, upload, and review workflows
-├── src/                           # Application core domain logic
-│   ├── components/                # Reusable UI components (cards, gauges, modals)
-│   ├── constants/                 # Theme tokens, categories, routes
-│   ├── lib/                       # Supabase client and utility helpers
-│   ├── services/                  # Business logic (sync, notifications, scanner, auth)
-│   ├── store/                     # Zustand state management stores
-│   ├── types/                     # TypeScript domain models and interface declarations
-│   └── utils/                     # Formatting, currency, and warranty calculations
-├── supabase/                      # Backend infrastructure
-│   ├── functions/                 # Deno Edge Functions (scan-receipt, delete-account)
-│   └── migrations/                # SQL migrations with schema, RLS policies, and triggers
-├── server/                        # Local Node.js receipt scanning proxy for development
-├── test/                          # Performance benchmark harness and receipt ground truth
-├── assets/                        # Brand icons, splash screens, and image assets
-├── LICENSE                        # Proprietary software license
-└── package.json                   # Project metadata and dependencies
++-- app/                          # Expo Router screens and navigation
+|   +-- (auth)/                   # Login, signup, forgot-password, reset-password, welcome
+|   +-- (tabs)/                   # Bottom tabs: Vault, Items, Documents, Services, Profile
+|   +-- document/                 # Document detail ([id].tsx) and add document (add.tsx)
+|   +-- item/                     # Item detail view ([id].tsx)
+|   +-- modals/                   # Add expense (add-expense.tsx), add maintenance (add-maintenance.tsx)
+|   +-- scan-receipt/             # Receipt capture, classification, and review workflow
+|   +-- service/                  # Service record detail ([id].tsx) and add service (add.tsx)
+|   +-- _layout.tsx               # Root navigation layout and auth gate
++-- src/
+|   +-- components/               # Reusable UI: cards, gauges, modals, scanner widgets
+|   +-- constants/                # Theme tokens, item categories, app-wide constants
+|   +-- hooks/                    # useResolvedImage - signed URL resolution with memory cache
+|   +-- lib/                      # Supabase client (supabase.ts), report generator
+|   +-- services/                 # Business logic
+|   |   +-- cloudSyncService.ts   # Supabase upsert/delete operations
+|   |   +-- syncQueueService.ts   # Offline queue with retry and idempotency
+|   |   +-- notifications.ts      # Local notification scheduling and reconciliation
+|   |   +-- storageService.ts     # Private bucket uploads and signed URL generation
+|   |   +-- receiptScanner.ts     # Client-side scanner entry point
+|   |   +-- geminiReceiptService.ts  # Gemini response parsing
+|   |   +-- receiptParser.ts      # Extraction normalization and entity routing
+|   |   +-- vaultRowMappers.ts    # Database row <-> domain type mapping
+|   |   +-- ...                   # Classification, duplicate detection, migration services
+|   +-- store/                    # Zustand stores: itemStore, authStore, receiptSessionStore
+|   +-- types/                    # TypeScript domain models (Item, VaultDocument, MaintenanceRecord, etc.)
+|   +-- utils/                    # Warranty calculations, currency formatting, storage utilities
++-- supabase/
+|   +-- functions/
+|   |   +-- scan-receipt/         # Deno Edge Function: Gemini multimodal receipt parsing
+|   |   +-- delete-account/       # Deno Edge Function: authenticated account purge
+|   +-- migrations/               # 9 sequential SQL migrations (schema, RLS, storage policies)
++-- server/
+|   +-- receipt-server.js         # Local Node.js Gemini proxy (development only)
++-- test/
+|   +-- benchmark_harness.js      # In-process performance harness (search, sort, feed merge)
+|   +-- benchmark_harness.ts      # TypeScript source of the above
+|   +-- receipt-corpus/           # Ground-truth JSON corpus for scanner evaluation
+|   +-- *.ts                      # Feature-level validation scripts
++-- assets/                       # App icon, splash screen, adaptive icon layers
++-- .env.example                  # Environment variable template (committed)
++-- app.json                      # Expo app configuration
++-- eas.json                      # EAS build profiles
++-- package.json                  # Dependencies and npm scripts
++-- LICENSE                       # Proprietary software license
 ```
 
 ---
 
-## Getting Started
+## Testing and Quality
 
-### Prerequisites
-- Node.js (version 18 or later recommended)
-- npm or yarn
-- Expo CLI (`npx expo`)
-
-### 1. Installation
-```bash
-npm install
-```
-
-### 2. Environment Configuration
-Create a `.env` file in the project root based on `.env.example`:
-
-```env
-# Required for Supabase Cloud integration (optional for local offline mode)
-EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
-
-# Optional: Local development receipt scanner URL
-EXPO_PUBLIC_BACKEND_SCAN_URL=http://localhost:3001/api/scan-receipt
-```
-
-*(Note: Keepr operates in full offline vault mode if no Supabase credentials are provided.)*
-
-### 3. Local Development Server
-```bash
-# Start Expo development server
-npx expo start
-
-# Run on Android emulator or connected device
-npm run android
-
-# Start the optional local receipt scanning server (requires GEMINI_API_KEY in server/.env)
-npm run server:receipt
-```
-
----
-
-## Production & Deployment
-
-Keepr is configured for build automation via Expo Application Services (EAS):
+### TypeScript Compilation
 
 ```bash
-# Build Android preview APK for physical device testing
+npx tsc --noEmit
+```
+
+Runs the TypeScript compiler in check-only mode across all screens, stores, services, and type definitions. Exits with code 0 on a clean build.
+
+*Last verified result: exit code 0.*
+
+### In-Memory Algorithm Benchmark
+
+```bash
+node test/benchmark_harness.js
+```
+
+Validates execution performance for full-text catalog search, multi-criteria sorting, and recently-added feed construction against synthetic in-memory datasets of 500–1,000 entities.
+
+The harness also includes an end-to-end receipt extraction test that calls a live backend with real receipt images. This portion requires test images placed in `scratch/test-receipts/` (a `.gitignore`'d directory not committed to the repository) and a configured `BACKEND_URL`. Without those files, the extraction tests skip and report N/A.
+
+### Feature Validation Scripts
+
+| Script | Behavior Validated |
+|---|---|
+| `filter_validation.ts` | Category and warranty status filter logic |
+| `data_integrity_validation.ts` | Store consistency and entity relationships |
+| `storage_persistence_validation.ts` | Local and cloud storage path resolution |
+| `document_thumbnail_resolution_validation.ts` | Document image retrieval pipeline |
+| `item_thumbnail_pipeline_validation.ts` | Item image signed URL resolution |
+| `add_item_reset_flow_validation.ts` | Add-item form reset and draft behavior |
+| `cross_device_consistency_validation.ts` | Sync queue and cloud hydration behavior |
+| `photo_duplicate_prevention_validation.ts` | Duplicate photo detection on upload |
+| `auto_scan_gallery_flow_validation.ts` | Gallery-picker to scan workflow |
+
+These scripts validate logic in isolation. They do not run on a physical device and do not substitute for manual end-to-end testing on real hardware.
+
+### EAS Builds
+
+```bash
+# Preview APK - internal distribution
 eas build -p android --profile preview
 
-# Build Android App Bundle (AAB) for Google Play Store distribution
+# Production AAB - Google Play Store
 eas build -p android --profile production
 ```
 
-- **Preview Profile**: Generates an installable `.apk` binary for rapid staging and hardware verification.
-- **Production Profile**: Compiles an optimized, signed `.aab` package formatted for Google Play Store publication.
+---
+
+## Known Limitations
+
+| Area | Limitation |
+|---|---|
+| **Local notifications on Android** | `expo-notifications` is disabled inside Expo Go on Android (SDK 53+). A native development build is required to test notification scheduling. |
+| **Remote push notifications** | Not implemented. All notification scheduling is device-local only. There is no APNs or FCM integration. |
+| **Offline data on app uninstall** | Data written locally during an offline session is stored in `AsyncStorage`. If the app is uninstalled before synchronization completes, those local-only records cannot be recovered. |
+| **Frame-rate profiling** | FlatList virtualization is implemented on the Items screen, but 60 fps / 120 fps performance under load has not been measured on physical hardware. |
+| **Receipt accuracy figures** | The benchmark corpus and ground-truth dataset exist, but extraction accuracy percentages are not published because the required test receipt images are not committed to the repository. |
 
 ---
 
-## Screenshots
+## Roadmap
 
-> *Application interface captures and workflow walkthroughs are available in the project documentation directory or can be captured via connected emulator sessions.*
+### Implemented
 
----
+- Purchased item records with category-specific fields (IMEI, VIN, size, color, etc.)
+- Receipt scanning and AI extraction via Google Gemini (server-side, key isolated)
+- Multi-product receipt grouping into a shared purchase envelope
+- Documents vault with seven category types, standalone or item-linked
+- Warranty and return tracking with local notifications (30-day and 7-day warnings)
+- Service and repair history (linked to items or standalone)
+- Search, filter, and sort on Items and Services screens
+- Recently Added feed on the Vault dashboard with incremental loading
+- Local-first state with offline sync queue and idempotent retry
+- Private cloud storage with user-scoped signed URL access
+- Row Level Security on all database tables
+- Authenticated account deletion via Edge Function
+- EAS build configuration for preview APK and production AAB
 
-## Author
+### Possible Future Work
 
-**Anuraj Singh**
+- iOS App Store submission
+- Remote push notifications (APNs / FCM)
+- Document expiry reminders (insurance renewal, PUC, subscriptions)
+- Bulk item import
+- CSV or PDF ownership report export
+- Shared vault records (family or household use)
 
 ---
 
@@ -359,3 +554,9 @@ Copyright (c) 2026 Anuraj Singh. All rights reserved.
 This software is proprietary. Copying, modifying, redistributing, sublicensing, selling, publishing, or creating derivative works is strictly prohibited without prior written permission from the copyright holder.
 
 See the [LICENSE](./LICENSE) file for complete licensing terms.
+
+---
+
+## Author
+
+**Anuraj Singh** — [github.com/its-anuraj](https://github.com/its-anuraj)
