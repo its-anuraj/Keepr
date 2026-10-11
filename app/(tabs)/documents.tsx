@@ -18,6 +18,7 @@ import {
   Alert,
   Share,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -182,6 +183,12 @@ const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
             )}
           </View>
         </View>
+
+        {!isSelectionMode && (
+          <View style={styles.chevronWrap}>
+            <MaterialIcons name="chevron-right" size={18} color={SereneColors.outline} />
+          </View>
+        )}
       </View>
     </TouchableOpacity>
   );
@@ -191,6 +198,7 @@ export default function DocumentsVaultScreen() {
   const user = useAuthStore((s) => s.user);
   const documents = useItemStore((s) => s.documents);
   const items = useItemStore((s) => s.items);
+  const isLoading = useItemStore((s) => s.isLoading);
   const deleteDocument = useItemStore((s) => s.deleteDocument);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -419,7 +427,7 @@ export default function DocumentsVaultScreen() {
       if (doc.documentType) lines.push(`   Type: ${doc.documentType}`);
       if (doc.category) lines.push(`   Category: ${doc.category}`);
       if (doc.issuerName) lines.push(`   Issuer: ${doc.issuerName}`);
-      if (doc.referenceNumber) lines.push(`   Ref / Policy #: ${doc.referenceNumber}`);
+      if (doc.referenceNumber) lines.push(`   Reference Number: ${doc.referenceNumber}`);
       if (doc.amount != null && doc.amount > 0) lines.push(`   Amount: ${formatCurrency(doc.amount, doc.currency || 'INR')}`);
       if (doc.documentDate) lines.push(`   Date: ${formatDate(doc.documentDate)}`);
       if (doc.expiryDate) lines.push(`   Expires: ${formatDate(doc.expiryDate)}`);
@@ -501,6 +509,17 @@ export default function DocumentsVaultScreen() {
 
   const emptyNode = useMemo(() => {
     if (userDocuments.length === 0) {
+      if (isLoading) {
+        return (
+          <View style={styles.emptyContainer}>
+            <ActivityIndicator size="small" color={SereneColors.primary} style={{ marginBottom: 12 }} />
+            <Text style={styles.emptyTitle}>Syncing your vault...</Text>
+            <Text style={styles.emptySubtitle}>
+              Loading your items and documents.
+            </Text>
+          </View>
+        );
+      }
       return (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyIcon}>
@@ -550,7 +569,7 @@ export default function DocumentsVaultScreen() {
       );
     }
     return null;
-  }, [userDocuments.length, filteredDocuments.length, hasActiveSearch, activeFilterCount, searchQuery, handleClearAllSearchAndFilters]);
+  }, [userDocuments.length, isLoading, filteredDocuments.length, hasActiveSearch, activeFilterCount, searchQuery, handleClearAllSearchAndFilters]);
 
   return (
     <View style={styles.root}>
@@ -612,7 +631,7 @@ export default function DocumentsVaultScreen() {
           <MaterialIcons name="search" size={20} color={SereneColors.onSurfaceVariant} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search documents, types, issuers, notes…"
+            placeholder="Search documents by title or type"
             placeholderTextColor={SereneColors.outline}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -620,6 +639,7 @@ export default function DocumentsVaultScreen() {
             autoCorrect={false}
             returnKeyType="search"
             clearButtonMode="while-editing"
+            accessibilityLabel="Search documents"
           />
           {searchQuery ? (
             <TouchableOpacity onPress={() => setSearchQuery('')} accessibilityLabel="Clear search">
@@ -871,25 +891,26 @@ const styles = StyleSheet.create({
     ...Platform.select({ ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2 }, android: { elevation: 1 } }),
   },
   cardRow: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12 },
-  thumb: { width: 52, height: 56, borderRadius: 10, overflow: 'hidden', backgroundColor: SereneColors.surfaceContainerLow, borderWidth: 1, borderColor: SereneColors.subtleBorder, alignItems: 'center', justifyContent: 'center' },
+  thumb: { width: 52, height: 56, borderRadius: 10, overflow: 'hidden', backgroundColor: SereneColors.surfaceContainerLow, borderWidth: 1, borderColor: SereneColors.subtleBorder, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   thumbInner: { alignItems: 'center', justifyContent: 'center' },
   thumbPdfLabel: { fontSize: 9, fontWeight: '700', color: SereneColors.error, marginTop: 2 },
-  cardContent: { flex: 1, gap: 3 },
-  cardTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  cardTitle: { flex: 1, fontSize: 14, fontWeight: '700', color: SereneColors.onSurface, marginRight: 8 },
-  cardAmount: { fontSize: 13, fontWeight: '700', color: SereneColors.primary },
-  cardMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' },
-  cardIssuer: { fontSize: 11, fontWeight: '500', color: SereneColors.onSurfaceVariant },
-  cardDot: { fontSize: 11, color: SereneColors.outline },
-  cardRef: { fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', color: SereneColors.onSurfaceVariant },
-  cardTags: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 5, marginTop: 2 },
-  typePill: { backgroundColor: SereneColors.surfaceContainerHigh, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
+  cardContent: { flex: 1, minWidth: 0, gap: 3 },
+  cardTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  cardTitle: { flex: 1, fontSize: 14, fontWeight: '700', color: SereneColors.onSurface },
+  cardAmount: { fontSize: 13, fontWeight: '700', color: SereneColors.primary, flexShrink: 0 },
+  cardMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 1 },
+  cardIssuer: { fontSize: 11, fontWeight: '500', color: SereneColors.onSurfaceVariant, flexShrink: 1, maxWidth: '65%' },
+  cardDot: { fontSize: 11, color: SereneColors.outline, flexShrink: 0 },
+  cardRef: { fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', color: SereneColors.onSurfaceVariant, flexShrink: 1 },
+  cardTags: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  typePill: { backgroundColor: SereneColors.surfaceContainerHigh, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, flexShrink: 0 },
   typePillText: { fontSize: 10, fontWeight: '600', color: SereneColors.onSurfaceVariant },
-  linkedPill: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#F0F9FF', borderWidth: 1, borderColor: '#BAE6FD', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999 },
-  linkedPillText: { fontSize: 10, fontWeight: '600', color: '#0369A1' },
-  expiryPill: { borderWidth: 1, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999 },
+  linkedPill: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#F0F9FF', borderWidth: 1, borderColor: '#BAE6FD', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, maxWidth: 160 },
+  linkedPillText: { fontSize: 10, fontWeight: '600', color: '#0369A1', flexShrink: 1 },
+  expiryPill: { borderWidth: 1, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, flexShrink: 0 },
   expiryPillText: { fontSize: 10, fontWeight: '700' },
-  docDate: { fontSize: 10, color: SereneColors.outline, marginLeft: 'auto' },
+  docDate: { fontSize: 10, color: SereneColors.outline, flexShrink: 0 },
+  chevronWrap: { width: 18, alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: 2 },
 
   emptyContainer: { paddingTop: 48, alignItems: 'center', paddingHorizontal: 24 },
   emptyIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(17,80,134,0.08)', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },

@@ -10,10 +10,16 @@ import {
   Share,
   BackHandler,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { router } from 'expo-router';
-import { useFocusEffect } from 'expo-router';
+import {
+  router,
+  useLocalSearchParams,
+  useFocusEffect,
+  useSegments,
+  useNavigation,
+} from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
 import { ItemCard } from '../../src/components/ui/ItemCard';
 import { EmptyState } from '../../src/components/ui/EmptyState';
@@ -27,6 +33,8 @@ import {
   getRemainingWarrantyDays,
   getRemainingReturnDays,
   getCategoryCapabilities,
+  isWarrantyEndingSoon,
+  isReturnEndingSoon,
 } from '../../src/utils/warranty';
 import {
   SortModal,
@@ -81,8 +89,63 @@ const SelectableItemCard = React.memo(function SelectableItemCard({
 export default function ItemsCatalogScreen() {
   const user = useAuthStore((s) => s.user);
   const items = useItemStore((s) => s.items);
+  const warranties = useItemStore((s) => s.warranties);
+  const isLoading = useItemStore((s) => s.isLoading);
   const getItemById = useItemStore((s) => s.getItemById);
   const deleteItem = useItemStore((s) => s.deleteItem);
+
+  const params = useLocalSearchParams<{ filter?: string; t?: string }>();
+  type QuickFilterType = 'warranty_ending' | 'return_ending' | null;
+  const [quickFilter, setQuickFilter] = useState<QuickFilterType>(null);
+  const lastHandledParamRef = useRef<string | null>(null);
+
+  const navigation = useNavigation();
+  const segments = useSegments();
+
+  const clearQuickFilterState = useCallback(() => {
+    setQuickFilter(null);
+    lastHandledParamRef.current = '_';
+    try {
+      (navigation as any).setParams({ filter: undefined, t: undefined });
+    } catch {
+      router.setParams({ filter: '', t: '' });
+    }
+  }, [navigation]);
+
+  useEffect(() => {
+    const paramKey = `${params.filter || ''}_${params.t || ''}`;
+    if (paramKey === lastHandledParamRef.current) return;
+    lastHandledParamRef.current = paramKey;
+
+    if (params.filter === 'warranty_ending') {
+      setQuickFilter('warranty_ending');
+    } else if (params.filter === 'return_ending') {
+      setQuickFilter('return_ending');
+    } else if (params.filter === 'all') {
+      clearQuickFilterState();
+    }
+  }, [params.filter, params.t, clearQuickFilterState]);
+
+  // Auto-clear temporary quick filter when user switches to a different main tab/section (Vault, Documents, Services, Profile, etc.)
+  // Crucially, opening an item detail screen (/item/[id]) stays within items context (segments[0] === 'item'), so the filter remains active.
+  useEffect(() => {
+    const segs = (segments as unknown as string[]) || [];
+    const isOtherTab = (segs[0] === '(tabs)' && segs[1] !== 'items') || segs[0] === '(auth)';
+
+    if (isOtherTab && quickFilter !== null) {
+      clearQuickFilterState();
+    }
+  }, [segments, quickFilter, clearQuickFilterState]);
+
+  // Tapping the Items tab bar icon while already on Items clears temporary filter and shows all items
+  useEffect(() => {
+    const unsubscribe = (navigation as any)?.addListener?.('tabPress', () => {
+      if (quickFilter !== null) {
+        clearQuickFilterState();
+      }
+    });
+    return unsubscribe;
+  }, [navigation, quickFilter, clearQuickFilterState]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSort, setSelectedSort] = useState<SortOption>('recent_added');
@@ -150,6 +213,15 @@ export default function ItemsCatalogScreen() {
     });
 
     const filtered = searched.filter((item) => {
+      // 1. Dashboard Quick Filter
+      if (quickFilter === 'warranty_ending') {
+        const itemWarranty = warranties.find((w) => w.itemId === item.id);
+        if (!isWarrantyEndingSoon(item, itemWarranty?.endDate)) return false;
+      } else if (quickFilter === 'return_ending') {
+        if (!isReturnEndingSoon(item)) return false;
+      }
+
+      // 2. Existing modal / manual filters
       if (filters.categoryId !== 'all' && item.categoryId !== filters.categoryId) return false;
 
       if (filters.priceRange !== 'all') {
@@ -173,7 +245,8 @@ export default function ItemsCatalogScreen() {
       }
 
       if (filters.warrantyStatus !== 'all') {
-        const effectiveEnd = item.warrantyUntil;
+        const itemWarranty = warranties.find((w) => w.itemId === item.id);
+        const effectiveEnd = item.warrantyUntil || itemWarranty?.endDate;
         const caps = getCategoryCapabilities(item.categoryId || item.category, item.productType, Boolean(effectiveEnd));
         if (filters.warrantyStatus === 'none') {
           if (!caps.warrantySupported || effectiveEnd) return false;
@@ -192,9 +265,9 @@ export default function ItemsCatalogScreen() {
         } else {
           if (filters.returnStatus === 'none') return false;
           const remainingDays = getRemainingReturnDays(item.returnUntil);
-          if (filters.returnStatus === 'available' && (remainingDays === undefined || remainingDays < 0)) return false;
-          if (filters.returnStatus === 'ending_soon' && (remainingDays === undefined || remainingDays < 0 || remainingDays > 3)) return false;
-          if (filters.returnStatus === 'expired' && (remainingDays === undefined || remainingDays >= 0)) return false;
+          if (filters.returnStatus === 'available' && (remainingDays === undefined || isNaN(remainingDays) || remainingDays < 0)) return false;
+          if (filters.returnStatus === 'ending_soon' && (remainingDays === undefined || isNaN(remainingDays) || remainingDays < 0 || remainingDays > 3)) return false;
+          if (filters.returnStatus === 'expired' && (remainingDays === undefined || isNaN(remainingDays) || remainingDays >= 0)) return false;
         }
       }
 
@@ -225,7 +298,7 @@ export default function ItemsCatalogScreen() {
     return sorted
       .map((item) => getItemById(item.id))
       .filter((i): i is ItemWithOwnerContext => Boolean(i));
-  }, [activeCanonicalItems, searchQuery, filters, selectedSort, getItemById, categoryMap]);
+  }, [activeCanonicalItems, searchQuery, filters, quickFilter, selectedSort, getItemById, categoryMap, warranties]);
 
   const activeFilterCount = useMemo(() => countActiveFilters(filters), [filters]);
 
@@ -421,10 +494,15 @@ export default function ItemsCatalogScreen() {
 
   const handleClearFilters = useCallback(() => setFilters(DEFAULT_FILTERS), []);
 
+  const handleClearQuickFilter = useCallback(() => {
+    clearQuickFilterState();
+  }, [clearQuickFilterState]);
+
   const handleClearAllSearchAndFilters = useCallback(() => {
     setSearchQuery('');
     setFilters(DEFAULT_FILTERS);
-  }, []);
+    clearQuickFilterState();
+  }, [clearQuickFilterState]);
 
   const renderItem = useCallback(
     ({ item }: { item: ItemWithOwnerContext }) => (
@@ -466,13 +544,14 @@ export default function ItemsCatalogScreen() {
         <MaterialIcons name="search" size={20} color={SereneColors.outline} style={{ marginRight: 8 }} />
         <TextInput
           className="flex-1 text-[13px] text-serene-on-surface"
-          placeholder="Search items, brands, models or stores"
+          placeholder="Search items by name or brand"
           placeholderTextColor={SereneColors.outline}
           value={searchQuery}
           onChangeText={setSearchQuery}
           autoCapitalize="none"
           autoCorrect={false}
           returnKeyType="search"
+          accessibilityLabel="Search items"
         />
         {searchQuery ? (
           <TouchableOpacity onPress={() => setSearchQuery('')} className="p-1" accessibilityLabel="Clear search">
@@ -519,6 +598,60 @@ export default function ItemsCatalogScreen() {
         </TouchableOpacity>
       </View>
 
+      {quickFilter === 'warranty_ending' && (
+        <View className="flex-row items-center justify-between bg-rose-50 px-3.5 py-2.5 rounded-serene-lg border border-rose-200">
+          <View className="flex-row items-center gap-2 flex-1 pr-2">
+            <View className="w-6 h-6 rounded-full bg-rose-100 items-center justify-center">
+              <MaterialIcons name="verified-user" size={14} color={SereneColors.error} />
+            </View>
+            <View className="flex-1">
+              <Text className="text-[13px] font-bold text-rose-900">
+                Warranty ending soon
+              </Text>
+              <Text className="text-[11px] text-rose-700">
+                Expiring within 30 days ({displayItems.length} {displayItems.length === 1 ? 'item' : 'items'})
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            onPress={handleClearQuickFilter}
+            activeOpacity={0.7}
+            className="bg-white px-2.5 py-1.5 rounded-serene-md border border-rose-200"
+            accessibilityLabel="Clear warranty filter"
+            accessibilityRole="button"
+          >
+            <Text className="text-[11px] font-bold text-rose-800">Clear</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {quickFilter === 'return_ending' && (
+        <View className="flex-row items-center justify-between bg-amber-50 px-3.5 py-2.5 rounded-serene-lg border border-amber-200">
+          <View className="flex-row items-center gap-2 flex-1 pr-2">
+            <View className="w-6 h-6 rounded-full bg-amber-100 items-center justify-center">
+              <MaterialIcons name="assignment-return" size={14} color="#D97706" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-[13px] font-bold text-amber-900">
+                Return ending soon
+              </Text>
+              <Text className="text-[11px] text-amber-700">
+                Ending within 30 days ({displayItems.length} {displayItems.length === 1 ? 'item' : 'items'})
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            onPress={handleClearQuickFilter}
+            activeOpacity={0.7}
+            className="bg-white px-2.5 py-1.5 rounded-serene-md border border-amber-200"
+            accessibilityLabel="Clear return filter"
+            accessibilityRole="button"
+          >
+            <Text className="text-[11px] font-bold text-amber-800">Clear</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {(activeFilterCount > 0 || searchQuery) && (
         <View className="flex-row items-center justify-between bg-serene-surface-container-low px-3 py-2 rounded-serene-md border border-serene-subtle-border">
           <View className="flex-row items-center gap-1.5 flex-1 mr-2">
@@ -540,19 +673,61 @@ export default function ItemsCatalogScreen() {
     </View>
   ), [
     isSelectionMode, collectionSummary.displayText, searchQuery,
-    selectedSort, activeFilterCount, filters, categoryMap, displayItems.length,
-    handleClearAllSearchAndFilters,
+    selectedSort, activeFilterCount, filters, quickFilter, categoryMap, displayItems.length,
+    handleClearQuickFilter, handleClearAllSearchAndFilters,
   ]);
 
-  const listEmpty = useMemo(() => (
-    activeCanonicalItems.length === 0 ? (
-      <EmptyState
-        title="Your collection is empty"
-        description="Add the things you buy to keep warranty, return dates, and receipts in one place."
-        actionText="Add your first item"
-        onActionPress={() => router.push('/(tabs)/add')}
-      />
-    ) : (
+  const listEmpty = useMemo(() => {
+    if (quickFilter === 'warranty_ending') {
+      return (
+        <EmptyState
+          icon="verified-user"
+          title="No warranties ending in the next 30 days."
+          description="None of your cataloged items have warranties expiring in the upcoming 30 days."
+          actionText="View all items"
+          actionIcon="visibility"
+          onActionPress={handleClearQuickFilter}
+        />
+      );
+    }
+
+    if (quickFilter === 'return_ending') {
+      return (
+        <EmptyState
+          icon="assignment-return"
+          title="No returns ending in the next 30 days."
+          description="None of your cataloged items have return deadlines ending in the upcoming 30 days."
+          actionText="View all items"
+          actionIcon="visibility"
+          onActionPress={handleClearQuickFilter}
+        />
+      );
+    }
+
+    if (activeCanonicalItems.length === 0) {
+      if (isLoading) {
+        return (
+          <View className="items-center justify-center py-16 px-6">
+            <ActivityIndicator size="small" color={SereneColors.primary} />
+            <Text className="text-[16px] font-bold text-serene-on-surface text-center mt-3">
+              Syncing your vault...
+            </Text>
+            <Text className="text-[13px] text-serene-on-surface-variant text-center mt-1">
+              Loading your items and documents.
+            </Text>
+          </View>
+        );
+      }
+      return (
+        <EmptyState
+          title="Your collection is empty"
+          description="Add the things you buy to keep warranty, return dates, and receipts in one place."
+          actionText="Add your first item"
+          onActionPress={() => router.push('/(tabs)/add')}
+        />
+      );
+    }
+    return (
       <EmptyState
         icon="search-off"
         title="No items found"
@@ -560,8 +735,14 @@ export default function ItemsCatalogScreen() {
         actionText="Clear Search & Filters"
         onActionPress={handleClearAllSearchAndFilters}
       />
-    )
-  ), [activeCanonicalItems.length, handleClearAllSearchAndFilters]);
+    );
+  }, [
+    quickFilter,
+    activeCanonicalItems.length,
+    isLoading,
+    handleClearQuickFilter,
+    handleClearAllSearchAndFilters,
+  ]);
 
   return (
     <View className="flex-1 bg-serene-surface">

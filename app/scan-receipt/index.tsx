@@ -2630,7 +2630,7 @@ export default function AIReceiptScannerScreen() {
                     className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm font-medium text-serene-on-surface"
                     value={editingItemName}
                     onChangeText={setEditingItemName}
-                    placeholder="e.g. Lenovo IdeaPad Slim 3"
+                    placeholder="Enter product name"
                   />
                 </View>
 
@@ -2642,7 +2642,7 @@ export default function AIReceiptScannerScreen() {
                       value={editingItemPrice}
                       onChangeText={setEditingItemPrice}
                       keyboardType="numeric"
-                      placeholder="e.g. 40,990"
+                      placeholder="Enter total price"
                     />
                   </View>
 
@@ -2653,7 +2653,7 @@ export default function AIReceiptScannerScreen() {
                       value={editingItemQuantity}
                       onChangeText={setEditingItemQuantity}
                       keyboardType="number-pad"
-                      placeholder="e.g. 1"
+                      placeholder="1"
                     />
                   </View>
                 </View>
@@ -2729,7 +2729,7 @@ export default function AIReceiptScannerScreen() {
                       className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2 text-sm text-serene-on-surface"
                       value={editingItemBrand}
                       onChangeText={setEditingItemBrand}
-                      placeholder="e.g. Lenovo"
+                      placeholder="Enter brand name"
                     />
                   </View>
                   <View className="flex-1">
@@ -2738,7 +2738,7 @@ export default function AIReceiptScannerScreen() {
                       className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2 text-sm text-serene-on-surface"
                       value={editingItemModel}
                       onChangeText={setEditingItemModel}
-                      placeholder="e.g. IdeaPad Slim 3 15IAH8"
+                      placeholder="Enter model number"
                     />
                   </View>
                 </View>
@@ -2791,7 +2791,7 @@ export default function AIReceiptScannerScreen() {
                     className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm font-medium text-serene-on-surface"
                     value={newItemName}
                     onChangeText={setNewItemName}
-                    placeholder="e.g. Lenovo IdeaPad Slim 3"
+                    placeholder="Enter product name"
                   />
                 </View>
 
@@ -2803,7 +2803,7 @@ export default function AIReceiptScannerScreen() {
                       value={newItemPrice}
                       onChangeText={setNewItemPrice}
                       keyboardType="numeric"
-                      placeholder="e.g. 40,990"
+                      placeholder="Enter price"
                     />
                   </View>
 
@@ -2814,7 +2814,7 @@ export default function AIReceiptScannerScreen() {
                       value={newItemQuantity}
                       onChangeText={setNewItemQuantity}
                       keyboardType="number-pad"
-                      placeholder="e.g. 1"
+                      placeholder="1"
                     />
                   </View>
                 </View>
@@ -2887,7 +2887,7 @@ export default function AIReceiptScannerScreen() {
                     className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2 text-sm text-serene-on-surface"
                     value={newItemBrand}
                     onChangeText={setNewItemBrand}
-                    placeholder="e.g. Lenovo"
+                    placeholder="Enter brand name (optional)"
                   />
                 </View>
 
@@ -3327,7 +3327,7 @@ export default function AIReceiptScannerScreen() {
               className="bg-serene-surface-container-low border border-serene-hairline-border rounded-serene-md px-3 py-2 text-[13px] text-serene-on-surface"
               value={common.productName.value ?? ''}
               onChangeText={(v) => handleUpdateCommonField('productName', v)}
-              placeholder="e.g. Lenovo IdeaPad Slim 3"
+              placeholder="Enter product name"
               placeholderTextColor={SereneColors.outline}
             />
           </View>
@@ -3357,14 +3357,14 @@ export default function AIReceiptScannerScreen() {
           <View className="flex-row items-center">
             <View className="flex-1 mr-2 mb-3">
               <View className="flex-row items-center justify-between mb-1.5">
-                <Text className="text-xs font-semibold text-serene-on-surface">Store / Merchant</Text>
+                <Text className="text-xs font-semibold text-serene-on-surface">Store</Text>
                 {renderConfidenceBadge(common.merchant.confidence)}
               </View>
               <TextInput
                 className="bg-serene-surface-container-low border border-serene-hairline-border rounded-serene-md px-3 py-2 text-[13px] text-serene-on-surface"
                 value={common.merchant.value ?? ''}
                 onChangeText={(v) => handleUpdateCommonField('merchant', v)}
-                placeholder="e.g. Flipkart"
+                placeholder="Enter store or merchant name"
                 placeholderTextColor={SereneColors.outline}
               />
             </View>
@@ -3378,7 +3378,7 @@ export default function AIReceiptScannerScreen() {
                 className="bg-serene-surface-container-low border border-serene-hairline-border rounded-serene-md px-3 py-2 text-[13px] text-serene-on-surface"
                 value={common.brand.value ?? ''}
                 onChangeText={(v) => handleUpdateCommonField('brand', v)}
-                placeholder="e.g. Lenovo"
+                placeholder="Enter brand name"
                 placeholderTextColor={SereneColors.outline}
               />
             </View>
@@ -3408,7 +3408,7 @@ export default function AIReceiptScannerScreen() {
                 className="bg-serene-surface-container-low border border-serene-hairline-border rounded-serene-md px-3 py-2 text-[13px] text-serene-on-surface"
                 value={common.invoiceNumber.value ?? ''}
                 onChangeText={(v) => handleUpdateCommonField('invoiceNumber', v)}
-                placeholder="e.g. INV-2026-1042"
+                placeholder="Enter invoice number"
                 placeholderTextColor={SereneColors.outline}
               />
             </View>
@@ -3417,7 +3417,7 @@ export default function AIReceiptScannerScreen() {
           <View className="flex-row items-center">
             <View className="flex-1 mr-2 mb-3">
               <View className="flex-row items-center justify-between mb-1.5">
-                <Text className="text-xs font-semibold text-serene-on-surface">Tax / GST (₹)</Text>
+                <Text className="text-xs font-semibold text-serene-on-surface">Tax Amount (₹)</Text>
                 {renderConfidenceBadge(common.taxGst.confidence, common.taxGst.needsVerification)}
               </View>
               <TextInput
@@ -3425,7 +3425,7 @@ export default function AIReceiptScannerScreen() {
                 keyboardType="numeric"
                 value={common.taxGst.value ? String(common.taxGst.value) : ''}
                 onChangeText={(v) => handleUpdateCommonField('taxGst', parseFloat(v) || 0)}
-                placeholder="e.g. 4,990"
+                placeholder="Enter tax amount"
                 placeholderTextColor={SereneColors.outline}
               />
             </View>
@@ -3440,7 +3440,7 @@ export default function AIReceiptScannerScreen() {
                 keyboardType="numeric"
                 value={common.finalAmount.value ? String(common.finalAmount.value) : ''}
                 onChangeText={(v) => handleUpdateCommonField('finalAmount', parseFloat(v) || 0)}
-                placeholder="e.g. 40,990"
+                placeholder="Enter total amount"
                 placeholderTextColor={SereneColors.outline}
               />
             </View>

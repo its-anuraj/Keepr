@@ -274,7 +274,7 @@ export default function ServiceDetailsScreen() {
 
         {/* Primary Summary Card */}
         <View style={cardStyle}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <View
               style={{
                 flexDirection: 'row',
@@ -284,15 +284,16 @@ export default function ServiceDetailsScreen() {
                 paddingHorizontal: 10,
                 paddingVertical: 4,
                 borderRadius: 20,
+                flexShrink: 1,
               }}
             >
               <MaterialIcons name="build" size={13} color={SereneColors.primary} />
-              <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.primary }}>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.primary }} numberOfLines={1}>
                 {record.serviceType || 'Service'}
               </Text>
             </View>
 
-            <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant, fontWeight: '500' }}>
+            <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant, fontWeight: '500', flexShrink: 0 }}>
               {formatDate(record.serviceDate, 'full')}
             </Text>
           </View>
@@ -313,9 +314,11 @@ export default function ServiceDetailsScreen() {
               padding: 12,
               borderRadius: 10,
               marginTop: 6,
+              gap: 8,
+              flexWrap: 'wrap',
             }}
           >
-            <View>
+            <View style={{ flex: 1, minWidth: 140 }}>
               <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant }}>
                 {isWarrantyCovered ? 'Warranty Status' : 'Amount Paid'}
               </Text>
@@ -332,7 +335,7 @@ export default function ServiceDetailsScreen() {
             </View>
 
             {record.coverageType ? (
-              <View style={{ backgroundColor: '#fff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: SereneColors.subtleBorder }}>
+              <View style={{ backgroundColor: '#fff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: SereneColors.subtleBorder, flexShrink: 0 }}>
                 <Text style={{ fontSize: 11, fontWeight: '600', color: SereneColors.primary }}>
                   {record.coverageType}
                 </Text>
@@ -342,7 +345,7 @@ export default function ServiceDetailsScreen() {
 
           {record.coverageReferenceNumber ? (
             <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
-              Claim / Service Ref: #{record.coverageReferenceNumber}
+              Claim Reference: #{record.coverageReferenceNumber}
             </Text>
           ) : null}
         </View>
@@ -401,9 +404,9 @@ export default function ServiceDetailsScreen() {
             ) : null}
 
             {record.serviceProviderAddress ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <MaterialIcons name="place" size={15} color={SereneColors.outline} />
-                <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant, flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 6 }}>
+                <MaterialIcons name="place" size={15} color={SereneColors.outline} style={{ marginTop: 2 }} />
+                <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant, flex: 1, minWidth: 0, lineHeight: 18 }}>
                   {record.serviceProviderAddress}
                 </Text>
               </View>
@@ -480,15 +483,15 @@ export default function ServiceDetailsScreen() {
                     borderColor: SereneColors.subtleBorder,
                   }}
                 >
-                  <View style={{ flex: 1, paddingRight: 8 }}>
+                  <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
                     <Text style={{ fontSize: 13, fontWeight: '600', color: SereneColors.onSurface }} numberOfLines={1}>
                       {doc.title}
                     </Text>
-                    <Text style={{ fontSize: 10, color: SereneColors.onSurfaceVariant }}>
+                    <Text style={{ fontSize: 10, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
                       {doc.documentType} {doc.documentDate ? `· ${formatDate(doc.documentDate)}` : ''}
                     </Text>
                   </View>
-                  <MaterialIcons name="chevron-right" size={18} color={SereneColors.outline} />
+                  <MaterialIcons name="chevron-right" size={18} color={SereneColors.outline} style={{ flexShrink: 0 }} />
                 </TouchableOpacity>
               ))}
             </View>
@@ -500,7 +503,7 @@ export default function ServiceDetailsScreen() {
           <View style={cardStyle}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <MaterialIcons name="notes" size={17} color={SereneColors.primary} />
-              <Text style={sectionTitleStyle}>Technician / Service Notes</Text>
+              <Text style={sectionTitleStyle}>Technician Notes</Text>
             </View>
             <Text style={{ fontSize: 13, color: SereneColors.onSurfaceVariant, lineHeight: 19 }}>
               {record.notes}
@@ -631,10 +634,11 @@ export default function ServiceDetailsScreen() {
               <MaterialIcons name="search" size={18} color={SereneColors.onSurfaceVariant} />
               <TextInput
                 style={{ flex: 1, fontSize: 13, color: SereneColors.onSurface }}
-                placeholder="Search your items..."
-                placeholderTextColor={SereneColors.onSurfaceVariant}
+                placeholder="Search items by name or brand"
+                placeholderTextColor={SereneColors.outline}
                 value={itemSearchQuery}
                 onChangeText={setItemSearchQuery}
+                accessibilityLabel="Search items"
               />
               {itemSearchQuery.length > 0 && (
                 <TouchableOpacity onPress={() => setItemSearchQuery('')}>

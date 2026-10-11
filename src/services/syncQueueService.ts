@@ -135,8 +135,17 @@ export async function getPendingUpsertDocumentIds(userId: string): Promise<Set<s
 }
 
 /**
+ * Returns the total count of pending sync operations for the given user.
+ */
+export async function getPendingUserSyncOpsCount(userId: string): Promise<number> {
+  if (!userId) return 0;
+  const queue = await readQueue();
+  return queue.filter((e) => e.userId === userId).length;
+}
+
+/**
  * Removes all queued operations for the given user.
- * Must be called on signOut and account deletion to prevent cross-user data leakage.
+ * Must be called on account deletion to permanently purge queued data.
  */
 export async function clearUserSyncQueue(userId: string): Promise<void> {
   const queue = await readQueue();
@@ -167,13 +176,36 @@ export async function flushSyncQueue(userId: string): Promise<void> {
     try {
       let success = false;
 
-      if (entry.type === 'upsertItem' && entry.payload) {
-        const { error } = await supabase
-          .from('items')
-          .upsert(entry.payload, { onConflict: 'id' });
-        success = !error;
-        if (error) {
-          console.warn(`[SyncQueue] upsertItem retry failed for ${entry.entityId}:`, error.message);
+      if (entry.type === 'upsertItem') {
+        try {
+          const { useItemStore } = require('../store/itemStore');
+          const currentItem = useItemStore.getState().items.find((i: any) => i.id === entry.entityId);
+          if (currentItem) {
+            const { cloudUpsertItem } = require('./cloudSyncService');
+            const upsertErr = await cloudUpsertItem(currentItem, userId);
+            success = !upsertErr;
+          }
+        } catch {}
+
+        if (!success && entry.payload) {
+          let { error } = await supabase
+            .from('items')
+            .upsert(entry.payload, { onConflict: 'id' });
+
+          // Defensive fallback: if remote PostgreSQL schema doesn't have image_storage_path yet
+          if (error && error.message && error.message.includes('image_storage_path')) {
+            const fallbackPayload = { ...entry.payload };
+            delete fallbackPayload.image_storage_path;
+            const retryResult = await supabase
+              .from('items')
+              .upsert(fallbackPayload, { onConflict: 'id' });
+            error = retryResult.error;
+          }
+
+          success = !error;
+          if (error) {
+            console.warn(`[SyncQueue] upsertItem retry failed for ${entry.entityId}:`, error.message);
+          }
         }
       } else if (entry.type === 'deleteItem') {
         const { error } = await supabase

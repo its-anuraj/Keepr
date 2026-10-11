@@ -41,6 +41,7 @@ import {
 } from '../services/receiptFileService';
 import {
   hydrateVaultFromCloud,
+  clearInFlightCloudHydrations,
   cloudUpsertItem,
   cloudUpsertWarranty,
   cloudUpsertDocument,
@@ -56,6 +57,12 @@ import {
   mapDocumentToDbRow,
   mapMaintenanceToDbRow,
 } from '../services/cloudSyncService';
+import {
+  uploadItemPhoto,
+  deleteItemPhotosFromStorage,
+  isStoragePath,
+} from '../services/storageService';
+import { reconcileAndMigrateItemImages } from '../services/offlineMigrationService';
 import { reconcileNotificationsAfterHydration } from '../services/notificationReconciliationService';
 import {
   enqueueSyncOperation,
@@ -209,6 +216,7 @@ interface ItemState {
     additionalReceiptUris?: string[];
     notes?: string;
     imageUrl?: string;
+    imageStoragePath?: string;
     warrantyDurationMonths?: number;
     enableWarrantyReminder?: boolean;
     initialDocumentName?: string;
@@ -328,6 +336,36 @@ interface ItemState {
   clearUserData: () => void;
 }
 
+/** User-scoped backup key prefix to prevent data loss across logout/login */
+const USER_BACKUP_KEY_PREFIX = '@keepr_vault_backup_v1_';
+
+export async function saveUserVaultBackup(userId: string, items: Item[]): Promise<void> {
+  if (!userId || !Array.isArray(items) || items.length === 0) return;
+  try {
+    const key = `${USER_BACKUP_KEY_PREFIX}${userId}`;
+    await AsyncStorage.setItem(key, JSON.stringify(items));
+  } catch (err) {
+    console.warn('[ItemStore] saveUserVaultBackup note:', err);
+  }
+}
+
+export async function getUserVaultBackup(userId: string): Promise<Item[] | null> {
+  if (!userId) return null;
+  try {
+    const key = `${USER_BACKUP_KEY_PREFIX}${userId}`;
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    console.warn('[ItemStore] getUserVaultBackup note:', err);
+    return null;
+  }
+}
+
+/** Active session token for cloud hydration to invalidate stale asynchronous completions */
+let activeHydrationSessionToken: string | null = null;
+
 /** In-flight hydration promise guard to prevent duplicate concurrent hydrations. */
 let inFlightHydrationPromise: {
   userId: string;
@@ -382,27 +420,103 @@ export const useItemStore = create<ItemState>()(
           return inFlightHydrationPromise.promise;
         }
 
+        const sessionToken = generateUUID();
+        activeHydrationSessionToken = sessionToken;
+
         const promise = (async () => {
-          set({ isLoading: true });
+          set({ isLoading: true, error: null });
           try {
             const cloudData = await hydrateVaultFromCloud(userId);
+
+            // STALE CHECK 1: Before committing any asynchronous hydration result,
+            // verify the authenticated user/session still matches the request's user ID
+            // and the session token is still active (not cleared by logout or account switch).
+            const currentAuthUser = useAuthStore.getState().user;
+            const currentAuthSession = useAuthStore.getState().session;
+            const currentUserId = currentAuthUser?.id || currentAuthSession?.user?.id;
+
+            if (!currentUserId || currentUserId !== userId || activeHydrationSessionToken !== sessionToken) {
+              console.warn(`[ItemStore] Discarding stale hydration result for user ${userId} (current user: ${currentUserId})`);
+              set({ isLoading: false });
+              return { itemCount: 0, docCount: 0, success: false };
+            }
 
             const currentState = get();
 
             const verifyOwnership = <T extends { userId?: string }>(records: T[]): T[] =>
               records.filter((r) => !r.userId || r.userId === userId);
 
-            const safeItems = cloudData.items.length > 0
-              ? verifyOwnership(cloudData.items).map((cloudItem) => {
-                  const localItem = currentState.items.find((i) => i.id === cloudItem.id);
-                  return {
-                    ...cloudItem,
-                    receiptUri: localItem?.receiptUri || cloudItem.receiptUri,
-                    receiptPath: cloudItem.receiptPath || localItem?.receiptPath,
-                    receiptName: cloudItem.receiptName || localItem?.receiptName,
-                  };
-                })
-              : currentState.items.length > 0 ? currentState.items : [];
+            // Fetch any pending offline item upsert IDs for this user
+            let pendingItemIds = new Set<string>();
+            try {
+              const { getPendingUpsertItemIds } = require('../services/syncQueueService');
+              pendingItemIds = await getPendingUpsertItemIds(userId);
+            } catch {}
+
+            // Handle items query failure vs successful response:
+            let safeItems: Item[] = [];
+            let itemsSuccess = true;
+
+            if (cloudData.itemsFetchError) {
+              // On query failure, NEVER overwrite previously available valid items with an empty array.
+              itemsSuccess = false;
+              console.warn(`[ItemStore] Cloud items query failed. Preserving local state and user backup.`);
+              if (currentState.items.length > 0) {
+                safeItems = currentState.items;
+              } else {
+                const backup = await getUserVaultBackup(userId);
+                safeItems = (backup && backup.length > 0) ? backup : [];
+              }
+            } else if (cloudData.itemsMappingErrors > 0 && cloudData.items.length === 0 && cloudData.itemsRawCount > 0) {
+              // All items failed mapping. This is NOT an empty vault!
+              itemsSuccess = false;
+              console.warn(`[ItemStore] All ${cloudData.itemsRawCount} items failed mapping! Preserving local items.`);
+              if (currentState.items.length > 0) {
+                safeItems = currentState.items;
+              } else {
+                const backup = await getUserVaultBackup(userId);
+                safeItems = (backup && backup.length > 0) ? backup : [];
+              }
+            } else if (cloudData.items.length > 0) {
+              // Successfully fetched items from cloud
+              const cloudItemsOwned = verifyOwnership(cloudData.items);
+              const mappedCloudIds = new Set(cloudItemsOwned.map((i) => i.id));
+
+              // Map cloud items, merging local media paths where available
+              const mappedItems = cloudItemsOwned.map((cloudItem) => {
+                const localItem = currentState.items.find((i) => i.id === cloudItem.id);
+                return {
+                  ...cloudItem,
+                  photoUri: localItem?.photoUri || cloudItem.photoUri,
+                  imageStoragePath: cloudItem.imageStoragePath || localItem?.imageStoragePath,
+                  imageUrl: cloudItem.imageStoragePath || cloudItem.imageUrl || localItem?.imageUrl,
+                  receiptUri: localItem?.receiptUri || cloudItem.receiptUri,
+                  receiptPath: cloudItem.receiptPath || localItem?.receiptPath,
+                  receiptName: cloudItem.receiptName || localItem?.receiptName,
+                };
+              });
+
+              // Also preserve any local items that are pending sync or failed mapping
+              const pendingOrMissingLocalItems = currentState.items.filter(
+                (loc) => !mappedCloudIds.has(loc.id) && (pendingItemIds.has(loc.id) || loc.userId === userId)
+              );
+
+              safeItems = [...mappedItems, ...pendingOrMissingLocalItems];
+
+              // Save verified good items to user backup
+              saveUserVaultBackup(userId, safeItems).catch(() => {});
+            } else {
+              // Confirmed zero items from cloud (cloudData.itemsRawCount === 0 and itemsFetchError === false)
+              // If there are pending local items for this user, preserve them!
+              const pendingLocalItems = currentState.items.filter(
+                (loc) => pendingItemIds.has(loc.id) && (!loc.userId || loc.userId === userId)
+              );
+              if (pendingLocalItems.length > 0) {
+                safeItems = pendingLocalItems;
+              } else {
+                safeItems = [];
+              }
+            }
 
             const safeWarranties = cloudData.warranties.length > 0
               ? verifyOwnership(cloudData.warranties)
@@ -436,6 +550,17 @@ export const useItemStore = create<ItemState>()(
               ? cloudData.activityLogs.filter((l) => !l.userId || l.userId === userId)
               : currentState.activityLogs.length > 0 ? currentState.activityLogs : [];
 
+            // STALE CHECK 2: Re-verify before final set()
+            const finalAuthUser = useAuthStore.getState().user;
+            const finalAuthSession = useAuthStore.getState().session;
+            const finalUserId = finalAuthUser?.id || finalAuthSession?.user?.id;
+
+            if (!finalUserId || finalUserId !== userId || activeHydrationSessionToken !== sessionToken) {
+              console.warn(`[ItemStore] Aborting state commit: user or session changed during hydration.`);
+              set({ isLoading: false });
+              return { itemCount: 0, docCount: 0, success: false };
+            }
+
             set({
               items: safeItems,
               receipts: safeReceipts,
@@ -445,17 +570,23 @@ export const useItemStore = create<ItemState>()(
               expenses: safeExpenses,
               activityLogs: safeActivityLogs,
               isLoading: false,
+              error: itemsSuccess ? null : 'Some items could not be synced from the cloud',
             });
 
             console.log(
               `[ItemStore] hydrateFromCloud complete for user ${userId}: ` +
-              `${safeItems.length} items, ${safeDocs.length} docs, ` +
+              `${safeItems.length} items (success: ${itemsSuccess}), ${safeDocs.length} docs, ` +
               `${safeWarranties.length} warranties, ${safeReceipts.length} receipts`
             );
 
             // Flush any pending offline operations now that we have confirmed connectivity.
             flushSyncQueue(userId).catch((flushErr) => {
               console.warn('[ItemStore] Post-hydration sync queue flush error:', flushErr);
+            });
+
+            // POST-HYDRATION: Safely reconcile and migrate any device-local item photos to private Supabase Storage
+            reconcileAndMigrateItemImages(userId, safeItems).catch((migErr) => {
+              console.warn('[ItemStore] Post-hydration image reconciliation note:', migErr);
             });
 
             // POST-HYDRATION: Reconcile notifications asynchronously.
@@ -474,11 +605,11 @@ export const useItemStore = create<ItemState>()(
             return {
               itemCount: safeItems.length,
               docCount: safeDocs.length,
-              success: true,
+              success: itemsSuccess,
             };
           } catch (err) {
             console.warn('[ItemStore] hydrateFromCloud failed:', err);
-            set({ isLoading: false });
+            set({ isLoading: false, error: 'Hydration failed' });
             return { itemCount: 0, docCount: 0, success: false };
           } finally {
             if (inFlightHydrationPromise?.userId === userId) {
@@ -492,20 +623,29 @@ export const useItemStore = create<ItemState>()(
       },
 
       clearUserData: () => {
+        // Invalidate in-flight hydration tokens immediately
+        activeHydrationSessionToken = null;
         inFlightHydrationPromise = null;
+        clearInFlightCloudHydrations();
         const userId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
+
+        // Save current items to isolated user backup BEFORE clearing in-memory state
+        // so recoverable local data is not lost across logout/login
+        if (userId) {
+          const currentItems = get().items;
+          if (currentItems.length > 0) {
+            saveUserVaultBackup(userId, currentItems).catch(() => {});
+          }
+        }
 
         // Cancel all scheduled notifications to prevent previous user's reminders from firing.
         NotificationService.cancelAllNotifications().catch((err) => {
           console.warn('[ItemStore] cancelAllNotifications failed during clearUserData:', err);
         });
 
-        // Purge the sync queue for this user — prevents cross-user data leakage.
-        if (userId) {
-          clearUserSyncQueue(userId).catch((err) => {
-            console.warn('[ItemStore] clearUserSyncQueue failed during clearUserData:', err);
-          });
-        }
+        // NOTE: We intentionally DO NOT call clearUserSyncQueue(userId) on logout!
+        // Pending offline upserts/deletes are strictly scoped by userId and preserved
+        // so offline work is never lost. They will safely flush when this user logs back in.
 
         set({
           items: [],
@@ -519,6 +659,8 @@ export const useItemStore = create<ItemState>()(
           selectedCategory: 'all',
           selectedSort: 'recent',
           selectedWarrantyFilter: 'all',
+          isLoading: false,
+          error: null,
         });
         AsyncStorage.removeItem('keepr-vault-items-storage').catch((err) => {
           console.warn('[ItemStore] clearUserData AsyncStorage removeItem note:', err);
@@ -627,9 +769,36 @@ export const useItemStore = create<ItemState>()(
           }
         }
 
-        const finalPhotos = params.products && params.products.length > 0
-          ? Array.from(new Set([...persistedProductPhotos, ...params.products.flatMap((p) => p.productPhotos)]))
-          : persistedProductPhotos;
+        // Upload product photos to private Supabase Storage (item-images) with stable item ID
+        const storageProductPhotos: string[] = [];
+        const localProductPhotos: string[] = [];
+
+        for (let idx = 0; idx < persistedProductPhotos.length; idx++) {
+          const ph = persistedProductPhotos[idx];
+          if (isStoragePath(ph)) {
+            storageProductPhotos.push(ph);
+          } else {
+            localProductPhotos.push(ph);
+            if (userId && isSupabaseConfigured) {
+              try {
+                const uRes = await uploadItemPhoto(userId, id, ph, idx);
+                if (uRes.storagePath) {
+                  storageProductPhotos.push(uRes.storagePath);
+                }
+              } catch (uErr) {
+                console.warn('[ItemStore] Background photo upload notice:', uErr);
+              }
+            }
+          }
+        }
+
+        const primaryStoragePath = storageProductPhotos[0] || undefined;
+        const primaryLocalPhoto = localProductPhotos[0] || persistedProductPhotos[0] || undefined;
+        const finalPhotos = storageProductPhotos.length > 0
+          ? storageProductPhotos
+          : (params.products && params.products.length > 0
+            ? Array.from(new Set([...persistedProductPhotos, ...params.products.flatMap((p) => p.productPhotos)]))
+            : persistedProductPhotos);
         const primaryProductPhoto = finalPhotos[0] || undefined;
 
         const isMulti = Boolean(params.products && params.products.length > 1);
@@ -684,8 +853,9 @@ export const useItemStore = create<ItemState>()(
           returnUntil,
           warrantyUntil,
           warrantyProvider: params.warrantyProvider?.trim(),
-          photoUri: primaryProductPhoto,
-          imageUrl: primaryProductPhoto,
+          photoUri: primaryLocalPhoto,
+          imageUrl: primaryStoragePath || primaryLocalPhoto,
+          imageStoragePath: primaryStoragePath,
           productPhotos: finalPhotos,
           products: params.products,
           isMultiProduct: isMulti,
@@ -887,6 +1057,23 @@ export const useItemStore = create<ItemState>()(
             }
           }
 
+          const storagePhotos: string[] = [];
+          for (let pIdx = 0; pIdx < persistedPhotos.length; pIdx++) {
+            const pUri = persistedPhotos[pIdx];
+            if (isStoragePath(pUri)) {
+              storagePhotos.push(pUri);
+            } else if (userId && isSupabaseConfigured) {
+              try {
+                const uRes = await uploadItemPhoto(userId, purchaseId, pUri, pIdx);
+                if (uRes.storagePath) {
+                  storagePhotos.push(uRes.storagePath);
+                }
+              } catch {}
+            }
+          }
+
+          const productFinalPhotos = storagePhotos.length > 0 ? storagePhotos : persistedPhotos;
+
           const itemWarranty = it.warrantyUntil ? (normalizeDateToIso(it.warrantyUntil) || it.warrantyUntil) : null;
           const itemReturn = it.returnUntil ? (normalizeDateToIso(it.returnUntil) || it.returnUntil) : null;
 
@@ -906,7 +1093,7 @@ export const useItemStore = create<ItemState>()(
             warrantyUntil: itemWarranty,
             warrantyProvider: it.warrantyProvider?.trim() || (it.brand ? `${it.brand} Warranty` : undefined),
             returnUntil: itemReturn,
-            productPhotos: persistedPhotos,
+            productPhotos: productFinalPhotos,
             notes: it.notes?.trim(),
           });
 
@@ -932,6 +1119,7 @@ export const useItemStore = create<ItemState>()(
 
         const allProductPhotos = purchasedProducts.flatMap((p) => p.productPhotos);
         const primaryPhoto = allProductPhotos[0] || undefined;
+        const primaryStoragePath = allProductPhotos.find((p) => isStoragePath(p)) || undefined;
         const totalPurchasePrice = receipt.totalAmount || purchasedProducts.reduce((sum, p) => sum + p.lineTotal, 0);
 
         const purchaseName = receipt.merchant
@@ -962,7 +1150,8 @@ export const useItemStore = create<ItemState>()(
           unitPrice: items.length === 1 ? purchasedProducts[0]?.unitPrice : undefined,
           currency: items[0]?.currency || 'INR',
           photoUri: primaryPhoto,
-          imageUrl: primaryPhoto,
+          imageUrl: primaryStoragePath || primaryPhoto,
+          imageStoragePath: primaryStoragePath,
           productPhotos: allProductPhotos,
           products: purchasedProducts,
           isMultiProduct: items.length > 1,
@@ -1072,13 +1261,61 @@ export const useItemStore = create<ItemState>()(
             ? `vault_receipts/${updates.receiptUri.split('vault_receipts/')[1]}`
             : currentItem?.receiptPath;
 
+        let updatedPhotos = updates.productPhotos;
+        let updatedStoragePath = updates.imageStoragePath ?? currentItem?.imageStoragePath;
+
+        if (updates.productPhotos && Array.isArray(updates.productPhotos)) {
+          const finalPhotos: string[] = [];
+          for (let pIdx = 0; pIdx < updates.productPhotos.length; pIdx++) {
+            const p = updates.productPhotos[pIdx];
+            if (isStoragePath(p)) {
+              finalPhotos.push(p);
+            } else if (userId && isSupabaseConfigured) {
+              try {
+                const uRes = await uploadItemPhoto(userId, itemId, p, pIdx);
+                if (uRes.storagePath) {
+                  finalPhotos.push(uRes.storagePath);
+                } else {
+                  finalPhotos.push(p);
+                }
+              } catch {
+                finalPhotos.push(p);
+              }
+            } else {
+              finalPhotos.push(p);
+            }
+          }
+          updatedPhotos = finalPhotos;
+          const firstStorage = finalPhotos.find((p) => isStoragePath(p));
+          if (firstStorage) {
+            updatedStoragePath = firstStorage;
+          }
+
+          // Clean up any removed photos from Supabase Storage
+          if (currentItem?.productPhotos) {
+            const removedPaths = currentItem.productPhotos.filter(
+              (oldP) => isStoragePath(oldP) && !finalPhotos.includes(oldP)
+            );
+            if (removedPaths.length > 0) {
+              deleteItemPhotosFromStorage(removedPaths).catch(() => {});
+            }
+          }
+        }
+
+        const finalUpdates: Partial<Item> = {
+          ...updates,
+          receiptPath: updatedReceiptPath,
+          imageStoragePath: updatedStoragePath,
+          imageUrl: updatedStoragePath || updates.imageUrl || currentItem?.imageUrl,
+          productPhotos: updatedPhotos ?? currentItem?.productPhotos,
+          updatedAt: now,
+        };
+
         const updated = get().items.map((i) =>
           i.id === itemId
             ? {
                 ...i,
-                ...updates,
-                receiptPath: updatedReceiptPath,
-                updatedAt: now,
+                ...finalUpdates,
               }
             : i
         );
@@ -1196,6 +1433,14 @@ export const useItemStore = create<ItemState>()(
         if (target) {
           const targetReceiptId = target.receiptId;
           const targetReceiptUri = target.receiptUri;
+
+          // Clean up product photos from Supabase Storage
+          const photosToDelete = (target.productPhotos || [])
+            .concat([target.imageStoragePath, target.imageUrl].filter((p): p is string => Boolean(p)))
+            .filter((p) => isStoragePath(p));
+          if (photosToDelete.length > 0) {
+            deleteItemPhotosFromStorage(photosToDelete).catch(() => {});
+          }
 
           if (targetReceiptId) {
             const otherItemsSharing = updatedItems.filter((i) => i.receiptId === targetReceiptId);
@@ -1997,16 +2242,21 @@ export const useItemStore = create<ItemState>()(
         const effectiveWarrantyStart =
           warranty?.startDate || item.purchaseDate || (typeof item.createdAt === 'string' ? item.createdAt.split('T')[0] : new Date().toISOString().split('T')[0]);
         const warrantyStatus = caps.warrantySupported ? getWarrantyStatus(effectiveWarrantyEnd) : 'none';
-        const remainingWarrantyDays = caps.warrantySupported && effectiveWarrantyEnd
+        const rawRemainingWarranty = caps.warrantySupported && effectiveWarrantyEnd
           ? getRemainingWarrantyDays(effectiveWarrantyEnd)
           : 0;
+        const remainingWarrantyDays = Number.isFinite(rawRemainingWarranty) ? rawRemainingWarranty : 0;
         const warrantyProgressPercent = caps.warrantySupported && effectiveWarrantyEnd
           ? getWarrantyProgressPercent(effectiveWarrantyStart, effectiveWarrantyEnd)
           : 0;
         const returnStatus = getReturnStatus(item.returnUntil);
-        const remainingReturnDays = item.returnUntil
+        const rawRemainingReturn = item.returnUntil
           ? getRemainingReturnDays(item.returnUntil)
           : undefined;
+        const remainingReturnDays =
+          rawRemainingReturn !== undefined && Number.isFinite(rawRemainingReturn)
+            ? rawRemainingReturn
+            : undefined;
 
         return {
           ...item,
@@ -2029,8 +2279,14 @@ export const useItemStore = create<ItemState>()(
       },
 
       getVaultMetrics: () => {
+        const authUser = useAuthStore.getState().user;
+        const currentUserId = authUser?.id;
+        const allItems = get().items || [];
+        const userItems = currentUserId
+          ? allItems.filter((i) => !i.userId || i.userId === currentUserId)
+          : allItems;
         return calculateVaultMetrics(
-          get().items,
+          userItems,
           get().warranties,
           get().maintenanceRecords,
           get().expenses,

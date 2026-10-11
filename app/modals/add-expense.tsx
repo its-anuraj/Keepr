@@ -133,7 +133,7 @@ export default function AddExpenseModal() {
             <Text className="text-[12px] font-semibold text-serene-on-surface">Expense Title *</Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-              placeholder="e.g. Belkin Screen Protector or Laptop Sleeve"
+              placeholder="Enter expense title"
               placeholderTextColor={SereneColors.outline}
               value={title}
               onChangeText={setTitle}
@@ -144,7 +144,7 @@ export default function AddExpenseModal() {
             <Text className="text-[12px] font-semibold text-serene-on-surface">Amount (₹) *</Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-              placeholder="e.g. 1,800"
+              placeholder="Enter amount"
               placeholderTextColor={SereneColors.outline}
               value={amount}
               onChangeText={setAmount}
@@ -168,7 +168,7 @@ export default function AddExpenseModal() {
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface h-[70px]"
               style={{ textAlignVertical: 'top' }}
-              placeholder="e.g. Purchased from Croma with 1-year warranty"
+              placeholder="Add notes (optional)"
               placeholderTextColor={SereneColors.outline}
               value={notes}
               onChangeText={setNotes}

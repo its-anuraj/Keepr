@@ -44,6 +44,7 @@ import {
 import { normalizeDateToIso } from '../../src/services/receiptParser';
 import { formatDate } from '../../src/utils/currency';
 import { isNoWarrantyCategory } from '../../src/utils/warranty';
+import { resolveItemImageUri } from '../../src/services/storageService';
 
 export default function AddOrEditItemScreen() {
   const params = useLocalSearchParams<{
@@ -247,13 +248,24 @@ export default function AddOrEditItemScreen() {
           setReturnUntil(existing.returnUntil);
         }
 
-        if (existing.productPhotos && existing.productPhotos.length > 0) {
-          setProductPhotos(existing.productPhotos);
-        } else {
-          const pPhoto = existing.photoUri || existing.imageUrl;
-          if (pPhoto && pPhoto !== existing.receiptUri) {
-            setProductPhotos([pPhoto]);
-          }
+        const initialPhotos =
+          existing.productPhotos && existing.productPhotos.length > 0
+            ? existing.productPhotos
+            : existing.imageStoragePath
+            ? [existing.imageStoragePath]
+            : (existing.photoUri || existing.imageUrl) &&
+              (existing.photoUri || existing.imageUrl) !== existing.receiptUri
+            ? [existing.photoUri || existing.imageUrl!]
+            : [];
+
+        if (initialPhotos.length > 0) {
+          setProductPhotos(initialPhotos);
+          Promise.all(initialPhotos.map((p) => resolveItemImageUri(p))).then((resolved) => {
+            const valid = resolved.filter((r): r is string => Boolean(r));
+            if (valid.length > 0) {
+              setProductPhotos(valid);
+            }
+          });
         }
 
         const rUri = existing.receiptUri || existing.documents?.[0]?.fileUrl;
@@ -897,7 +909,7 @@ export default function AddOrEditItemScreen() {
               </View>
               <View className="flex-1">
                 <View className="flex-row items-center gap-1">
-                  <Text className="text-xs font-bold text-serene-primary">SCAN RECEIPT / BILL</Text>
+                  <Text className="text-xs font-bold text-serene-primary">SCAN RECEIPT</Text>
                   <Text className="text-[10px] text-serene-outline">· Auto-detect</Text>
                 </View>
                 <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
@@ -1091,7 +1103,7 @@ export default function AddOrEditItemScreen() {
 
           <View className="gap-1">
             <Text className="text-xs font-semibold text-serene-on-surface">
-              {categoryId === 'vehicles' ? 'Vehicle Name *' : 'Item / Product Name *'}
+              {categoryId === 'vehicles' ? 'Vehicle Name *' : 'Item Name *'}
             </Text>
             <TextInput
               className={`bg-serene-surface-container-low rounded-serene-md border px-3 py-2.5 text-[14px] text-serene-on-surface ${
@@ -1160,13 +1172,13 @@ export default function AddOrEditItemScreen() {
             }`}
           >
             <Text className="text-[10px] font-bold text-serene-on-surface-variant tracking-wider">
-              PRICE PAID / PURCHASE AMOUNT *
+              PURCHASE PRICE *
             </Text>
             <View className="flex-row items-baseline gap-1">
               <Text className="text-2xl font-bold text-serene-primary">₹</Text>
               <TextInput
-                className="flex-1 text-[24px] font-bold text-serene-primary p-0"
-                placeholder="40,990"
+                className="flex-1 text-[20px] font-bold text-serene-primary p-0"
+                placeholder="Enter purchase price"
                 placeholderTextColor="rgba(17, 80, 134, 0.3)"
                 value={purchasePrice}
                 onChangeText={(t) => {
@@ -1174,6 +1186,7 @@ export default function AddOrEditItemScreen() {
                   if (fieldErrors.price) setFieldErrors((prev) => ({ ...prev, price: undefined }));
                 }}
                 keyboardType="numeric"
+                accessibilityLabel="Purchase price"
               />
             </View>
             {fieldErrors.price ? (
@@ -1240,7 +1253,7 @@ export default function AddOrEditItemScreen() {
           <View className="flex-row gap-2.5">
             <View className="flex-1 gap-1">
               <Text className="text-xs font-semibold text-serene-on-surface">
-                Brand / Manufacturer {catConfig.supportsSerial ? '*' : ''}
+                Brand {catConfig.supportsSerial ? '*' : ''}
               </Text>
               <TextInput
                 className={`bg-serene-surface-container-low rounded-serene-md border px-3 py-2 text-[13px] text-serene-on-surface ${
@@ -1278,7 +1291,7 @@ export default function AddOrEditItemScreen() {
               <Text className="text-xs font-semibold text-serene-on-surface">Variant</Text>
               <TextInput
                 className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                placeholder={categoryId === 'vehicles' ? 'e.g. SX(O) Diesel' : 'e.g. 16GB / 512GB'}
+                placeholder={categoryId === 'vehicles' ? 'Enter variant or trim' : 'Enter variant or specs'}
                 placeholderTextColor={SereneColors.outline}
                 value={variant}
                 onChangeText={setVariant}
@@ -1293,7 +1306,7 @@ export default function AddOrEditItemScreen() {
               </Text>
               <TextInput
                 className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                placeholder="e.g. PF4ABC123456"
+                placeholder="Enter serial number (optional)"
                 placeholderTextColor={SereneColors.outline}
                 value={serialNumber}
                 onChangeText={setSerialNumber}
@@ -1307,7 +1320,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Size</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. UK 9"
+                  placeholder="Enter size"
                   placeholderTextColor={SereneColors.outline}
                   value={size}
                   onChangeText={setSize}
@@ -1317,7 +1330,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Color</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. Midnight Navy"
+                  placeholder="Enter color"
                   placeholderTextColor={SereneColors.outline}
                   value={color}
                   onChangeText={setColor}
@@ -1332,17 +1345,17 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Material</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. Teak Wood, Mesh"
+                  placeholder="Enter material"
                   placeholderTextColor={SereneColors.outline}
                   value={material}
                   onChangeText={setMaterial}
                 />
               </View>
               <View className="flex-1 gap-1">
-                <Text className="text-xs font-semibold text-serene-on-surface">Color / Finish</Text>
+                <Text className="text-xs font-semibold text-serene-on-surface">Finish</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. Walnut Brown"
+                  placeholder="Enter color or finish"
                   placeholderTextColor={SereneColors.outline}
                   value={color}
                   onChangeText={setColor}
@@ -1355,10 +1368,10 @@ export default function AddOrEditItemScreen() {
             <View className="gap-2.5 pt-2 border-t border-serene-subtle-border">
               <View className="flex-row gap-2.5">
                 <View className="flex-1 gap-1">
-                  <Text className="text-xs font-semibold text-serene-on-surface">Registration / Plate #</Text>
+                  <Text className="text-xs font-semibold text-serene-on-surface">Registration Number</Text>
                   <TextInput
                     className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                    placeholder="e.g. UP16AB1234"
+                    placeholder="Enter registration number"
                     placeholderTextColor={SereneColors.outline}
                     value={registrationNumber}
                     onChangeText={setRegistrationNumber}
@@ -1367,10 +1380,10 @@ export default function AddOrEditItemScreen() {
                 </View>
 
                 <View className="flex-1 gap-1">
-                  <Text className="text-xs font-semibold text-serene-on-surface">VIN / Chassis #</Text>
+                  <Text className="text-xs font-semibold text-serene-on-surface">VIN</Text>
                   <TextInput
                     className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                    placeholder="e.g. MA1XXXXXXXXXXXXXX"
+                    placeholder="Enter VIN or chassis number"
                     placeholderTextColor={SereneColors.outline}
                     value={vinChassisNumber}
                     onChangeText={setVinChassisNumber}
@@ -1384,7 +1397,7 @@ export default function AddOrEditItemScreen() {
                   <Text className="text-xs font-semibold text-serene-on-surface">Engine Number</Text>
                   <TextInput
                     className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                    placeholder="e.g. D4FXXXXXXX"
+                    placeholder="Enter engine number"
                     placeholderTextColor={SereneColors.outline}
                     value={engineNumber}
                     onChangeText={setEngineNumber}
@@ -1396,7 +1409,7 @@ export default function AddOrEditItemScreen() {
                   <Text className="text-xs font-semibold text-serene-on-surface">Dealership</Text>
                   <TextInput
                     className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                    placeholder="e.g. ABC Motors"
+                    placeholder="Enter dealership name"
                     placeholderTextColor={SereneColors.outline}
                     value={dealer}
                     onChangeText={setDealer}
@@ -1440,7 +1453,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Quantity</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. 1"
+                  placeholder="1"
                   placeholderTextColor={SereneColors.outline}
                   value={quantity}
                   onChangeText={setQuantity}
@@ -1452,7 +1465,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Unit Price</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. 40,990"
+                  placeholder="Enter unit price"
                   placeholderTextColor={SereneColors.outline}
                   value={unitPrice}
                   onChangeText={setUnitPrice}
@@ -1466,7 +1479,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Subtotal</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. 38,000"
+                  placeholder="Enter subtotal"
                   placeholderTextColor={SereneColors.outline}
                   value={subtotal}
                   onChangeText={setSubtotal}
@@ -1478,7 +1491,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Discount</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. 2,000"
+                  placeholder="Enter discount"
                   placeholderTextColor={SereneColors.outline}
                   value={discount}
                   onChangeText={setDiscount}
@@ -1489,10 +1502,10 @@ export default function AddOrEditItemScreen() {
 
             <View className="flex-row gap-2.5">
               <View className="flex-1 gap-1">
-                <Text className="text-xs font-semibold text-serene-on-surface">GST / Tax Amount</Text>
+                <Text className="text-xs font-semibold text-serene-on-surface">Tax Amount</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. 4,990"
+                  placeholder="Enter tax amount"
                   placeholderTextColor={SereneColors.outline}
                   value={gstTax}
                   onChangeText={setGstTax}
@@ -1503,7 +1516,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">GSTIN</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                  placeholder="e.g. 29ABCDE1234F1Z5"
+                  placeholder="Enter GSTIN"
                   placeholderTextColor={SereneColors.outline}
                   value={gstin}
                   onChangeText={setGstin}
@@ -1514,10 +1527,10 @@ export default function AddOrEditItemScreen() {
 
             <View className="flex-row gap-2.5">
               <View className="flex-1 gap-1">
-                <Text className="text-xs font-semibold text-serene-on-surface">Invoice / Bill #</Text>
+                <Text className="text-xs font-semibold text-serene-on-surface">Invoice Number</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                  placeholder="e.g. INV-2026-1042"
+                  placeholder="Enter invoice number"
                   placeholderTextColor={SereneColors.outline}
                   value={invoiceNumber}
                   onChangeText={setInvoiceNumber}
@@ -1528,7 +1541,7 @@ export default function AddOrEditItemScreen() {
                 <Text className="text-xs font-semibold text-serene-on-surface">Seller Address</Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                  placeholder="e.g. Greater Noida, Uttar Pradesh"
+                  placeholder="Enter store address"
                   placeholderTextColor={SereneColors.outline}
                   value={sellerAddress}
                   onChangeText={setSellerAddress}
@@ -1605,7 +1618,7 @@ export default function AddOrEditItemScreen() {
                 <View className="gap-2 pt-1 border-t border-serene-subtle-border">
                   <TextInput
                     className="bg-serene-surface-container-lowest rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                    placeholder="YYYY-MM-DD (e.g. 2026-10-15)"
+                    placeholder="YYYY-MM-DD"
                     placeholderTextColor={SereneColors.outline}
                     value={returnUntil}
                     onChangeText={setReturnUntil}
@@ -1664,7 +1677,7 @@ export default function AddOrEditItemScreen() {
                     <Text className="text-xs font-semibold text-serene-on-surface">Warranty End Date</Text>
                     <TextInput
                       className="bg-serene-surface-container-lowest rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                      placeholder="YYYY-MM-DD (e.g. 2027-04-14)"
+                      placeholder="YYYY-MM-DD"
                       placeholderTextColor={SereneColors.outline}
                       value={warrantyUntil}
                       onChangeText={setWarrantyUntil}
@@ -1694,10 +1707,10 @@ export default function AddOrEditItemScreen() {
                   </View>
 
                   <View className="gap-1 mt-0.5">
-                    <Text className="text-xs font-semibold text-serene-on-surface">Warranty Provider / Plan</Text>
+                    <Text className="text-xs font-semibold text-serene-on-surface">Warranty Provider</Text>
                     <TextInput
                       className="bg-serene-surface-container-lowest rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                      placeholder="e.g. Lenovo"
+                      placeholder="Enter warranty provider"
                       placeholderTextColor={SereneColors.outline}
                       value={warrantyProvider}
                       onChangeText={setWarrantyProvider}
@@ -1734,7 +1747,7 @@ export default function AddOrEditItemScreen() {
               <View className="flex-row items-center gap-1.5">
                 <MaterialIcons name="receipt-long" size={15} color={SereneColors.primary} />
                 <Text className="text-[12px] font-bold text-serene-on-surface">
-                  Receipt / Invoice (Optional)
+                  Purchase Receipt (Optional)
                 </Text>
               </View>
 
@@ -2021,11 +2034,7 @@ export default function AddOrEditItemScreen() {
           <Text className="text-[15px] font-bold text-serene-on-surface">Notes</Text>
           <TextInput
             className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface h-[70px]"
-            placeholder={
-              categoryId === 'vehicles'
-                ? 'e.g. Purchased from ABC Motors with extended warranty'
-                : 'e.g. Includes charger and original box'
-            }
+            placeholder="Add notes (optional)"
             placeholderTextColor={SereneColors.outline}
             value={notes}
             onChangeText={setNotes}

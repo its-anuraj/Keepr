@@ -14,6 +14,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Header } from '../../src/components/ui/Header';
+import { DetailRow } from '../../src/components/ui/DetailRow';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
 import { formatCurrency, formatDate } from '../../src/utils/currency';
@@ -325,8 +326,8 @@ export default function DocumentDetailsScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View className="bg-serene-surface-container-lowest rounded-serene-xl p-4 border border-serene-subtle-border shadow-sm gap-3">
-          <View className="flex-row items-start justify-between">
-            <View className="flex-1 pr-3">
+          <View className="flex-row items-start justify-between gap-3">
+            <View className="flex-1 min-w-0 pr-1">
               <View className="flex-row items-center gap-1.5 mb-1.5 flex-wrap">
                 <View className="flex-row items-center gap-1 bg-serene-surface-container-high px-2 py-0.5 rounded-full">
                   <MaterialIcons
@@ -358,7 +359,7 @@ export default function DocumentDetailsScreen() {
             </View>
 
             {doc.amount !== undefined && doc.amount !== null ? (
-              <View className="items-end bg-serene-surface-container-low px-3 py-1.5 rounded-serene-md border border-serene-subtle-border">
+              <View className="items-end bg-serene-surface-container-low px-3 py-1.5 rounded-serene-md border border-serene-subtle-border shrink-0">
                 <Text className="text-[10px] text-serene-on-surface-variant uppercase font-medium">
                   Amount
                 </Text>
@@ -371,7 +372,7 @@ export default function DocumentDetailsScreen() {
 
           {doc.dueDate ? (
             <View
-              className={`flex-row items-center justify-between p-2.5 rounded-serene-md border ${
+              className={`flex-row items-center justify-between p-2.5 rounded-serene-md border gap-2 ${
                 dueStatus === 'overdue'
                   ? 'bg-red-50 border-red-200'
                   : dueStatus === 'due_today' || dueStatus === 'due_soon'
@@ -379,7 +380,7 @@ export default function DocumentDetailsScreen() {
                   : 'bg-emerald-50 border-emerald-200'
               }`}
             >
-              <View className="flex-row items-center gap-1.5">
+              <View className="flex-row items-center gap-1.5 flex-1 min-w-0">
                 <MaterialIcons
                   name={dueStatus === 'overdue' ? 'warning' : 'schedule'}
                   size={16}
@@ -392,20 +393,21 @@ export default function DocumentDetailsScreen() {
                   }
                 />
                 <Text
-                  className={`text-[12px] font-bold ${
+                  className={`text-[12px] font-bold flex-1 ${
                     dueStatus === 'overdue'
                       ? 'text-red-700'
                       : dueStatus === 'due_today' || dueStatus === 'due_soon'
                       ? 'text-amber-800'
                       : 'text-emerald-700'
                   }`}
+                  numberOfLines={1}
                 >
                   Payment Due: {formatDate(doc.dueDate, 'medium')}
                 </Text>
               </View>
 
               <View
-                className={`px-2 py-0.5 rounded-full ${
+                className={`px-2 py-0.5 rounded-full shrink-0 ${
                   dueStatus === 'overdue'
                     ? 'bg-red-100'
                     : dueStatus === 'due_today' || dueStatus === 'due_soon'
@@ -430,7 +432,7 @@ export default function DocumentDetailsScreen() {
 
           {doc.expiryDate ? (
             <View
-              className={`flex-row items-center justify-between p-2.5 rounded-serene-md border ${
+              className={`flex-row items-center justify-between p-2.5 rounded-serene-md border gap-2 ${
                 expiryStatus === 'expired'
                   ? 'bg-red-50 border-red-200'
                   : expiryStatus === 'expiring_soon'
@@ -438,7 +440,7 @@ export default function DocumentDetailsScreen() {
                   : 'bg-emerald-50 border-emerald-200'
               }`}
             >
-              <View className="flex-row items-center gap-1.5">
+              <View className="flex-row items-center gap-1.5 flex-1 min-w-0">
                 <MaterialIcons
                   name={
                     expiryStatus === 'expired'
@@ -457,20 +459,21 @@ export default function DocumentDetailsScreen() {
                   }
                 />
                 <Text
-                  className={`text-[12px] font-bold ${
+                  className={`text-[12px] font-bold flex-1 ${
                     expiryStatus === 'expired'
                       ? 'text-red-700'
                       : expiryStatus === 'expiring_soon'
                       ? 'text-amber-800'
                       : 'text-emerald-700'
                   }`}
+                  numberOfLines={1}
                 >
                   Expires: {formatDate(doc.expiryDate, 'medium')}
                 </Text>
               </View>
 
               <View
-                className={`px-2 py-0.5 rounded-full ${
+                className={`px-2 py-0.5 rounded-full shrink-0 ${
                   expiryStatus === 'expired'
                     ? 'bg-red-100'
                     : expiryStatus === 'expiring_soon'
@@ -611,71 +614,61 @@ export default function DocumentDetailsScreen() {
             Document Information
           </Text>
 
-          <View className="bg-serene-surface-container-low rounded-serene-lg p-3 gap-2">
-            <View className="flex-row justify-between py-0.5">
-              <Text className="text-[12px] text-serene-on-surface-variant">Document Date</Text>
-              <Text className="text-[13px] font-medium text-serene-on-surface">
-                {doc.documentDate ? formatDate(doc.documentDate, 'medium') : 'Not specified'}
-              </Text>
-            </View>
+          <View className="bg-serene-surface-container-low rounded-serene-lg p-3 gap-1">
+            <DetailRow
+              label="Document Date"
+              value={doc.documentDate ? formatDate(doc.documentDate, 'medium') : 'Not specified'}
+            />
 
             {doc.issuerName ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">Issuer / Authority</Text>
-                <Text className="text-[13px] font-medium text-serene-on-surface">
-                  {doc.issuerName}
-                </Text>
-              </View>
+              <DetailRow
+                label="Issuer"
+                value={doc.issuerName}
+              />
             ) : null}
 
             {doc.referenceNumber ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">
-                  Reference / Policy / Bill #
-                </Text>
-                <Text className="text-[13px] font-mono font-bold text-serene-on-surface">
-                  {doc.referenceNumber}
-                </Text>
-              </View>
+              <DetailRow
+                label="Reference Number"
+                value={doc.referenceNumber}
+                isMono
+                copyable
+              />
             ) : null}
 
             {doc.dueDate ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">Payment Due Date</Text>
-                <Text className="text-[13px] font-semibold text-serene-on-surface">
-                  {formatDate(doc.dueDate, 'medium')}
-                </Text>
-              </View>
+              <DetailRow
+                label="Payment Due Date"
+                value={formatDate(doc.dueDate, 'medium')}
+              />
             ) : null}
 
             {doc.expiryDate ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">Expiry Date</Text>
-                <Text className="text-[13px] font-semibold text-serene-on-surface">
-                  {formatDate(doc.expiryDate, 'medium')}
-                </Text>
-              </View>
+              <DetailRow
+                label="Expiry Date"
+                value={formatDate(doc.expiryDate, 'medium')}
+              />
             ) : null}
 
             {(doc.expiryDate || doc.dueDate) ? (
-              <View className="flex-row justify-between py-0.5 border-t border-serene-subtle-border/40 pt-1.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">Smart Reminders</Text>
-                <Text className="text-[12px] font-semibold text-emerald-700">
-                  {doc.dueDate
+              <DetailRow
+                label="Smart Reminders"
+                value={
+                  doc.dueDate
                     ? 'Active (7d & 1d before due)'
                     : doc.category === 'Warranty & Guarantee'
                     ? 'Active (1mo & 1w before expiry)'
-                    : 'Active (1w before expiry)'}
-                </Text>
-              </View>
+                    : 'Active (1w before expiry)'
+                }
+                valueColor="#047857"
+              />
             ) : null}
 
-            <View className="flex-row justify-between py-0.5">
-              <Text className="text-[12px] text-serene-on-surface-variant">Added to Vault</Text>
-              <Text className="text-[12px] text-serene-outline font-mono">
-                {formatDate(doc.createdAt, 'short')}
-              </Text>
-            </View>
+            <DetailRow
+              label="Added to Vault"
+              value={formatDate(doc.createdAt, 'short')}
+              isMono
+            />
           </View>
         </View>
 
@@ -715,16 +708,16 @@ export default function DocumentDetailsScreen() {
               activeOpacity={0.85}
               onPress={() => router.push(`/item/${linkedItem.id}` as any)}
             >
-              <View className="flex-1 mr-2">
+              <View className="flex-1 mr-2 min-w-0">
                 <Text className="text-[14px] font-semibold text-serene-on-surface" numberOfLines={1}>
                   {linkedItem.name}
                 </Text>
-                <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
+                <Text className="text-[11px] text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
                   {linkedItem.merchant || 'Purchased Item'} ·{' '}
                   {formatCurrency(linkedItem.purchasePrice, linkedItem.currency === 'INR' ? '₹' : '$')}
                 </Text>
               </View>
-              <View className="flex-row items-center gap-1 bg-serene-primary/10 px-2.5 py-1 rounded-full">
+              <View className="flex-row items-center gap-1 bg-serene-primary/10 px-2.5 py-1 rounded-full shrink-0">
                 <Text className="text-[11px] font-semibold text-serene-primary">View Item</Text>
                 <MaterialIcons name="chevron-right" size={16} color={SereneColors.primary} />
               </View>

@@ -48,7 +48,7 @@ export const DocumentTile: React.FC<DocumentTileProps> = ({
         activeOpacity={0.8}
         onPress={handleOpenOrShare}
       >
-        <View className="w-10 h-10 rounded-serene-md bg-serene-surface-container items-center justify-center">
+        <View className="w-10 h-10 rounded-serene-md bg-serene-surface-container items-center justify-center shrink-0">
           <MaterialIcons
             name={isPdf ? 'picture-as-pdf' : 'description'}
             size={22}
@@ -58,13 +58,14 @@ export const DocumentTile: React.FC<DocumentTileProps> = ({
 
         <View className="flex-1 min-w-0">
           <View className="flex-row items-center gap-1">
-            <Text className="text-[14px] font-semibold text-serene-on-surface shrink" numberOfLines={1}>
+            <Text className="text-[14px] font-semibold text-serene-on-surface flex-1" numberOfLines={1}>
               {document.name}
             </Text>
             <MaterialIcons
               name="verified"
               size={14}
               color={SereneColors.tertiary}
+              style={{ flexShrink: 0 }}
             />
           </View>
           <Text className="text-[11px] text-serene-on-surface-variant mt-[2px]" numberOfLines={1}>
@@ -74,7 +75,7 @@ export const DocumentTile: React.FC<DocumentTileProps> = ({
         </View>
       </TouchableOpacity>
 
-      <View className="flex-row items-center gap-1 ml-2">
+      <View className="flex-row items-center gap-1 ml-2 shrink-0">
         <TouchableOpacity
           className="w-8 h-8 rounded-full bg-serene-surface-container-lowest items-center justify-center border border-serene-subtle-border"
           onPress={handleOpenOrShare}

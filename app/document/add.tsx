@@ -507,7 +507,7 @@ export default function AddDocumentScreen() {
                     onPress={handlePickDocumentFile}
                   >
                     <MaterialIcons name="picture-as-pdf" size={20} color={SereneColors.primary} />
-                    <Text className="text-[11px] font-semibold text-serene-on-surface">PDF / File</Text>
+                    <Text className="text-[11px] font-semibold text-serene-on-surface">Document File</Text>
                   </TouchableOpacity>
                 </View>
                 {fieldErrors.photo && (
@@ -578,17 +578,7 @@ export default function AddDocumentScreen() {
               className={`bg-serene-surface-container-low rounded-serene-md border px-3 py-2 text-[14px] text-serene-on-surface ${
                 fieldErrors.title ? 'border-red-500' : 'border-serene-subtle-border'
               }`}
-              placeholder={
-                category === 'Fees & Payments'
-                  ? 'e.g. College Fee Receipt — Semester 7'
-                  : category === 'Vehicle Documents'
-                  ? 'e.g. Vehicle Insurance 2026-27'
-                  : category === 'Bills & Utilities'
-                  ? 'e.g. Electricity Bill Sep 2026'
-                  : category === 'Warranty & Guarantee'
-                  ? 'e.g. Lenovo 2-Year Extended Warranty'
-                  : 'e.g. Purchase Invoice'
-              }
+              placeholder="Enter document title"
               placeholderTextColor={SereneColors.outline}
               value={title}
               onChangeText={(t) => {
@@ -692,7 +682,7 @@ export default function AddDocumentScreen() {
               <Text className="text-xs font-semibold text-serene-on-surface">Amount (₹)</Text>
               <TextInput
                 className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-                placeholder="e.g. 45,000"
+                placeholder="Enter amount"
                 placeholderTextColor={SereneColors.outline}
                 value={amount}
                 onChangeText={setAmount}
@@ -704,25 +694,25 @@ export default function AddDocumentScreen() {
           <View className="gap-1">
             <Text className="text-xs font-semibold text-serene-on-surface">
               {category === 'Vehicle Documents'
-                ? 'Insurer / Authority (e.g. ICICI Lombard, RTO Delhi)'
+                ? 'Issuing Authority'
                 : category === 'Bills & Utilities'
-                ? 'Utility Provider (e.g. BSES, Adani Gas, Airtel)'
+                ? 'Utility Provider'
                 : category === 'Fees & Payments'
-                ? 'Educational Institution / Payee (e.g. IIT Delhi)'
-                : 'Issuer / Merchant'}
+                ? 'Educational Institution'
+                : 'Issuer'}
             </Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
               placeholder={
                 category === 'Fees & Payments'
-                  ? 'e.g. KCC Institute of Technology & Management'
+                  ? 'Enter institution or payee name'
                   : category === 'Vehicle Documents'
-                  ? 'e.g. ICICI Lombard'
+                  ? 'Enter insurer or authority name'
                   : category === 'Bills & Utilities'
-                  ? 'e.g. Electricity Provider'
+                  ? 'Enter utility provider'
                   : category === 'Warranty & Guarantee'
-                  ? 'e.g. Lenovo'
-                  : 'e.g. Flipkart'
+                  ? 'Enter warranty provider'
+                  : 'Enter issuer or merchant name'
               }
               placeholderTextColor={SereneColors.outline}
               value={issuerName}
@@ -733,25 +723,25 @@ export default function AddDocumentScreen() {
           <View className="gap-1">
             <Text className="text-xs font-semibold text-serene-on-surface">
               {category === 'Vehicle Documents'
-                ? 'Policy # / Vehicle Reg # / RC #'
+                ? 'Policy Number'
                 : category === 'Bills & Utilities'
-                ? 'Consumer # / CA # / Account #'
+                ? 'Account Number'
                 : category === 'Fees & Payments'
-                ? 'Challan # / Roll # / Receipt #'
-                : 'Invoice # / Reference #'}
+                ? 'Receipt Number'
+                : 'Reference Number'}
             </Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
               placeholder={
                 category === 'Fees & Payments'
-                  ? 'e.g. RECEIPT-2026-1042'
+                  ? 'Enter receipt or challan number'
                   : category === 'Vehicle Documents'
-                  ? 'e.g. POL-2026-123456'
+                  ? 'Enter policy or registration number'
                   : category === 'Bills & Utilities'
-                  ? 'e.g. BILL-2026-1042'
+                  ? 'Enter consumer or account number'
                   : category === 'Warranty & Guarantee'
-                  ? 'e.g. PF4ABC123456'
-                  : 'e.g. INV-2026-1042'
+                  ? 'Enter serial or reference number'
+                  : 'Enter invoice or reference number'
               }
               placeholderTextColor={SereneColors.outline}
               value={referenceNumber}
@@ -763,11 +753,11 @@ export default function AddDocumentScreen() {
             {category === 'Bills & Utilities' ? (
               <View className="gap-1">
                 <Text className="text-xs font-semibold text-serene-on-surface">
-                  Payment Due Date (YYYY-MM-DD)
+                  Payment Due Date
                 </Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                  placeholder="e.g. 2026-10-15"
+                  placeholder="YYYY-MM-DD"
                   placeholderTextColor={SereneColors.outline}
                   value={dueDate}
                   onChangeText={(t) => {
@@ -783,14 +773,14 @@ export default function AddDocumentScreen() {
               <View className="gap-1">
                 <Text className="text-xs font-semibold text-serene-on-surface">
                   {category === 'Warranty & Guarantee'
-                    ? 'Warranty Expiry Date (YYYY-MM-DD)'
+                    ? 'Warranty Expiry Date'
                     : category === 'Vehicle Documents'
-                    ? 'Policy / Certificate Expiry Date (YYYY-MM-DD)'
-                    : 'Document Expiry Date (YYYY-MM-DD)'}
+                    ? 'Policy Expiry Date'
+                    : 'Expiry Date'}
                 </Text>
                 <TextInput
                   className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface font-mono"
-                  placeholder="e.g. 2027-09-30"
+                  placeholder="YYYY-MM-DD"
                   placeholderTextColor={SereneColors.outline}
                   value={expiryDate}
                   onChangeText={(t) => {
@@ -925,11 +915,7 @@ export default function AddDocumentScreen() {
           <Text className="text-[14px] font-bold text-serene-on-surface">Notes</Text>
           <TextInput
             className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border p-3 text-[13px] text-serene-on-surface min-h-[70px]"
-            placeholder={
-              category === 'Fees & Payments'
-                ? 'e.g. Semester 7 tuition fee'
-                : 'e.g. Keep this document for future reference'
-            }
+            placeholder="Add notes (optional)"
             placeholderTextColor={SereneColors.outline}
             value={notes}
             onChangeText={setNotes}

@@ -6,6 +6,7 @@ import { SereneColors } from '../../constants/theme';
 import { formatCurrency, formatDate } from '../../utils/currency';
 import { formatWarrantyBadge, formatReturnBadge, getCategoryCapabilities } from '../../utils/warranty';
 import { router } from 'expo-router';
+import { useResolvedItemImage } from '../../hooks/useResolvedImage';
 
 export interface ItemCardProps {
   item: ItemWithOwnerContext;
@@ -52,9 +53,12 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 }) => {
   const [imageError, setImageError] = React.useState(false);
 
+  const primaryImagePath = item.imageStoragePath || item.imageUrl || item.photoUri;
+  const { resolvedUri } = useResolvedItemImage(primaryImagePath, item.photoUri);
+
   React.useEffect(() => {
     setImageError(false);
-  }, [item.photoUri, item.imageUrl]);
+  }, [resolvedUri]);
 
   const categoryName =
     typeof item.category === 'object' && item.category?.name
@@ -79,8 +83,7 @@ export const ItemCard: React.FC<ItemCardProps> = ({
     router.push(`/item/${item.id}`);
   };
 
-  const rawImageUri = item.photoUri || item.imageUrl;
-  const showImage = !imageError && Boolean(rawImageUri);
+  const showImage = !imageError && Boolean(resolvedUri);
 
   if (isEmbedded) {
     return (
@@ -95,9 +98,9 @@ export const ItemCard: React.FC<ItemCardProps> = ({
               style={{ width: 48, height: 48 }}
               className="rounded-serene-lg bg-serene-surface-container-low overflow-hidden items-center justify-center shrink-0"
             >
-              {showImage ? (
+              {showImage && resolvedUri ? (
                 <Image
-                  source={{ uri: rawImageUri }}
+                  source={{ uri: resolvedUri }}
                   style={{ width: 48, height: 48 }}
                   resizeMode="cover"
                   onError={() => setImageError(true)}
@@ -118,24 +121,25 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 
             <View className="flex-1 min-w-0 justify-center">
               <Text
-                className="text-[14px] font-semibold text-serene-on-surface"
+                className="text-[14px] font-semibold text-serene-on-surface leading-tight"
                 numberOfLines={1}
               >
                 {item.name || 'Untitled Item'}
               </Text>
 
-              <View className="flex-row items-center gap-1.5 mt-[2px]">
+              <View className="flex-row items-center gap-1.5 mt-1">
                 <Text
-                  className="text-[11px] font-medium text-serene-on-surface-variant"
+                  className="text-[11px] font-medium text-serene-on-surface-variant shrink-0"
                   numberOfLines={1}
                 >
                   {categoryName}
                 </Text>
                 {item.merchant ? (
                   <>
-                    <Text className="text-[10px] text-serene-outline">·</Text>
+                    <Text className="text-[10px] text-serene-outline shrink-0">·</Text>
                     <Text
-                      className="text-[11px] text-serene-on-surface-variant"
+                      className="text-[11px] text-serene-on-surface-variant flex-1"
+                      style={{ flexShrink: 1 }}
                       numberOfLines={1}
                     >
                       {item.merchant}
@@ -144,20 +148,24 @@ export const ItemCard: React.FC<ItemCardProps> = ({
                 ) : null}
               </View>
 
-              <View className="flex-row items-center gap-2 mt-[3px]">
-                <Text className="text-[13px] font-bold text-serene-primary">
+              <View className="flex-row items-baseline gap-2 mt-1">
+                <Text className="text-[13px] font-bold text-serene-primary shrink-0">
                   {formatCurrency(item.purchasePrice, item.currency === 'INR' ? '₹' : '$')}
                 </Text>
                 {item.purchaseDate ? (
-                  <Text className="text-[11px] text-serene-outline">
-                    {formatDate(item.purchaseDate, 'short')}
+                  <Text
+                    className="text-[11px] text-serene-outline flex-1"
+                    style={{ flexShrink: 1 }}
+                    numberOfLines={1}
+                  >
+                    Purchased {formatDate(item.purchaseDate, 'short')}
                   </Text>
                 ) : null}
               </View>
             </View>
           </View>
 
-          <View className="w-7 h-7 items-center justify-center shrink-0">
+          <View className="w-6 h-6 items-center justify-center shrink-0">
             <MaterialIcons
               name="chevron-right"
               size={20}
@@ -212,15 +220,17 @@ export const ItemCard: React.FC<ItemCardProps> = ({
         </View>
       )}
 
-      <View className="flex-row items-center justify-between p-serene-md">
+      {/* Primary Row & Metadata & Purchase Info */}
+      <View className="flex-row items-center justify-between p-3.5">
         <View className="flex-row items-center gap-3 flex-1 min-w-0 pr-2">
+          {/* Thumbnail */}
           <View
             style={{ width: 48, height: 48 }}
             className="rounded-serene-lg bg-serene-surface-container-low overflow-hidden items-center justify-center shrink-0"
           >
-            {showImage ? (
+            {showImage && resolvedUri ? (
               <Image
-                source={{ uri: rawImageUri }}
+                source={{ uri: resolvedUri }}
                 style={{ width: 48, height: 48 }}
                 resizeMode="cover"
                 onError={() => setImageError(true)}
@@ -239,22 +249,30 @@ export const ItemCard: React.FC<ItemCardProps> = ({
             )}
           </View>
 
+          {/* Text Content */}
           <View className="flex-1 min-w-0 justify-center">
+            {/* Primary Row: Item Name */}
             <Text
-              className="text-[15px] font-semibold text-serene-on-surface"
+              className="text-[15px] font-bold text-serene-on-surface leading-tight"
               numberOfLines={1}
             >
               {item.name || 'Untitled Item'}
             </Text>
-            <View className="flex-row items-center gap-1.5 mt-[2px]">
-              <Text className="text-[11px] font-medium text-serene-on-surface-variant">
+
+            {/* Metadata Row: Category & Store */}
+            <View className="flex-row items-center gap-1.5 mt-1">
+              <Text
+                className="text-[11px] font-medium text-serene-on-surface-variant shrink-0"
+                numberOfLines={1}
+              >
                 {categoryName}
               </Text>
               {item.merchant ? (
                 <>
-                  <Text className="text-[10px] text-serene-outline">·</Text>
+                  <Text className="text-[10px] text-serene-outline shrink-0">·</Text>
                   <Text
-                    className="text-[11px] text-serene-on-surface-variant"
+                    className="text-[11px] text-serene-on-surface-variant flex-1"
+                    style={{ flexShrink: 1 }}
                     numberOfLines={1}
                   >
                     {item.merchant}
@@ -263,12 +281,17 @@ export const ItemCard: React.FC<ItemCardProps> = ({
               ) : null}
             </View>
 
-            <View className="flex-row items-center gap-2 mt-[4px]">
-              <Text className="text-[14px] font-bold text-serene-primary">
+            {/* Purchase Information Row: Price & Date */}
+            <View className="flex-row items-baseline gap-2 mt-1.5">
+              <Text className="text-[14px] font-bold text-serene-primary shrink-0">
                 {formatCurrency(item.purchasePrice, item.currency === 'INR' ? '₹' : '$')}
               </Text>
               {item.purchaseDate ? (
-                <Text className="text-[11px] text-serene-outline">
+                <Text
+                  className="text-[11px] text-serene-outline flex-1"
+                  style={{ flexShrink: 1 }}
+                  numberOfLines={1}
+                >
                   Purchased {formatDate(item.purchaseDate, 'short')}
                 </Text>
               ) : null}
@@ -276,7 +299,8 @@ export const ItemCard: React.FC<ItemCardProps> = ({
           </View>
         </View>
 
-        <View className="w-7 h-7 items-center justify-center shrink-0">
+        {/* Reserved Chevron Space */}
+        <View className="w-6 h-6 items-center justify-center shrink-0 ml-1">
           {!isSelectionMode && (
             <MaterialIcons
               name="chevron-right"
@@ -287,103 +311,104 @@ export const ItemCard: React.FC<ItemCardProps> = ({
         </View>
       </View>
 
-      <View className="flex-row items-center justify-between bg-[rgba(246,243,235,0.65)] px-serene-md py-2 border-t border-[rgba(51,104,160,0.05)]">
-        <View className="flex-row items-center gap-2 flex-wrap flex-1">
-          {capabilities.warrantySupported ? (
-            effectiveWarrantyEnd ? (
+      {/* Footer: Warranty & Return Badges + Receipt Action */}
+      {(capabilities.warrantySupported || capabilities.returnSupported || hasReceipt) && (
+        <View className="flex-row items-center justify-between flex-wrap gap-y-1.5 gap-x-2 bg-[rgba(246,243,235,0.65)] px-3.5 py-2 border-t border-[rgba(51,104,160,0.05)]">
+          <View className="flex-row items-center gap-1.5 flex-wrap flex-1 min-w-[160px]">
+            {capabilities.warrantySupported ? (
+              effectiveWarrantyEnd ? (
+                <View
+                  className={`flex-row items-center gap-1 px-2 py-[2.5px] rounded-full ${
+                    warrantyBadge.status === 'expired' || warrantyBadge.status === 'expiring_soon'
+                      ? 'bg-serene-error-container'
+                      : 'bg-serene-secondary-fixed'
+                  }`}
+                >
+                  <View
+                    className={`w-[5px] h-[5px] rounded-full shrink-0 ${
+                      warrantyBadge.status === 'expired' || warrantyBadge.status === 'expiring_soon'
+                        ? 'bg-serene-error'
+                        : 'bg-serene-secondary'
+                    }`}
+                  />
+                  <Text
+                    className={`text-[10px] font-semibold ${
+                      warrantyBadge.status === 'expired' || warrantyBadge.status === 'expiring_soon'
+                        ? 'text-serene-error'
+                        : 'text-serene-on-secondary-container'
+                    }`}
+                    numberOfLines={1}
+                  >
+                    {warrantyBadge.label}
+                    {effectiveWarrantyEnd ? ` · ${formatDate(effectiveWarrantyEnd, 'short')}` : ''}
+                  </Text>
+                </View>
+              ) : capabilities.showNoWarrantyPlaceholder ? (
+                <View className="flex-row items-center gap-1 px-2 py-[2.5px] rounded-full bg-[rgba(230,227,219,0.7)]">
+                  <View className="w-[5px] h-[5px] rounded-full bg-serene-outline/50 shrink-0" />
+                  <Text className="text-[10px] font-semibold text-serene-outline" numberOfLines={1}>
+                    No warranty
+                  </Text>
+                </View>
+              ) : null
+            ) : null}
+
+            {capabilities.returnSupported && (
               <View
                 className={`flex-row items-center gap-1 px-2 py-[2.5px] rounded-full ${
-                  warrantyBadge.status === 'expired'
-                    ? 'bg-serene-error-container'
-                    : warrantyBadge.status === 'expiring_soon'
-                    ? 'bg-serene-warning-container'
-                    : 'bg-serene-secondary-fixed'
+                  returnBadge.status === 'expired'
+                    ? 'bg-gray-200'
+                    : returnBadge.status === 'expiring_soon'
+                    ? 'bg-amber-100'
+                    : returnBadge.status === 'active'
+                    ? 'bg-emerald-50'
+                    : 'bg-[rgba(230,227,219,0.7)]'
                 }`}
               >
                 <View
-                  className={`w-[5px] h-[5px] rounded-full ${
-                    warrantyBadge.status === 'expired'
-                      ? 'bg-serene-error'
-                      : warrantyBadge.status === 'expiring_soon'
-                      ? 'bg-serene-warning'
-                      : 'bg-serene-secondary'
+                  className={`w-[5px] h-[5px] rounded-full shrink-0 ${
+                    returnBadge.status === 'expired'
+                      ? 'bg-gray-500'
+                      : returnBadge.status === 'expiring_soon'
+                      ? 'bg-amber-600'
+                      : returnBadge.status === 'active'
+                      ? 'bg-emerald-600'
+                      : 'bg-serene-outline/50'
                   }`}
                 />
                 <Text
                   className={`text-[10px] font-semibold ${
-                    warrantyBadge.status === 'expired'
-                      ? 'text-serene-error'
-                      : warrantyBadge.status === 'expiring_soon'
-                      ? 'text-serene-warning'
-                      : 'text-serene-on-secondary-container'
+                    returnBadge.status === 'expired'
+                      ? 'text-gray-700'
+                      : returnBadge.status === 'expiring_soon'
+                      ? 'text-amber-800'
+                      : returnBadge.status === 'active'
+                      ? 'text-emerald-700'
+                      : 'text-serene-outline'
                   }`}
+                  numberOfLines={1}
                 >
-                  {warrantyBadge.label}
+                  {returnBadge.label}
+                  {item.returnUntil ? ` · ${formatDate(item.returnUntil, 'short')}` : ''}
                 </Text>
               </View>
-            ) : capabilities.showNoWarrantyPlaceholder ? (
-              <View className="flex-row items-center gap-1 px-2 py-[2.5px] rounded-full bg-[rgba(230,227,219,0.7)]">
-                <View className="w-[5px] h-[5px] rounded-full bg-serene-outline/50" />
-                <Text className="text-[10px] font-semibold text-serene-outline">
-                  No warranty
-                </Text>
-              </View>
-            ) : null
-          ) : null}
+            )}
+          </View>
 
-          {capabilities.returnSupported && (
-            <View
-              className={`flex-row items-center gap-1 px-2 py-[2.5px] rounded-full ${
-                returnBadge.status === 'expired'
-                  ? 'bg-gray-200'
-                  : returnBadge.status === 'expiring_soon'
-                  ? 'bg-amber-100'
-                  : returnBadge.status === 'active'
-                  ? 'bg-emerald-50'
-                  : 'bg-[rgba(230,227,219,0.7)]'
-              }`}
-            >
-              <View
-                className={`w-[5px] h-[5px] rounded-full ${
-                  returnBadge.status === 'expired'
-                    ? 'bg-gray-500'
-                    : returnBadge.status === 'expiring_soon'
-                    ? 'bg-amber-600'
-                    : returnBadge.status === 'active'
-                    ? 'bg-emerald-600'
-                    : 'bg-serene-outline/50'
-                }`}
+          {hasReceipt ? (
+            <View className="flex-row items-center gap-1 shrink-0 py-0.5 px-2 rounded-full bg-serene-primary/10">
+              <MaterialIcons
+                name="receipt-long"
+                size={13}
+                color={SereneColors.primary}
               />
-              <Text
-                className={`text-[10px] font-semibold ${
-                  returnBadge.status === 'expired'
-                    ? 'text-gray-700'
-                    : returnBadge.status === 'expiring_soon'
-                    ? 'text-amber-800'
-                    : returnBadge.status === 'active'
-                    ? 'text-emerald-700'
-                    : 'text-serene-outline'
-                }`}
-              >
-                {returnBadge.label}
+              <Text className="text-[10.5px] font-semibold text-serene-primary">
+                Receipt
               </Text>
             </View>
-          )}
+          ) : null}
         </View>
-
-        {hasReceipt ? (
-          <View className="flex-row items-center gap-1">
-            <MaterialIcons
-              name="receipt-long"
-              size={14}
-              color={SereneColors.primary}
-            />
-            <Text className="text-[11px] font-medium text-serene-primary">
-              Receipt
-            </Text>
-          </View>
-        ) : null}
-      </View>
+      )}
     </TouchableOpacity>
   );
 };

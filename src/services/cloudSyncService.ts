@@ -5,7 +5,10 @@ import {
   BUCKET_ITEM_DOCUMENTS,
   BUCKET_VAULT_DOCUMENTS,
   BUCKET_ITEM_IMAGES,
+  isStoragePath,
+  prefetchItemImageSignedUrls,
 } from './storageService';
+import { getCanonicalReceiptUri } from './receiptFileService';
 import type {
   Item,
   PurchasedProduct,
@@ -42,8 +45,149 @@ export function generateUUID(): string {
 
 
 /**
+ * Safely parses a PostgreSQL array string literal (e.g. '{item1,item2}' or '{"item 1","item, 2"}').
+ * Preserves string entries while handling quotes, escaped characters, and NULLs without throwing.
+ */
+export function parsePostgresArray(text: string): string[] {
+  if (typeof text !== 'string') return [];
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return [];
+
+  const content = trimmed.slice(1, -1).trim();
+  if (!content) return [];
+
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+
+    if (escapeNext) {
+      current += char;
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      const val = current.trim();
+      if (val && val.toUpperCase() !== 'NULL') {
+        result.push(val);
+      }
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  const lastVal = current.trim();
+  if (lastVal && lastVal.toUpperCase() !== 'NULL') {
+    result.push(lastVal);
+  }
+
+  return result;
+}
+
+/**
+ * Robust, non-throwing normalization for product_photos and other string array columns.
+ * Supports:
+ * - null / undefined -> []
+ * - Array -> validated, trimmed string entries (filtering non-strings and empties)
+ * - JSON-encoded array -> parsed and validated
+ * - JSON-encoded string -> normalized to [string]
+ * - Plain non-empty path or URI -> [path]
+ * - PostgreSQL array syntax ('{a,b}' / '{"a","b"}') -> parsed safely
+ * - Malformed / unexpected types -> safe fallback to []
+ */
+export function normalizeProductPhotos(raw: unknown): string[] {
+  if (raw === null || raw === undefined) {
+    return [];
+  }
+
+  // 1. Direct array
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+
+  // 2. Non-string primitives (numbers, booleans, objects) -> safe fallback []
+  if (typeof raw !== 'string') {
+    return [];
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  // 3. PostgreSQL array syntax: starts with '{' and ends with '}'
+  // Note: PostgreSQL array literal syntax begins with '{' and ends with '}'
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = parsePostgresArray(trimmed);
+      return parsed;
+    } catch {
+      console.warn('[CloudSync] Non-fatal: failed to parse postgres array in product_photos');
+      return [];
+    }
+  }
+
+  // 4. JSON array or JSON string
+  if (
+    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0);
+      }
+      if (typeof parsed === 'string') {
+        const clean = parsed.trim();
+        return clean.length > 0 ? [clean] : [];
+      }
+    } catch {
+      // JSON parse failed; fall through to evaluate as plain string path if not broken syntax
+    }
+  }
+
+  // 5. Malformed structured syntax (e.g. unclosed '[' or '{') -> safe fallback []
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    return [];
+  }
+
+  // 6. Plain non-empty path, URI, or single string
+  return [trimmed];
+}
+
+/**
+ * Normalizes an array of string identifiers (e.g. receipt item_ids).
+ * Never throws, handles PG arrays, JSON arrays, and string formats safely.
+ */
+export function normalizeStringArray(raw: unknown): string[] {
+  return normalizeProductPhotos(raw);
+}
+
+/**
  * Maps a raw Supabase items row to the domain Item type.
- * Handles all snake_case → camelCase conversions and extended columns.
+ * Handles all snake_case → camelCase conversions and extended columns safely without throwing.
  */
 export function mapDbRowToItem(row: Record<string, unknown>): Item {
   let products: PurchasedProduct[] | undefined = undefined;
@@ -52,7 +196,10 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
     const parts = cleanNotes.split('[KEEPR_PRODUCTS]:');
     cleanNotes = parts[0].trim() || undefined;
     try {
-      products = JSON.parse(parts[1].trim());
+      const parsed = JSON.parse(parts[1].trim());
+      if (Array.isArray(parsed)) {
+        products = parsed;
+      }
     } catch {
       products = undefined;
     }
@@ -61,7 +208,7 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
   return {
     id: row.id as string,
     userId: row.user_id as string,
-    name: row.name as string,
+    name: (row.name as string) || 'Unnamed Item',
     categoryId: (row.category_id as string) || undefined,
     productType: (row.product_type as string) || undefined,
     categoryConfidence: (row.category_confidence as 'high' | 'medium' | 'low') || undefined,
@@ -92,7 +239,20 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
     products,
     isMultiProduct: Boolean(products && products.length > 1),
     productCount: products ? products.length : undefined,
-    imageUrl: (row.image_url as string) || undefined,
+    imageUrl: (() => {
+      const dbStorage = row.image_storage_path as string | undefined;
+      const dbImg = row.image_url as string | undefined;
+      if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
+      if (dbImg && isStoragePath(dbImg)) return dbImg;
+      return dbImg || undefined;
+    })(),
+    imageStoragePath: (() => {
+      const dbStorage = row.image_storage_path as string | undefined;
+      const dbImg = row.image_url as string | undefined;
+      if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
+      if (dbImg && isStoragePath(dbImg)) return dbImg;
+      return undefined;
+    })(),
     status: (row.status as Item['status']) || 'active',
     receiptId: (row.receipt_id && typeof row.receipt_id === 'string' && isValidUUID(row.receipt_id))
       ? row.receipt_id
@@ -101,11 +261,7 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
     receiptPath: (row.receipt_path as string) || undefined,
     receiptName: (row.receipt_name as string) || undefined,
     receiptType: (row.receipt_type as 'receipt' | 'invoice') || undefined,
-    productPhotos: Array.isArray(row.product_photos)
-      ? (row.product_photos as string[])
-      : typeof row.product_photos === 'string'
-      ? JSON.parse(row.product_photos || '[]')
-      : [],
+    productPhotos: normalizeProductPhotos(row.product_photos),
     returnUntil: (row.return_until as string) || null,
     warrantyUntil: (row.warranty_until as string) || null,
     warrantyProvider: (row.warranty_provider as string) || undefined,
@@ -184,13 +340,7 @@ export function mapDbRowToDocument(row: Record<string, unknown>): VaultDocument 
  * Maps a raw Supabase receipts row to the domain Receipt type.
  */
 export function mapDbRowToReceipt(row: Record<string, unknown>): Receipt {
-  const rawItemIds = row.item_ids;
-  let itemIds: string[] = [];
-  if (Array.isArray(rawItemIds)) {
-    itemIds = rawItemIds as string[];
-  } else if (typeof rawItemIds === 'string') {
-    try { itemIds = JSON.parse(rawItemIds); } catch { itemIds = []; }
-  }
+  const itemIds = normalizeStringArray(row.item_ids);
 
   return {
     id: row.id as string,
@@ -372,7 +522,16 @@ export function mapItemToDbRow(item: Item, userId: string): Record<string, unkno
       }
       return baseNotes;
     })(),
-    image_url: item.imageUrl || null,
+    image_url: (() => {
+      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
+      if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      return null;
+    })(),
+    image_storage_path: (() => {
+      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
+      if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      return null;
+    })(),
     status: item.status || 'active',
     receipt_id: (item.receiptId && isValidUUID(item.receiptId)) ? item.receiptId : null,
     receipt_uri: (item.receiptUri && !item.receiptUri.startsWith('file:') && !item.receiptUri.startsWith('content:'))
@@ -383,7 +542,16 @@ export function mapItemToDbRow(item: Item, userId: string): Record<string, unkno
       : null,
     receipt_name: item.receiptName || null,
     receipt_type: item.receiptType || null,
-    product_photos: item.productPhotos ? JSON.stringify(item.productPhotos) : '[]',
+    product_photos: (() => {
+      const validStoragePhotos = Array.isArray(item.productPhotos)
+        ? item.productPhotos.filter((p) => p && isStoragePath(p))
+        : [];
+      if (validStoragePhotos.length > 0) return JSON.stringify(validStoragePhotos);
+      if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) {
+        return JSON.stringify([item.imageStoragePath]);
+      }
+      return '[]';
+    })(),
     product_type: item.productType || null,
     category_confidence: item.categoryConfidence || null,
     return_until: item.returnUntil || null,
@@ -502,10 +670,26 @@ export interface CloudVaultData {
   maintenanceRecords: MaintenanceRecord[];
   expenses: Expense[];
   activityLogs: ActivityLog[];
+  /** Set to true when the Supabase items query returned an error or was rejected. */
+  itemsFetchError: boolean;
+  /** Count of item rows that failed deserialization/mapping. */
+  itemsMappingErrors: number;
+  /** Raw count of items rows returned from the database query before mapping. */
+  itemsRawCount: number;
+  /** Non-sensitive error messages if any queries or mapping failed. */
+  fetchErrorSummary?: string[];
 }
 
 /** In-flight hydration promise guard to prevent duplicate concurrent hydrations for the same user. */
 const inFlightCloudHydrations = new Map<string, Promise<CloudVaultData>>();
+
+/**
+ * Safely clears the in-flight cloud hydration map.
+ * Called on logout so a previous session does not leave stale in-flight references behind.
+ */
+export function clearInFlightCloudHydrations(): void {
+  inFlightCloudHydrations.clear();
+}
 
 /**
  * Fetches the entire vault for the authenticated user from Supabase.
@@ -523,6 +707,9 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
     maintenanceRecords: [],
     expenses: [],
     activityLogs: [],
+    itemsFetchError: false,
+    itemsMappingErrors: 0,
+    itemsRawCount: 0,
   };
 
   if (!isSupabaseConfigured || !userId) {
@@ -596,62 +783,148 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
     const expenses: Expense[] = [];
     const activityLogs: ActivityLog[] = [];
 
+    let itemsFetchError = false;
+    let itemsMappingErrors = 0;
+    let itemsRawCount = 0;
+    const fetchErrorSummary: string[] = [];
+
     if (itemsResult.status === 'fulfilled' && !itemsResult.value.error) {
-      for (const row of itemsResult.value.data || []) {
-        try { items.push(mapDbRowToItem(row as Record<string, unknown>)); } catch {}
+      const rawRows = itemsResult.value.data || [];
+      itemsRawCount = rawRows.length;
+      for (const row of rawRows) {
+        const rawObj = row as Record<string, unknown>;
+        try {
+          items.push(mapDbRowToItem(rawObj));
+        } catch (mapErr) {
+          itemsMappingErrors++;
+          const rowId = typeof rawObj?.id === 'string' ? rawObj.id : 'unknown';
+          const errMsg = mapErr instanceof Error ? mapErr.message : String(mapErr);
+          console.warn(`[CloudSync] Failed to map item row ${rowId}: ${errMsg}`);
+        }
+      }
+      // Prefetch signed URLs in the background for instant image rendering across screens
+      const storagePathsToPrefetch: string[] = [];
+      for (const it of items) {
+        if (it.imageStoragePath) storagePathsToPrefetch.push(it.imageStoragePath);
+        if (it.productPhotos) {
+          for (const p of it.productPhotos) {
+            if (isStoragePath(p)) storagePathsToPrefetch.push(p);
+          }
+        }
+      }
+      if (storagePathsToPrefetch.length > 0) {
+        prefetchItemImageSignedUrls(storagePathsToPrefetch).catch(() => {});
       }
     } else if (itemsResult.status === 'rejected') {
+      itemsFetchError = true;
+      const reason = itemsResult.reason instanceof Error ? itemsResult.reason.message : String(itemsResult.reason);
+      fetchErrorSummary.push(`Items query rejected: ${reason}`);
       console.warn('[CloudSync] Items fetch failed:', itemsResult.reason);
     } else if (itemsResult.status === 'fulfilled' && itemsResult.value.error) {
-      console.warn('[CloudSync] Items Supabase error:', itemsResult.value.error.message);
+      itemsFetchError = true;
+      const errMsg = itemsResult.value.error.message;
+      fetchErrorSummary.push(`Items Supabase error: ${errMsg}`);
+      console.warn('[CloudSync] Items Supabase error:', errMsg);
     }
 
     if (warrantiesResult.status === 'fulfilled' && !warrantiesResult.value.error) {
       for (const row of warrantiesResult.value.data || []) {
-        try { warranties.push(mapDbRowToWarranty(row as Record<string, unknown>)); } catch {}
+        try {
+          warranties.push(mapDbRowToWarranty(row as Record<string, unknown>));
+        } catch (mapErr) {
+          const rowId = (row as Record<string, unknown>)?.id || 'unknown';
+          console.warn(`[CloudSync] Failed to map warranty row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
+        }
       }
+    } else if (warrantiesResult.status === 'rejected' || (warrantiesResult.status === 'fulfilled' && warrantiesResult.value.error)) {
+      fetchErrorSummary.push('Warranties query failed');
     }
 
     if (documentsResult.status === 'fulfilled' && !documentsResult.value.error) {
       for (const row of documentsResult.value.data || []) {
-        try { documents.push(mapDbRowToDocument(row as Record<string, unknown>)); } catch {}
+        try {
+          documents.push(mapDbRowToDocument(row as Record<string, unknown>));
+        } catch (mapErr) {
+          const rowId = (row as Record<string, unknown>)?.id || 'unknown';
+          console.warn(`[CloudSync] Failed to map document row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
+        }
       }
+    } else if (documentsResult.status === 'rejected' || (documentsResult.status === 'fulfilled' && documentsResult.value.error)) {
+      fetchErrorSummary.push('Documents query failed');
     }
 
     if (receiptsResult.status === 'fulfilled' && !receiptsResult.value.error) {
       for (const row of receiptsResult.value.data || []) {
-        try { receipts.push(mapDbRowToReceipt(row as Record<string, unknown>)); } catch {}
+        try {
+          receipts.push(mapDbRowToReceipt(row as Record<string, unknown>));
+        } catch (mapErr) {
+          const rowId = (row as Record<string, unknown>)?.id || 'unknown';
+          console.warn(`[CloudSync] Failed to map receipt row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
+        }
       }
+    } else if (receiptsResult.status === 'rejected' || (receiptsResult.status === 'fulfilled' && receiptsResult.value.error)) {
+      fetchErrorSummary.push('Receipts query failed');
     }
 
     if (maintenanceResult.status === 'fulfilled' && !maintenanceResult.value.error) {
       for (const row of maintenanceResult.value.data || []) {
-        try { maintenanceRecords.push(mapDbRowToMaintenanceRecord(row as Record<string, unknown>)); } catch {}
+        try {
+          maintenanceRecords.push(mapDbRowToMaintenanceRecord(row as Record<string, unknown>));
+        } catch (mapErr) {
+          const rowId = (row as Record<string, unknown>)?.id || 'unknown';
+          console.warn(`[CloudSync] Failed to map maintenance row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
+        }
       }
     }
 
     if (expensesResult.status === 'fulfilled' && !expensesResult.value.error) {
       for (const row of expensesResult.value.data || []) {
-        try { expenses.push(mapDbRowToExpense(row as Record<string, unknown>)); } catch {}
+        try {
+          expenses.push(mapDbRowToExpense(row as Record<string, unknown>));
+        } catch (mapErr) {
+          const rowId = (row as Record<string, unknown>)?.id || 'unknown';
+          console.warn(`[CloudSync] Failed to map expense row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
+        }
       }
     }
 
     if (activityResult.status === 'fulfilled' && !activityResult.value.error) {
       for (const row of activityResult.value.data || []) {
-        try { activityLogs.push(mapDbRowToActivityLog(row as Record<string, unknown>)); } catch {}
+        try {
+          activityLogs.push(mapDbRowToActivityLog(row as Record<string, unknown>));
+        } catch (mapErr) {
+          const rowId = (row as Record<string, unknown>)?.id || 'unknown';
+          console.warn(`[CloudSync] Failed to map activity log row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
+        }
       }
     }
 
     console.log(
-      `[CloudSync] Hydration complete: ${items.length} items, ${warranties.length} warranties, ` +
-      `${documents.length} docs, ${receipts.length} receipts, ${maintenanceRecords.length} maintenance, ` +
-      `${expenses.length} expenses, ${activityLogs.length} activity logs`
+      `[CloudSync] Hydration complete: ${items.length} items (raw: ${itemsRawCount}, mapErrors: ${itemsMappingErrors}, fetchError: ${itemsFetchError}), ` +
+      `${warranties.length} warranties, ${documents.length} docs, ${receipts.length} receipts, ` +
+      `${maintenanceRecords.length} maintenance, ${expenses.length} expenses, ${activityLogs.length} activity logs`
     );
 
-      return { items, warranties, documents, receipts, maintenanceRecords, expenses, activityLogs };
+      return {
+        items,
+        warranties,
+        documents,
+        receipts,
+        maintenanceRecords,
+        expenses,
+        activityLogs,
+        itemsFetchError,
+        itemsMappingErrors,
+        itemsRawCount,
+        fetchErrorSummary: fetchErrorSummary.length > 0 ? fetchErrorSummary : undefined,
+      };
     } catch (err) {
       console.warn('[CloudSync] Hydration failed with exception:', err);
-      return empty;
+      return {
+        ...empty,
+        itemsFetchError: true,
+        fetchErrorSummary: [err instanceof Error ? err.message : String(err)],
+      };
     } finally {
       inFlightCloudHydrations.delete(userId);
     }
@@ -668,8 +941,10 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
   try {
     const validItemId = isValidUUID(item.id) ? item.id : generateUUID();
     let effectiveReceiptPath = item.receiptPath;
+    let effectiveImageStoragePath = item.imageStoragePath && isStoragePath(item.imageStoragePath) ? item.imageStoragePath : undefined;
+    const durablePhotos: string[] = [];
 
-    // Background upload local receipt media to user-scoped private storage if local
+    // 1. Background upload local receipt media if local
     const localUri = item.receiptUri?.startsWith('file:') ? item.receiptUri : null;
     if (localUri && (!effectiveReceiptPath || effectiveReceiptPath.startsWith('file:') || effectiveReceiptPath.startsWith('vault_receipts/'))) {
       try {
@@ -699,14 +974,108 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
       }
     }
 
-    const payload = mapItemToDbRow({ ...item, id: validItemId, receiptPath: effectiveReceiptPath }, userId);
-    const { error } = await supabase
+    // 2. Background upload local product photos to private BUCKET_ITEM_IMAGES
+    const candidatePhotos = Array.isArray(item.productPhotos) && item.productPhotos.length > 0
+      ? item.productPhotos
+      : item.photoUri
+      ? [item.photoUri]
+      : item.imageUrl
+      ? [item.imageUrl]
+      : [];
+
+    for (let i = 0; i < candidatePhotos.length; i++) {
+      const candidate = candidatePhotos[i];
+      if (!candidate) continue;
+
+      if (isStoragePath(candidate)) {
+        durablePhotos.push(candidate);
+        if (!effectiveImageStoragePath) effectiveImageStoragePath = candidate;
+      } else if (candidate.startsWith('file:') || candidate.startsWith('content:') || candidate.startsWith('/')) {
+        try {
+          const canonical = getCanonicalReceiptUri(candidate) || candidate;
+          const fileInfo = await FileSystem.getInfoAsync(canonical).catch(() => null);
+          if (fileInfo?.exists && !fileInfo.isDirectory) {
+            const ext = canonical.toLowerCase().endsWith('.png') ? '.png' : '.jpg';
+            const userScopedPath = `${userId}/items/${validItemId}/photo_${i}${ext}`;
+            const base64 = await FileSystem.readAsStringAsync(canonical, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let b = 0; b < binaryString.length; b++) {
+              bytes[b] = binaryString.charCodeAt(b);
+            }
+            const { error: uploadError } = await supabase.storage
+              .from(BUCKET_ITEM_IMAGES)
+              .upload(userScopedPath, bytes, { contentType: ext === '.png' ? 'image/png' : 'image/jpeg', upsert: true });
+
+            if (!uploadError) {
+              durablePhotos.push(userScopedPath);
+              if (!effectiveImageStoragePath || i === 0) {
+                effectiveImageStoragePath = userScopedPath;
+              }
+              console.log(`[CloudSync] Product photo uploaded to ${BUCKET_ITEM_IMAGES}/${userScopedPath}`);
+            }
+          }
+        } catch (photoUploadErr) {
+          console.warn('[CloudSync] Product photo upload note:', photoUploadErr);
+        }
+      }
+    }
+
+    if (!effectiveImageStoragePath && durablePhotos.length > 0) {
+      effectiveImageStoragePath = durablePhotos[0];
+    }
+
+    const payload = mapItemToDbRow({
+      ...item,
+      id: validItemId,
+      receiptPath: effectiveReceiptPath,
+      imageStoragePath: effectiveImageStoragePath,
+      imageUrl: effectiveImageStoragePath || item.imageUrl,
+      productPhotos: durablePhotos.length > 0 ? durablePhotos : item.productPhotos,
+    }, userId);
+
+    let { error } = await supabase
       .from('items')
       .upsert(payload, { onConflict: 'id' });
+
+    // Defensive fallback: if remote PostgreSQL schema doesn't have image_storage_path yet
+    if (error && error.message && error.message.includes('image_storage_path')) {
+      const fallbackPayload = { ...payload };
+      delete fallbackPayload.image_storage_path;
+      const retryResult = await supabase.from('items').upsert(fallbackPayload, { onConflict: 'id' });
+      error = retryResult.error;
+    }
+
     if (error) {
       console.warn('[CloudSync] Item upsert error:', error.message);
       return error.message;
     }
+
+    // Update local item store if storage paths were resolved during upload
+    if (effectiveImageStoragePath && (effectiveImageStoragePath !== item.imageStoragePath || durablePhotos.length > 0)) {
+      try {
+        const { useItemStore } = require('../store/itemStore');
+        const currentItems = useItemStore.getState().items;
+        const existing = currentItems.find((it: Item) => it.id === validItemId);
+        if (existing) {
+          useItemStore.setState({
+            items: currentItems.map((it: Item) =>
+              it.id === validItemId
+                ? {
+                    ...it,
+                    imageStoragePath: effectiveImageStoragePath,
+                    imageUrl: effectiveImageStoragePath,
+                    productPhotos: durablePhotos.length > 0 ? durablePhotos : it.productPhotos,
+                  }
+                : it
+            ),
+          });
+        }
+      } catch {}
+    }
+
     return null;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

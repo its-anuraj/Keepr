@@ -21,6 +21,8 @@ import { useItemStore } from '../../src/store/itemStore';
 import { formatCurrency, formatDate } from '../../src/utils/currency';
 import { formatReturnBadge, formatWarrantyBadge, getCategoryCapabilities, isNoWarrantyCategory } from '../../src/utils/warranty';
 import { getDocumentCategoryConfig } from '../../src/constants/documentCategories';
+import { DetailRow } from '../../src/components/ui/DetailRow';
+import { useResolvedItemImage, useResolvedItemPhotos } from '../../src/hooks/useResolvedImage';
 import {
   safeNormalizeRouteUri,
   getCanonicalReceiptUri,
@@ -99,20 +101,35 @@ export default function ItemDetailScreen() {
       ? item.category
       : 'Item';
 
-  const rawProductPhotoUri =
+  const primaryPhotoCandidate =
+    item.imageStoragePath ||
     item.photoUri ||
     (item.imageUrl && item.imageUrl !== item.receiptUri ? item.imageUrl : undefined);
-  const productPhotoUri = normalizeImageUri(rawProductPhotoUri);
 
-  const allProductPhotos: string[] = (
-    item.productPhotos && item.productPhotos.length > 0
-      ? item.productPhotos
-      : productPhotoUri
-      ? [productPhotoUri]
-      : []
-  )
-    .map((u) => normalizeImageUri(u))
-    .filter((u): u is string => Boolean(u));
+  const { resolvedUri: resolvedMainPhoto } =
+    useResolvedItemImage(primaryPhotoCandidate, item.photoUri);
+
+  const rawPhotoCandidateList = useMemo(() => {
+    if (item.productPhotos && item.productPhotos.length > 0) {
+      return item.productPhotos;
+    }
+    return primaryPhotoCandidate ? [primaryPhotoCandidate] : [];
+  }, [item.productPhotos, primaryPhotoCandidate]);
+
+  const { resolvedPhotos } = useResolvedItemPhotos(rawPhotoCandidateList);
+
+  const allProductPhotos: string[] = useMemo(() => {
+    return resolvedPhotos
+      .map((p) => p.resolvedUri)
+      .filter((u): u is string => Boolean(u));
+  }, [resolvedPhotos]);
+
+  // Fallback status for older items where local file was removed or created on another device
+  const isPhotoUnavailable = Boolean(
+    (item.photoUri || item.imageUrl || item.imageStoragePath) &&
+    !resolvedMainPhoto &&
+    allProductPhotos.length === 0
+  );
 
   // Receipt / Invoice (proof of purchase document)
   // Use getCanonicalReceiptUri to re-anchor vault_receipts/ paths to the current
@@ -321,7 +338,7 @@ export default function ItemDetailScreen() {
           <View className="h-[3px] bg-serene-primary absolute top-0 left-0 right-0" />
 
           <View className="flex-row justify-between items-start gap-3 mt-1">
-            <View className="flex-1">
+            <View className="flex-1 min-w-0">
               <Text className="text-[22px] font-bold text-serene-on-surface tracking-tight">
                 {item.name}
               </Text>
@@ -332,17 +349,17 @@ export default function ItemDetailScreen() {
             </View>
 
             <TouchableOpacity
-              className="w-16 h-16 rounded-serene-lg overflow-hidden bg-serene-surface-container-low border border-serene-subtle-border items-center justify-center"
+              className="w-16 h-16 shrink-0 rounded-serene-lg overflow-hidden bg-serene-surface-container-low border border-serene-subtle-border items-center justify-center"
               activeOpacity={0.88}
               onPress={() => {
-                if (productPhotoUri) {
-                  setPreviewModal({ uri: productPhotoUri, title: `${item.name} · Product Photo` });
+                if (resolvedMainPhoto) {
+                  setPreviewModal({ uri: resolvedMainPhoto, title: `${item.name} · Product Photo` });
                 }
               }}
-              disabled={!productPhotoUri}
+              disabled={!resolvedMainPhoto}
             >
-              {productPhotoUri ? (
-                <Image source={{ uri: productPhotoUri }} className="w-full h-full" resizeMode="cover" />
+              {resolvedMainPhoto ? (
+                <Image source={{ uri: resolvedMainPhoto }} className="w-full h-full" resizeMode="cover" />
               ) : (
                 <MaterialIcons name="inventory-2" size={28} color={SereneColors.primary} />
               )}
@@ -377,7 +394,7 @@ export default function ItemDetailScreen() {
           </TouchableOpacity>
         </View>
 
-        {allProductPhotos.length > 0 && (
+        {allProductPhotos.length > 0 ? (
           <View className="bg-serene-surface-container-lowest rounded-serene-xl p-serene-md border border-serene-subtle-border shadow-sm gap-3">
             <View className="flex-row items-center justify-between">
               <View className="flex-row items-center gap-2">
@@ -416,7 +433,26 @@ export default function ItemDetailScreen() {
               ))}
             </ScrollView>
           </View>
-        )}
+        ) : isPhotoUnavailable ? (
+          <View className="bg-amber-50/80 rounded-serene-xl p-3.5 border border-amber-200/90 shadow-xs flex-row items-center justify-between gap-3">
+            <View className="flex-row items-center gap-2.5 flex-1">
+              <MaterialIcons name="cloud-off" size={20} color="#D97706" />
+              <View className="flex-1">
+                <Text className="text-[12px] font-bold text-amber-900">Photo Saved on Previous Device</Text>
+                <Text className="text-[11px] text-amber-800/90 leading-tight">
+                  This photo was stored locally on an earlier device. You can attach a new photo anytime.
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              onPress={() => router.push(`/(tabs)/add?editId=${item.id}` as any)}
+              className="bg-amber-100 px-3 py-1.5 rounded-full border border-amber-300"
+              activeOpacity={0.8}
+            >
+              <Text className="text-[11px] font-bold text-amber-900">Add Photo</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View className="bg-serene-surface-container-lowest rounded-serene-xl p-serene-md border border-serene-subtle-border shadow-sm gap-3">
           <View className="flex-row items-center gap-2">
@@ -424,19 +460,19 @@ export default function ItemDetailScreen() {
             <Text className="text-[15px] font-bold text-serene-on-surface">Purchase Details</Text>
           </View>
 
-          <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-2.5">
-            <View className="flex-row items-baseline justify-between">
-              <View>
+          <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-2">
+            <View className="flex-row items-baseline justify-between gap-3">
+              <View className="flex-1 min-w-0 pr-2">
                 <Text className="text-[12px] text-serene-on-surface-variant">
                   {item.quantity && item.quantity > 1 ? 'Line Total' : 'Purchase Price'}
                 </Text>
                 {item.quantity && item.quantity > 1 && (
-                  <Text className="text-[11px] font-medium text-serene-on-surface-variant mt-0.5">
+                  <Text className="text-[11px] font-medium text-serene-on-surface-variant mt-0.5" numberOfLines={1}>
                     Qty: {item.quantity} × {formatCurrency(item.unitPrice || item.purchasePrice / item.quantity, item.currency === 'INR' ? '₹' : '$')}
                   </Text>
                 )}
               </View>
-              <Text className="text-[20px] font-bold text-serene-primary">
+              <Text className="text-[20px] font-bold text-serene-primary shrink-0">
                 {formatCurrency(item.purchasePrice, item.currency === 'INR' ? '₹' : '$')}
               </Text>
             </View>
@@ -453,47 +489,41 @@ export default function ItemDetailScreen() {
               </View>
             ) : null}
 
-            <View className="h-[1px] bg-serene-subtle-border" />
+            <View className="h-[1px] bg-serene-subtle-border my-0.5" />
 
-            <View className="flex-row justify-between py-0.5">
-              <Text className="text-[12px] text-serene-on-surface-variant">Purchase Date</Text>
-              <Text className="text-[13px] font-medium text-serene-on-surface">
-                {formatDate(item.purchaseDate, 'full') || 'Not entered'}
-              </Text>
-            </View>
+            <DetailRow
+              label="Purchase Date"
+              value={formatDate(item.purchaseDate, 'full') || 'Not entered'}
+            />
 
-            <View className="flex-row justify-between py-0.5">
-              <Text className="text-[12px] text-serene-on-surface-variant">Platform / Shop / Seller</Text>
-              <Text className="text-[13px] font-medium text-serene-on-surface">
-                {item.merchant || 'Not specified'}
-              </Text>
-            </View>
+            <DetailRow
+              label="Store"
+              value={item.merchant || 'Not specified'}
+            />
 
             {item.sellerAddress ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">Seller Address</Text>
-                <Text className="text-[13px] font-medium text-serene-on-surface flex-1 text-right ml-4" numberOfLines={2}>
-                  {item.sellerAddress}
-                </Text>
-              </View>
+              <DetailRow
+                label="Store Address"
+                value={item.sellerAddress}
+                stacked
+              />
             ) : null}
 
             {item.gstTax ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">GST / Tax</Text>
-                <Text className="text-[13px] font-medium text-serene-on-surface">
-                  {item.gstTax}
-                </Text>
-              </View>
+              <DetailRow
+                label="Tax Amount"
+                value={item.gstTax}
+                isMono
+              />
             ) : null}
 
             {item.invoiceNumber ? (
-              <View className="flex-row justify-between py-0.5">
-                <Text className="text-[12px] text-serene-on-surface-variant">Invoice Number</Text>
-                <Text className="text-[13px] font-mono font-bold text-serene-on-surface">
-                  {item.invoiceNumber}
-                </Text>
-              </View>
+              <DetailRow
+                label="Invoice Number"
+                value={item.invoiceNumber}
+                isMono
+                copyable
+              />
             ) : null}
           </View>
         </View>
@@ -603,110 +633,100 @@ export default function ItemDetailScreen() {
               </Text>
             </View>
 
-            <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-2">
+            <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-1">
               {item.productType ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Product Type</Text>
-                  <Text className="text-[13px] font-semibold text-serene-primary">{item.productType}</Text>
-                </View>
+                <DetailRow
+                  label="Product Type"
+                  value={item.productType}
+                  valueColor={SereneColors.primary}
+                />
               ) : null}
 
               {item.brand ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Brand / Maker</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.brand}</Text>
-                </View>
+                <DetailRow label="Brand" value={item.brand} />
               ) : null}
 
               {item.model ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Model / Variant</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.model}</Text>
-                </View>
+                <DetailRow label="Model" value={item.model} />
               ) : null}
 
               {item.serialNumber ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Serial Number</Text>
-                  <Text className="text-[13px] font-mono font-bold text-serene-on-surface">{item.serialNumber}</Text>
-                </View>
+                <DetailRow
+                  label="Serial Number"
+                  value={item.serialNumber}
+                  isMono
+                  copyable
+                />
               ) : null}
 
               {item.imei ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">IMEI</Text>
-                  <Text className="text-[13px] font-mono font-bold text-serene-on-surface">{item.imei}</Text>
-                </View>
+                <DetailRow
+                  label="IMEI"
+                  value={item.imei}
+                  isMono
+                  copyable
+                />
               ) : null}
 
               {item.size ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Size</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.size}</Text>
-                </View>
+                <DetailRow label="Size" value={item.size} />
               ) : null}
 
               {item.color ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Color</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.color}</Text>
-                </View>
+                <DetailRow label="Color" value={item.color} />
               ) : null}
 
               {item.material ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Material</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.material}</Text>
-                </View>
+                <DetailRow label="Material" value={item.material} />
               ) : null}
 
               {item.registrationNumber ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Registration / Plate</Text>
-                  <Text className="text-[13px] font-mono font-bold text-serene-on-surface">{item.registrationNumber}</Text>
-                </View>
+                <DetailRow
+                  label="Registration Number"
+                  value={item.registrationNumber}
+                  isMono
+                  copyable
+                />
               ) : null}
 
               {item.variant ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Variant</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.variant}</Text>
-                </View>
+                <DetailRow label="Variant" value={item.variant} />
               ) : null}
 
               {item.vinChassisNumber ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">VIN / Chassis #</Text>
-                  <Text className="text-[13px] font-mono font-bold text-serene-on-surface">{item.vinChassisNumber}</Text>
-                </View>
+                <DetailRow
+                  label="VIN"
+                  value={item.vinChassisNumber}
+                  isMono
+                  copyable
+                />
               ) : null}
 
               {item.engineNumber ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Engine Number</Text>
-                  <Text className="text-[13px] font-mono font-bold text-serene-on-surface">{item.engineNumber}</Text>
-                </View>
+                <DetailRow
+                  label="Engine Number"
+                  value={item.engineNumber}
+                  isMono
+                  copyable
+                />
               ) : null}
 
               {item.dealer ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Dealership</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{item.dealer}</Text>
-                </View>
+                <DetailRow label="Dealership" value={item.dealer} />
               ) : null}
 
               {item.insuranceExpiry ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Insurance Expiry</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{formatDate(item.insuranceExpiry, 'full')}</Text>
-                </View>
+                <DetailRow
+                  label="Insurance Expiry"
+                  value={formatDate(item.insuranceExpiry, 'full')}
+                />
               ) : null}
 
               {item.pucDate ? (
-                <View className="flex-row justify-between py-0.5">
-                  <Text className="text-[12px] text-serene-on-surface-variant">PUC / Service Date</Text>
-                  <Text className="text-[13px] font-medium text-serene-on-surface">{formatDate(item.pucDate, 'full')}</Text>
-                </View>
+                <DetailRow
+                  label="PUC Expiry Date"
+                  value={formatDate(item.pucDate, 'full')}
+                />
               ) : null}
             </View>
           </View>
@@ -748,18 +768,12 @@ export default function ItemDetailScreen() {
             </View>
 
             {item.returnUntil ? (
-              <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-1.5">
-                <View className="flex-row justify-between items-center">
-                  <Text className="text-[12px] text-serene-on-surface-variant">Last Return Date</Text>
-                  <Text className="text-[13px] font-semibold text-serene-on-surface">
-                    {formatDate(item.returnUntil, 'full')}
-                  </Text>
-                </View>
-                {returnBadge.subtext ? (
-                  <Text className="text-[11px] text-serene-outline text-right">
-                    {returnBadge.subtext}
-                  </Text>
-                ) : null}
+              <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-1">
+                <DetailRow
+                  label="Last Return Date"
+                  value={formatDate(item.returnUntil, 'full')}
+                  helperText={returnBadge.subtext}
+                />
               </View>
             ) : (
               <View className="bg-serene-surface-container-low p-3 rounded-serene-md">
@@ -781,10 +795,8 @@ export default function ItemDetailScreen() {
 
               <View
                 className={`px-2.5 py-1 rounded-full ${
-                  warrantyBadge.status === 'expired'
+                  warrantyBadge.status === 'expired' || warrantyBadge.status === 'expiring_soon'
                     ? 'bg-serene-error-container'
-                    : warrantyBadge.status === 'expiring_soon'
-                    ? 'bg-serene-warning-container'
                     : warrantyBadge.status === 'active'
                     ? 'bg-serene-secondary-fixed'
                     : 'bg-serene-surface-container'
@@ -792,10 +804,8 @@ export default function ItemDetailScreen() {
               >
                 <Text
                   className={`text-[11px] font-semibold ${
-                    warrantyBadge.status === 'expired'
+                    warrantyBadge.status === 'expired' || warrantyBadge.status === 'expiring_soon'
                       ? 'text-serene-error'
-                      : warrantyBadge.status === 'expiring_soon'
-                      ? 'text-serene-warning'
                       : warrantyBadge.status === 'active'
                       ? 'text-serene-on-secondary-container'
                       : 'text-serene-on-surface-variant'
@@ -810,21 +820,17 @@ export default function ItemDetailScreen() {
               <View className="gap-3">
                 <WarrantyGauge warranty={item.warranty} />
 
-                <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-2">
-                  <View className="flex-row justify-between py-0.5">
-                    <Text className="text-[12px] text-serene-on-surface-variant">Warranty Expires</Text>
-                    <Text className="text-[13px] font-semibold text-serene-on-surface">
-                      {formatDate(effectiveWarrantyEnd, 'full')}
-                    </Text>
-                  </View>
+                <View className="bg-[rgba(246,243,235,0.65)] rounded-serene-lg p-3 gap-1">
+                  <DetailRow
+                    label="Warranty Expires"
+                    value={formatDate(effectiveWarrantyEnd, 'full')}
+                  />
 
                   {(item.warrantyProvider || item.warranty?.provider) ? (
-                    <View className="flex-row justify-between py-0.5">
-                      <Text className="text-[12px] text-serene-on-surface-variant">Provider</Text>
-                      <Text className="text-[13px] font-medium text-serene-on-surface">
-                        {item.warrantyProvider || item.warranty?.provider}
-                      </Text>
-                    </View>
+                    <DetailRow
+                      label="Provider"
+                      value={item.warrantyProvider || item.warranty?.provider}
+                    />
                   ) : null}
                 </View>
               </View>
@@ -847,7 +853,7 @@ export default function ItemDetailScreen() {
                 color={SereneColors.primary}
               />
               <Text className="text-[15px] font-bold text-serene-on-surface">
-                {documentLabel} / Proof of Purchase
+                Proof of Purchase
               </Text>
             </View>
 

@@ -114,10 +114,13 @@ const ServiceCard = React.memo(function ServiceCard({
             {isSelected && <MaterialIcons name="check" size={14} color="#FFFFFF" />}
           </View>
         ) : (
-          <View style={styles.amountContainer}>
-            <Text style={styles.amountText}>
-              {amount > 0 ? formatCurrency(amount) : 'Free'}
-            </Text>
+          <View style={styles.trailingContainer}>
+            <View style={styles.amountContainer}>
+              <Text style={styles.amountText}>
+                {amount > 0 ? formatCurrency(amount) : 'Free'}
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={18} color={SereneColors.outline} />
           </View>
         )}
       </View>
@@ -479,11 +482,12 @@ export default function ServicesScreen() {
           <MaterialIcons name="search" size={20} color={SereneColors.onSurfaceVariant} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search repairs, items, providers..."
-            placeholderTextColor={SereneColors.onSurfaceVariant}
+            placeholder="Search services or providers"
+            placeholderTextColor={SereneColors.outline}
             value={searchQuery}
             onChangeText={setSearchQuery}
             clearButtonMode="while-editing"
+            accessibilityLabel="Search services"
           />
           {searchQuery.length > 0 && (
             <TouchableOpacity onPress={() => setSearchQuery('')} activeOpacity={0.7}>
@@ -738,7 +742,7 @@ const styles = StyleSheet.create({
   },
   cardHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
   },
   iconContainer: {
@@ -748,9 +752,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(17,80,134,0.07)',
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   cardHeaderContent: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   recordTitle: {
@@ -767,14 +773,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     color: SereneColors.onSurfaceVariant,
+    flexShrink: 1,
+  },
+  trailingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+    marginLeft: 8,
   },
   amountContainer: {
     alignItems: 'flex-end',
+    flexShrink: 0,
   },
   amountText: {
     fontSize: 14,
     fontWeight: '700',
-    color: SereneColors.onSurface,
+    color: SereneColors.primary,
   },
   checkbox: {
     width: 22,
@@ -788,19 +803,22 @@ const styles = StyleSheet.create({
   cardMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 12,
     borderTopWidth: 1,
     borderTopColor: 'rgba(17,80,134,0.05)',
     paddingTop: 8,
+    flexWrap: 'wrap',
   },
   metaItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    flexShrink: 1,
   },
   metaText: {
     fontSize: 11,
     color: SereneColors.onSurfaceVariant,
+    flexShrink: 1,
   },
   badgesRow: {
     flexDirection: 'row',

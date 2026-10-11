@@ -9,6 +9,7 @@ interface EmptyStateProps {
   title: string;
   description: string;
   actionText?: string;
+  actionIcon?: keyof typeof MaterialIcons.glyphMap | null;
   onActionPress?: () => void;
 }
 
@@ -17,6 +18,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   title = 'Your collection starts here.',
   description = 'Add the things you own and keep their important details in one place.',
   actionText,
+  actionIcon = 'add',
   onActionPress,
 }) => {
   return (
@@ -38,7 +40,9 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           activeOpacity={0.85}
           onPress={onActionPress}
         >
-          <MaterialIcons name="add" size={18} color="#FFFFFF" />
+          {actionIcon ? (
+            <MaterialIcons name={actionIcon} size={18} color="#FFFFFF" />
+          ) : null}
           <Text className="text-[13px] font-semibold text-white">{actionText}</Text>
         </TouchableOpacity>
       ) : null}

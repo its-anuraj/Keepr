@@ -28,6 +28,9 @@ import {
   cloudUpsertExpense,
   mapItemToDbRow,
 } from './cloudSyncService';
+import { uploadItemPhoto, isStoragePath, isLocalUri } from './storageService';
+import { mapDbRowToItem } from './vaultRowMappers';
+import { getCanonicalReceiptUri } from './receiptFileService';
 import type {
   Item,
   Warranty,
@@ -575,3 +578,206 @@ export async function fetchCloudItemIds(userId: string): Promise<Set<string>> {
     return new Set();
   }
 }
+
+/**
+ * Safely audits and migrates existing items' image references for a user.
+ *
+ * Implements Step 7:
+ * - CASE A: Image reference already points to Supabase Storage -> keep it.
+ * - CASE B: Image reference is local and original local file still exists on this device:
+ *           Uploads local file to Supabase Storage ('item-images'), updates DB with permanent storage path.
+ * - CASE C: Image reference is local but original file no longer exists on this device:
+ *           Does NOT fabricate or delete anything; keeps record intact.
+ */
+export async function reconcileAndMigrateItemImages(
+  userId: string,
+  targetItems?: Item[]
+): Promise<{ caseA: number; caseB: number; caseC: number }> {
+  if (!userId || !isSupabaseConfigured) {
+    return { caseA: 0, caseB: 0, caseC: 0 };
+  }
+
+  let caseA = 0;
+  let caseB = 0;
+  let caseC = 0;
+
+  try {
+    const { useItemStore } = require('../store/itemStore');
+    let itemsToProcess: Item[] = (targetItems && targetItems.length > 0)
+      ? targetItems.filter((i) => !i.userId || i.userId === userId)
+      : useItemStore.getState().items.filter((i: Item) => !i.userId || i.userId === userId);
+
+    if (itemsToProcess.length === 0) {
+      const { data: dbRows, error: dbErr } = await supabase
+        .from('items')
+        .select('*')
+        .eq('user_id', userId);
+      if (!dbErr && dbRows && dbRows.length > 0) {
+        itemsToProcess = dbRows.map((r: Record<string, unknown>) => mapDbRowToItem(r));
+      }
+    }
+
+    const updatedItems: Item[] = [];
+
+    for (const item of itemsToProcess) {
+      // Gather all distinct candidate photo paths/URIs across productPhotos, photoUri, and imageUrl
+      const rawCandidates: string[] = [];
+      if (Array.isArray(item.productPhotos)) {
+        for (const p of item.productPhotos) {
+          if (p && typeof p === 'string' && !rawCandidates.includes(p)) {
+            rawCandidates.push(p);
+          }
+        }
+      }
+      if (item.imageStoragePath && !rawCandidates.includes(item.imageStoragePath)) {
+        rawCandidates.unshift(item.imageStoragePath);
+      }
+      if (item.imageUrl && !rawCandidates.includes(item.imageUrl)) {
+        rawCandidates.push(item.imageUrl);
+      }
+      if (item.photoUri && !rawCandidates.includes(item.photoUri)) {
+        rawCandidates.push(item.photoUri);
+      }
+
+      if (rawCandidates.length === 0) {
+        continue;
+      }
+
+      const durablePhotos: string[] = [];
+      let itemUploadedAny = false;
+
+      for (let idx = 0; idx < rawCandidates.length; idx++) {
+        const candidate = rawCandidates[idx];
+
+        // CASE A: already in Supabase Storage
+        if (isStoragePath(candidate)) {
+          caseA++;
+          if (!durablePhotos.includes(candidate)) {
+            durablePhotos.push(candidate);
+          }
+          continue;
+        }
+
+        // Remote HTTP URLs are already hosted
+        if (candidate.startsWith('http://') || candidate.startsWith('https://')) {
+          if (!durablePhotos.includes(candidate)) {
+            durablePhotos.push(candidate);
+          }
+          continue;
+        }
+
+        // Local device URI (file://, content://, /...)
+        if (isLocalUri(candidate)) {
+          const canonical = getCanonicalReceiptUri(candidate) || candidate;
+          let existingLocalUri: string | null = null;
+
+          try {
+            const cInfo = await FileSystem.getInfoAsync(canonical).catch(() => null);
+            if (cInfo?.exists && !cInfo.isDirectory) {
+              existingLocalUri = canonical;
+            }
+          } catch {}
+
+          if (!existingLocalUri && canonical !== candidate) {
+            try {
+              const rInfo = await FileSystem.getInfoAsync(candidate).catch(() => null);
+              if (rInfo?.exists && !rInfo.isDirectory) {
+                existingLocalUri = candidate;
+              }
+            } catch {}
+          }
+
+          if (existingLocalUri) {
+            // CASE B: Local file physically exists on THIS device!
+            try {
+              const uploadRes = await uploadItemPhoto(userId, item.id, existingLocalUri, idx);
+              if (uploadRes.storagePath) {
+                caseB++;
+                itemUploadedAny = true;
+                if (!durablePhotos.includes(uploadRes.storagePath)) {
+                  durablePhotos.push(uploadRes.storagePath);
+                }
+                console.log(
+                  `[ImageMigration] CASE B SUCCESS: Migrated local photo for "${item.name}" -> ${uploadRes.storagePath}`
+                );
+              } else {
+                caseC++;
+                console.warn(
+                  `[ImageMigration] CASE B upload error for "${item.name}":`,
+                  uploadRes.error
+                );
+              }
+            } catch (uErr) {
+              caseC++;
+              console.warn(`[ImageMigration] CASE B exception for "${item.name}":`, uErr);
+            }
+          } else {
+            // CASE C: Local file does not exist on this device
+            caseC++;
+            console.log(
+              `[ImageMigration] CASE C: Local file missing on this device for "${item.name}" (${candidate})`
+            );
+          }
+        }
+      }
+
+      // If durable photos exist or were newly uploaded:
+      if (durablePhotos.length > 0) {
+        const primaryStoragePath = durablePhotos[0];
+        const needsDbUpdate =
+          itemUploadedAny ||
+          item.imageStoragePath !== primaryStoragePath ||
+          !item.imageStoragePath;
+
+        if (needsDbUpdate) {
+          const { error: updateErr } = await supabase
+            .from('items')
+            .update({
+              image_storage_path: primaryStoragePath,
+              image_url: primaryStoragePath,
+              product_photos: JSON.stringify(durablePhotos),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', item.id)
+            .eq('user_id', userId);
+
+          if (updateErr) {
+            console.warn(`[ImageMigration] Failed to update DB row for "${item.name}":`, updateErr.message);
+          } else {
+            console.log(`[ImageMigration] Updated DB row for "${item.name}" with storage path: ${primaryStoragePath}`);
+          }
+        }
+
+        updatedItems.push({
+          ...item,
+          imageStoragePath: primaryStoragePath,
+          imageUrl: primaryStoragePath,
+          productPhotos: durablePhotos,
+        });
+      } else {
+        // CASE C for entire item: Local file is missing.
+        // Data Safety: NEVER delete or recreate the item or alter valid cloud data.
+        // Leave the DB record untouched. The UI will safely mark it unavailable.
+      }
+    }
+
+    if (updatedItems.length > 0) {
+      const current = useItemStore.getState().items;
+      useItemStore.setState({
+        items: current.map((it: Item) => {
+          const up = updatedItems.find((u) => u.id === it.id);
+          return up ? { ...it, ...up } : it;
+        }),
+      });
+    }
+
+    console.log(
+      `[ImageMigration] Reconciliation complete: Case A (Storage)=${caseA}, Case B (Migrated)=${caseB}, Case C (Missing Local)=${caseC}`
+    );
+  } catch (err) {
+    console.warn('[ImageMigration] Reconciliation notice:', err);
+  }
+
+  return { caseA, caseB, caseC };
+}
+

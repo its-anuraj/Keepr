@@ -96,7 +96,7 @@ export default function AddMaintenanceModal() {
             <Text className="text-[12px] font-semibold text-serene-on-surface">Service Title *</Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-              placeholder="e.g. Laptop cleaning, Oil change, Coil repair"
+              placeholder="Enter service title"
               placeholderTextColor={SereneColors.outline}
               value={title}
               onChangeText={setTitle}
@@ -107,7 +107,7 @@ export default function AddMaintenanceModal() {
             <Text className="text-[12px] font-semibold text-serene-on-surface">Cost (₹)</Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-              placeholder="e.g. 1,200"
+              placeholder="Enter cost"
               placeholderTextColor={SereneColors.outline}
               value={cost}
               onChangeText={setCost}
@@ -119,7 +119,7 @@ export default function AddMaintenanceModal() {
             <Text className="text-[12px] font-semibold text-serene-on-surface">Service Provider</Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
-              placeholder="e.g. Apple Care or Urban Company"
+              placeholder="Enter service provider name"
               placeholderTextColor={SereneColors.outline}
               value={serviceProvider}
               onChangeText={setServiceProvider}
@@ -138,7 +138,7 @@ export default function AddMaintenanceModal() {
           </View>
 
           <View className="gap-1">
-            <Text className="text-[12px] font-semibold text-serene-on-surface">Next Service Due (Optional)</Text>
+            <Text className="text-[12px] font-semibold text-serene-on-surface">Next Service Due</Text>
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface"
               placeholder="YYYY-MM-DD"
@@ -153,7 +153,7 @@ export default function AddMaintenanceModal() {
             <TextInput
               className="bg-serene-surface-container-low rounded-serene-md border border-serene-subtle-border px-3 py-2 text-[13px] text-serene-on-surface h-[70px]"
               style={{ textAlignVertical: 'top' }}
-              placeholder="e.g. Replaced thermal paste, includes 6-month warranty"
+              placeholder="Add notes (optional)"
               placeholderTextColor={SereneColors.outline}
               value={notes}
               onChangeText={setNotes}

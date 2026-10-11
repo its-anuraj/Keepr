@@ -151,7 +151,7 @@ export default function ForgotPasswordScreen() {
                   />
                   <TextInput
                     className="flex-1 text-[14px] text-serene-on-surface"
-                    placeholder="Enter your email"
+                    placeholder="Enter your email address"
                     placeholderTextColor={SereneColors.outline}
                     value={email}
                     onChangeText={(t) => {
@@ -162,6 +162,7 @@ export default function ForgotPasswordScreen() {
                     keyboardType="email-address"
                     autoComplete="email"
                     editable={!isSubmitting}
+                    accessibilityLabel="Email address"
                   />
                 </View>
               </View>

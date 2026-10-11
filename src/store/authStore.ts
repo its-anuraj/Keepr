@@ -403,12 +403,6 @@ export const useAuthStore = create<AuthState>()(
                 console.warn('[AuthDiagnostic] signIn offline migration deferred:', migErr);
               }
 
-              try {
-                const { useItemStore } = require('./itemStore');
-                useItemStore.getState().hydrateFromCloud();
-              } catch (hydrateErr) {
-                console.warn('[AuthDiagnostic] signIn hydrateFromCloud deferred:', hydrateErr);
-              }
 
               const projectRef = supabaseUrl.replace(/^https?:\/\//, '').split('.')[0];
               const storageKey = `sb-${projectRef}-auth-token`;
@@ -539,6 +533,18 @@ export const useAuthStore = create<AuthState>()(
       },
 
       signOut: async () => {
+        const userId = get().user?.id || get().session?.user?.id;
+
+        // Attempt to flush any pending offline changes while session credentials are still valid
+        if (userId && isSupabaseConfigured) {
+          try {
+            const { flushSyncQueue } = require('../services/syncQueueService');
+            await flushSyncQueue(userId);
+          } catch (flushErr) {
+            console.warn('[AuthDiagnostic] Pre-signOut flushSyncQueue note:', flushErr);
+          }
+        }
+
         if (isSupabaseConfigured) {
           try {
             await supabase.auth.signOut();

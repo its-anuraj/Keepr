@@ -98,7 +98,7 @@ export default function LoginScreen() {
                 />
                 <TextInput
                   className="flex-1 text-[14px] text-serene-on-surface"
-                  placeholder="Enter your email"
+                  placeholder="Enter your email address"
                   placeholderTextColor={SereneColors.outline}
                   value={email}
                   onChangeText={(t) => {
@@ -108,6 +108,7 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   keyboardType="email-address"
                   autoComplete="email"
+                  accessibilityLabel="Email address"
                 />
               </View>
             </View>
@@ -140,6 +141,7 @@ export default function LoginScreen() {
                   }}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  accessibilityLabel="Password"
                 />
                 <TouchableOpacity
                   onPress={() => setShowPassword(!showPassword)}

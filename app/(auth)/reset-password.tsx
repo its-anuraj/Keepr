@@ -248,7 +248,7 @@ export default function ResetPasswordScreen() {
                   />
                   <TextInput
                     className="flex-1 text-[14px] text-serene-on-surface"
-                    placeholder="Enter a new password"
+                    placeholder="Enter your new password"
                     placeholderTextColor={SereneColors.outline}
                     value={newPassword}
                     onChangeText={(t) => {
@@ -258,6 +258,7 @@ export default function ResetPasswordScreen() {
                     secureTextEntry={!showPassword}
                     autoCapitalize="none"
                     editable={!isSubmitting}
+                    accessibilityLabel="New password"
                   />
                   <TouchableOpacity
                     onPress={() => setShowPassword(!showPassword)}
@@ -283,7 +284,7 @@ export default function ResetPasswordScreen() {
                   />
                   <TextInput
                     className="flex-1 text-[14px] text-serene-on-surface"
-                    placeholder="Re-enter your new password"
+                    placeholder="Re-enter your password"
                     placeholderTextColor={SereneColors.outline}
                     value={confirmPassword}
                     onChangeText={(t) => {
@@ -293,6 +294,7 @@ export default function ResetPasswordScreen() {
                     secureTextEntry={!showConfirmPassword}
                     autoCapitalize="none"
                     editable={!isSubmitting}
+                    accessibilityLabel="Confirm password"
                   />
                   <TouchableOpacity
                     onPress={() => setShowConfirmPassword(!showConfirmPassword)}

@@ -179,19 +179,14 @@ export default function NotificationsScreen() {
         >
           <MaterialIcons name="arrow-back" size={22} color={SereneColors.onSurface} />
         </TouchableOpacity>
-        <View className="flex-1">
+        <View className="flex-1 justify-center">
           <Text className="text-[18px] font-bold text-serene-on-surface">Notifications</Text>
-          {notifications.length > 0 && (
-            <Text className="text-[11px] text-serene-on-surface-variant">
-              {notifications.length} active reminder{notifications.length !== 1 ? 's' : ''}
-            </Text>
-          )}
+          <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
+            {notifications.length === 0
+              ? 'No active reminders'
+              : `${notifications.length} active reminder${notifications.length === 1 ? '' : 's'}`}
+          </Text>
         </View>
-        {notifications.length > 0 && (
-          <View className="bg-serene-primary px-2.5 py-0.5 rounded-full">
-            <Text className="text-[11px] font-bold text-white">{notifications.length}</Text>
-          </View>
-        )}
       </View>
 
       <ScrollView

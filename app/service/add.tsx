@@ -37,7 +37,7 @@ const SERVICE_TYPES: { type: ServiceType; label: string; icon: string }[] = [
   { type: 'Servicing', label: 'Servicing', icon: 'car-repair' },
   { type: 'Inspection', label: 'Inspection', icon: 'search' },
   { type: 'Part Replacement', label: 'Part Replacement', icon: 'extension' },
-  { type: 'Software / Technical', label: 'Software / Tech', icon: 'memory' },
+  { type: 'Software / Technical', label: 'Software', icon: 'memory' },
   { type: 'Cleaning', label: 'Cleaning', icon: 'cleaning-services' },
   { type: 'Other', label: 'Other', icon: 'more-horiz' },
 ];
@@ -149,6 +149,7 @@ export default function AddServiceScreen() {
     editRecord?.documentIds || []
   );
   const [isAttachingDoc, setIsAttachingDoc] = useState(false);
+  const [showAttachModal, setShowAttachModal] = useState(false);
   const [technicianNotes, setTechnicianNotes] = useState(
     editRecord?.technicianNotes || (params.prefillTechnicianNotes ? decodeURIComponent(params.prefillTechnicianNotes) : '')
   );
@@ -190,6 +191,7 @@ export default function AddServiceScreen() {
   }, [params.fileUri]);
 
   const handleAttachFromPicker = async (source: 'camera' | 'gallery' | 'pdf') => {
+    if (isAttachingDoc) return;
     try {
       let fileUri: string | null = null;
       let fileName = 'Service_Document.jpg';
@@ -250,7 +252,7 @@ export default function AddServiceScreen() {
       const cleanCost = isNaN(parsedAmount) ? 0 : parsedAmount;
 
       const createdDoc = await addDocument({
-        title: `${title.trim() || serviceType} Invoice / Report`,
+        title: `${title.trim() || serviceType} Invoice`,
         category: 'Receipts & Invoices',
         documentType: 'Invoice',
         documentDate: serviceDate,
@@ -273,16 +275,14 @@ export default function AddServiceScreen() {
   };
 
   const promptAttachOptions = () => {
-    Alert.alert(
-      'Attach Document / Invoice',
-      'Choose how to attach a service invoice, bill, or technician report:',
-      [
-        { text: 'Take Photo', onPress: () => handleAttachFromPicker('camera') },
-        { text: 'Choose from Photos', onPress: () => handleAttachFromPicker('gallery') },
-        { text: 'Select PDF File', onPress: () => handleAttachFromPicker('pdf') },
-        { text: 'Cancel', style: 'cancel' },
-      ]
-    );
+    if (isAttachingDoc) return;
+    setShowAttachModal(true);
+  };
+
+  const handleSelectAttachOption = (source: 'camera' | 'gallery' | 'pdf') => {
+    if (isAttachingDoc) return;
+    setShowAttachModal(false);
+    handleAttachFromPicker(source);
   };
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -484,10 +484,10 @@ export default function AddServiceScreen() {
             <Text style={sectionTitleStyle}>Service Overview</Text>
 
             <View style={{ gap: 4 }}>
-              <Text style={labelStyle}>Service Title / Summary</Text>
+              <Text style={labelStyle}>Service Title</Text>
               <TextInput
                 style={[inputStyle, errors.title ? { borderColor: SereneColors.error } : null]}
-                placeholder="e.g. Keyboard repair, Battery replacement, 10,000 km Service"
+                placeholder="Enter service title"
                 placeholderTextColor={SereneColors.outline}
                 value={title}
                 onChangeText={(t) => {
@@ -499,7 +499,7 @@ export default function AddServiceScreen() {
             </View>
 
             <View style={{ gap: 4 }}>
-              <Text style={labelStyle}>Service Date (YYYY-MM-DD)</Text>
+              <Text style={labelStyle}>Service Date</Text>
               <TextInput
                 style={[inputStyle, errors.serviceDate ? { borderColor: SereneColors.error } : null]}
                 placeholder="YYYY-MM-DD"
@@ -561,10 +561,10 @@ export default function AddServiceScreen() {
             <Text style={sectionTitleStyle}>Diagnostic & Work Performed</Text>
 
             <View style={{ gap: 4 }}>
-              <Text style={labelStyle}>Problem / Issue</Text>
+              <Text style={labelStyle}>Problem Description</Text>
               <TextInput
                 style={[inputStyle, { minHeight: 64, textAlignVertical: 'top' }]}
-                placeholder="What was the problem? (e.g. Spacebar key sticking, battery drains quickly)"
+                placeholder="Describe the problem"
                 placeholderTextColor={SereneColors.outline}
                 multiline
                 numberOfLines={3}
@@ -577,7 +577,7 @@ export default function AddServiceScreen() {
               <Text style={labelStyle}>Work Performed</Text>
               <TextInput
                 style={[inputStyle, { minHeight: 64, textAlignVertical: 'top' }]}
-                placeholder="What was done? (e.g. Keyboard assembly replaced, system diagnostics run)"
+                placeholder="Describe the work performed"
                 placeholderTextColor={SereneColors.outline}
                 multiline
                 numberOfLines={3}
@@ -590,7 +590,7 @@ export default function AddServiceScreen() {
               <Text style={labelStyle}>Parts Replaced</Text>
               <TextInput
                 style={inputStyle}
-                placeholder="e.g. Top case with battery, OEM Display unit"
+                placeholder="Enter parts replaced (optional)"
                 placeholderTextColor={SereneColors.outline}
                 value={partsReplaced}
                 onChangeText={setPartsReplaced}
@@ -600,13 +600,13 @@ export default function AddServiceScreen() {
 
           {/* Service Provider Card */}
           <View style={cardStyle}>
-            <Text style={sectionTitleStyle}>Service Provider / Technician</Text>
+            <Text style={sectionTitleStyle}>Service Provider</Text>
 
             <View style={{ gap: 4 }}>
-              <Text style={labelStyle}>Service Center / Provider Name</Text>
+              <Text style={labelStyle}>Provider Name</Text>
               <TextInput
                 style={inputStyle}
-                placeholder="e.g. Apple Authorized Service Center, Local Mechanic"
+                placeholder="Enter service provider name"
                 placeholderTextColor={SereneColors.outline}
                 value={serviceProvider}
                 onChangeText={setServiceProvider}
@@ -614,10 +614,10 @@ export default function AddServiceScreen() {
             </View>
 
             <View style={{ gap: 4 }}>
-              <Text style={labelStyle}>Address / Location</Text>
+              <Text style={labelStyle}>Provider Address</Text>
               <TextInput
                 style={inputStyle}
-                placeholder="e.g. Connaught Place, New Delhi"
+                placeholder="Enter service provider address"
                 placeholderTextColor={SereneColors.outline}
                 value={serviceProviderAddress}
                 onChangeText={setServiceProviderAddress}
@@ -625,10 +625,10 @@ export default function AddServiceScreen() {
             </View>
 
             <View style={{ gap: 4 }}>
-              <Text style={labelStyle}>Contact Phone / Support Number</Text>
+              <Text style={labelStyle}>Contact Phone</Text>
               <TextInput
                 style={inputStyle}
-                placeholder="e.g. +91 98765 43210"
+                placeholder="Enter contact phone number"
                 placeholderTextColor={SereneColors.outline}
                 keyboardType="phone-pad"
                 value={serviceProviderPhone}
@@ -684,7 +684,7 @@ export default function AddServiceScreen() {
               <Text style={labelStyle}>Amount Paid (₹)</Text>
               <TextInput
                 style={inputStyle}
-                placeholder="e.g. 0 (if covered) or 4500"
+                placeholder="Enter amount paid"
                 placeholderTextColor={SereneColors.outline}
                 keyboardType="numeric"
                 value={amountPaid}
@@ -698,7 +698,7 @@ export default function AddServiceScreen() {
                   <Text style={labelStyle}>Coverage Type</Text>
                   <TextInput
                     style={inputStyle}
-                    placeholder="e.g. Manufacturer Warranty, AppleCare+, Insurance"
+                    placeholder="Enter coverage type (e.g. Warranty, Insurance)"
                     placeholderTextColor={SereneColors.outline}
                     value={coverageType}
                     onChangeText={setCoverageType}
@@ -706,10 +706,10 @@ export default function AddServiceScreen() {
                 </View>
 
                 <View style={{ gap: 4 }}>
-                  <Text style={labelStyle}>Claim / Service Request #</Text>
+                  <Text style={labelStyle}>Claim Reference</Text>
                   <TextInput
                     style={inputStyle}
-                    placeholder="e.g. SR-2026-98124"
+                    placeholder="Enter claim or request number"
                     placeholderTextColor={SereneColors.outline}
                     value={coverageReferenceNumber}
                     onChangeText={setCoverageReferenceNumber}
@@ -744,7 +744,7 @@ export default function AddServiceScreen() {
 
               {hasPostWarranty && (
                 <View style={{ gap: 4, marginTop: 4 }}>
-                  <Text style={labelStyle}>Warranty Until (YYYY-MM-DD)</Text>
+                  <Text style={labelStyle}>Warranty Expiry Date</Text>
                   <TextInput
                     style={[inputStyle, errors.postServiceWarrantyUntil ? { borderColor: SereneColors.error } : null]}
                     placeholder="YYYY-MM-DD"
@@ -788,7 +788,7 @@ export default function AddServiceScreen() {
 
               {hasPostGuarantee && (
                 <View style={{ gap: 4, marginTop: 4 }}>
-                  <Text style={labelStyle}>Guarantee Until (YYYY-MM-DD)</Text>
+                  <Text style={labelStyle}>Guarantee Expiry Date</Text>
                   <TextInput
                     style={[inputStyle, errors.postServiceGuaranteeUntil ? { borderColor: SereneColors.error } : null]}
                     placeholder="YYYY-MM-DD"
@@ -812,40 +812,14 @@ export default function AddServiceScreen() {
 
           {/* Supporting Documents & Invoices */}
           <View style={cardStyle}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text style={sectionTitleStyle}>Supporting Documents & Invoices</Text>
-              <TouchableOpacity
-                onPress={promptAttachOptions}
-                disabled={isAttachingDoc}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 4,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 20,
-                  backgroundColor: 'rgba(17,80,134,0.08)',
-                }}
-              >
-                {isAttachingDoc ? (
-                  <ActivityIndicator size="small" color={SereneColors.primary} />
-                ) : (
-                  <>
-                    <MaterialIcons name="add" size={14} color={SereneColors.primary} />
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: SereneColors.primary }}>
-                      Attach New
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
+            <Text style={sectionTitleStyle}>Supporting Documents</Text>
 
-            <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant, marginTop: 2 }}>
+            <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant, marginTop: -4 }}>
               Attach service invoices, repair bills, technician reports, or select existing documents linked to this item:
             </Text>
 
-            {linkedDocs.length > 0 ? (
-              <View style={{ gap: 8, marginTop: 6 }}>
+            {linkedDocs.length > 0 && (
+              <View style={{ gap: 8 }}>
                 {linkedDocs.map((doc) => {
                   const isChecked = selectedDocIds.includes(doc.id);
                   return (
@@ -853,6 +827,9 @@ export default function AddServiceScreen() {
                       key={doc.id}
                       onPress={() => toggleDocLink(doc.id)}
                       activeOpacity={0.8}
+                      accessibilityLabel={`Toggle ${doc.title}`}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: isChecked }}
                       style={{
                         flexDirection: 'row',
                         alignItems: 'center',
@@ -882,36 +859,38 @@ export default function AddServiceScreen() {
                   );
                 })}
               </View>
-            ) : (
-              <TouchableOpacity
-                onPress={promptAttachOptions}
-                disabled={isAttachingDoc}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  paddingVertical: 14,
-                  borderRadius: 10,
-                  borderWidth: 1,
-                  borderStyle: 'dashed',
-                  borderColor: SereneColors.outline,
-                  backgroundColor: SereneColors.surfaceContainerLow,
-                  marginTop: 6,
-                }}
-              >
-                {isAttachingDoc ? (
-                  <ActivityIndicator size="small" color={SereneColors.primary} />
-                ) : (
-                  <>
-                    <MaterialIcons name="upload-file" size={20} color={SereneColors.primary} />
-                    <Text style={{ fontSize: 12, fontWeight: '600', color: SereneColors.primary }}>
-                      Upload Service Invoice / Receipt / Report
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
             )}
+
+            <TouchableOpacity
+              onPress={promptAttachOptions}
+              disabled={isAttachingDoc}
+              activeOpacity={0.8}
+              accessibilityLabel="Upload Service Invoice / Receipt / Report"
+              accessibilityRole="button"
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                paddingVertical: 14,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderStyle: 'dashed',
+                borderColor: SereneColors.outline,
+                backgroundColor: SereneColors.surfaceContainerLow,
+              }}
+            >
+              {isAttachingDoc ? (
+                <ActivityIndicator size="small" color={SereneColors.primary} />
+              ) : (
+                <>
+                  <MaterialIcons name="upload-file" size={20} color={SereneColors.primary} />
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: SereneColors.primary }}>
+                    Upload Service Invoice / Receipt / Report
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
           </View>
 
           {/* Notes Card */}
@@ -919,7 +898,7 @@ export default function AddServiceScreen() {
             <Text style={sectionTitleStyle}>Additional Notes</Text>
             <TextInput
               style={[inputStyle, { minHeight: 70, textAlignVertical: 'top' }]}
-              placeholder="Any other details, technician advice, or maintenance notes..."
+              placeholder="Add notes (optional)"
               placeholderTextColor={SereneColors.outline}
               multiline
               numberOfLines={3}
@@ -1042,10 +1021,11 @@ export default function AddServiceScreen() {
               <MaterialIcons name="search" size={18} color={SereneColors.onSurfaceVariant} />
               <TextInput
                 style={{ flex: 1, fontSize: 13, color: SereneColors.onSurface }}
-                placeholder="Search your items..."
-                placeholderTextColor={SereneColors.onSurfaceVariant}
+                placeholder="Search items by name or brand"
+                placeholderTextColor={SereneColors.outline}
                 value={itemSearchQuery}
                 onChangeText={setItemSearchQuery}
+                accessibilityLabel="Search items"
               />
               {itemSearchQuery.length > 0 && (
                 <TouchableOpacity onPress={() => setItemSearchQuery('')}>
@@ -1155,6 +1135,227 @@ export default function AddServiceScreen() {
                 );
               })}
             </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Attachment Options Modal */}
+      <Modal
+        visible={showAttachModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAttachModal(false)}
+      >
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(15,23,42,0.55)',
+            justifyContent: 'flex-end',
+          }}
+          onPress={() => setShowAttachModal(false)}
+          accessibilityLabel="Dismiss attachment options"
+        >
+          <Pressable
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              paddingTop: 12,
+              paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+              paddingHorizontal: 20,
+              gap: 12,
+            }}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {/* Handle Bar */}
+            <View
+              style={{
+                width: 36,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: '#CBD5E1',
+                alignSelf: 'center',
+                marginBottom: 4,
+              }}
+            />
+
+            {/* Header */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <View>
+                <Text style={{ fontSize: 17, fontWeight: '700', color: SereneColors.onSurface }}>
+                  Attach Document
+                </Text>
+                <Text style={{ fontSize: 12, color: SereneColors.onSurfaceVariant, marginTop: 2 }}>
+                  Choose how to attach your service invoice or report
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowAttachModal(false)}
+                accessibilityLabel="Close dialog"
+                accessibilityRole="button"
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: SereneColors.surfaceContainerHigh,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <MaterialIcons name="close" size={18} color={SereneColors.onSurfaceVariant} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Option: Select PDF File */}
+            <TouchableOpacity
+              onPress={() => handleSelectAttachOption('pdf')}
+              disabled={isAttachingDoc}
+              accessibilityLabel="Select PDF File"
+              accessibilityRole="button"
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                padding: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: SereneColors.subtleBorder,
+                backgroundColor: SereneColors.surfaceContainerLowest,
+              }}
+              activeOpacity={0.7}
+            >
+              <View
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 10,
+                  backgroundColor: 'rgba(17,80,134,0.08)',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <MaterialIcons name="picture-as-pdf" size={22} color={SereneColors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}>
+                  Select PDF File
+                </Text>
+                <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant, marginTop: 2 }}>
+                  Upload digital invoice, bill, or service report
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={SereneColors.outline} />
+            </TouchableOpacity>
+
+            {/* Option: Choose from Photos */}
+            <TouchableOpacity
+              onPress={() => handleSelectAttachOption('gallery')}
+              disabled={isAttachingDoc}
+              accessibilityLabel="Choose From Photos"
+              accessibilityRole="button"
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                padding: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: SereneColors.subtleBorder,
+                backgroundColor: SereneColors.surfaceContainerLowest,
+              }}
+              activeOpacity={0.7}
+            >
+              <View
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 10,
+                  backgroundColor: 'rgba(17,80,134,0.08)',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <MaterialIcons name="photo-library" size={22} color={SereneColors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}>
+                  Choose From Photos
+                </Text>
+                <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant, marginTop: 2 }}>
+                  Select existing photo from your library
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={SereneColors.outline} />
+            </TouchableOpacity>
+
+            {/* Option: Take Photo */}
+            <TouchableOpacity
+              onPress={() => handleSelectAttachOption('camera')}
+              disabled={isAttachingDoc}
+              accessibilityLabel="Take Photo"
+              accessibilityRole="button"
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                padding: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: SereneColors.subtleBorder,
+                backgroundColor: SereneColors.surfaceContainerLowest,
+              }}
+              activeOpacity={0.7}
+            >
+              <View
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 10,
+                  backgroundColor: 'rgba(17,80,134,0.08)',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <MaterialIcons name="photo-camera" size={22} color={SereneColors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurface }}>
+                  Take Photo
+                </Text>
+                <Text style={{ fontSize: 11, color: SereneColors.onSurfaceVariant, marginTop: 2 }}>
+                  Scan or photograph invoice with your camera
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={SereneColors.outline} />
+            </TouchableOpacity>
+
+            {/* Cancel Action */}
+            <TouchableOpacity
+              onPress={() => setShowAttachModal(false)}
+              accessibilityLabel="Cancel"
+              accessibilityRole="button"
+              style={{
+                marginTop: 4,
+                paddingVertical: 13,
+                borderRadius: 12,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: SereneColors.surfaceContainerLow,
+                borderWidth: 1,
+                borderColor: SereneColors.subtleBorder,
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={{ fontSize: 14, fontWeight: '600', color: SereneColors.onSurfaceVariant }}>
+                Cancel
+              </Text>
+            </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>

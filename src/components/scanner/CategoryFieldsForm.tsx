@@ -63,10 +63,11 @@ export const CategoryFieldsForm: React.FC<CategoryFieldsFormProps> = ({
                     onChangeField(fieldDef.key, text);
                   }
                 }}
-                placeholder={fieldDef.placeholder || `e.g. ${fieldDef.label}`}
+                placeholder={fieldDef.placeholder || `Enter ${fieldDef.label.toLowerCase()}`}
                 placeholderTextColor="#94A3B8"
                 keyboardType={fieldDef.type === 'number' ? 'numeric' : 'default'}
                 autoCapitalize={fieldDef.sensitive ? 'characters' : 'sentences'}
+                accessibilityLabel={fieldDef.label}
               />
 
               {fieldDef.hint && (

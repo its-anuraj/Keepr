@@ -76,8 +76,9 @@ export interface Item {
   quantity?: number; // Preserves quantity if > 1 (e.g. 2)
   unitPrice?: number; // Price per unit before quantity
   photoUri?: string; // Product / Item photo (visual representation)
-  imageUrl?: string; // Compatible alias for photoUri
-  productPhotos?: string[]; // Multiple product photos (camera/gallery)
+  imageUrl?: string; // Compatible alias for photoUri / durable storage reference
+  imageStoragePath?: string; // Durable Supabase Storage path in 'item-images' (e.g. userId/items/itemId/photo_0.jpg)
+  productPhotos?: string[]; // Multiple product photos (camera/gallery or storage paths)
   notes?: string;
   status: ItemStatus;
 

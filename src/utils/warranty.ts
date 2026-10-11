@@ -159,9 +159,10 @@ export function getRemainingWarrantyDays(
   endDateStr: string,
   referenceDate: Date = new Date()
 ): number {
+  if (!endDateStr) return NaN;
   const endDate = parseFlexibleDate(endDateStr);
   if (!endDate || isNaN(endDate.getTime())) {
-    return 0;
+    return NaN;
   }
 
   // Normalize reference date to start of day for deterministic comparison
@@ -189,10 +190,76 @@ export function getRemainingWarrantyDays(
  */
 export function getWarrantyStatus(endDateStr?: string | null): WarrantyStatus {
   if (!endDateStr) return 'none';
+  const parsedDate = parseFlexibleDate(endDateStr);
+  if (!parsedDate || isNaN(parsedDate.getTime())) return 'none';
   const remainingDays = getRemainingWarrantyDays(endDateStr);
+  if (isNaN(remainingDays)) return 'none';
   if (remainingDays < 0) return 'expired';
   if (remainingDays <= 30) return 'expiring_soon';
   return 'active';
+}
+
+/**
+ * Checks if an item has a genuine warranty ending between today and 30 days (0 to 30 days inclusive).
+ * Excludes missing, invalid, or expired warranty dates.
+ */
+export function isWarrantyEndingSoon(
+  item: {
+    id: string;
+    categoryId?: string | null;
+    category?: any;
+    productType?: string | null;
+    warrantyUntil?: string | null;
+  },
+  warrantyEndDate?: string | null,
+  referenceDate: Date = new Date()
+): boolean {
+  const resolvedEnd = warrantyEndDate || item.warrantyUntil || null;
+  if (!resolvedEnd || typeof resolvedEnd !== 'string' || !resolvedEnd.trim()) return false;
+
+  const parsedDate = parseFlexibleDate(resolvedEnd);
+  if (!parsedDate || isNaN(parsedDate.getTime())) return false;
+
+  const caps = getCategoryCapabilities(
+    item.categoryId || item.category,
+    item.productType,
+    true
+  );
+  if (!caps.warrantySupported) return false;
+
+  const days = getRemainingWarrantyDays(resolvedEnd, referenceDate);
+  return days >= 0 && days <= 30;
+}
+
+/**
+ * Checks if an item has a genuine return window ending between today and 30 days (0 to 30 days inclusive).
+ * Excludes missing, invalid, or expired return dates.
+ */
+export function isReturnEndingSoon(
+  item: {
+    id: string;
+    categoryId?: string | null;
+    category?: any;
+    productType?: string | null;
+    returnUntil?: string | null;
+  },
+  referenceDate: Date = new Date()
+): boolean {
+  if (!item.returnUntil || typeof item.returnUntil !== 'string' || !item.returnUntil.trim()) return false;
+
+  const parsedDate = parseFlexibleDate(item.returnUntil);
+  if (!parsedDate || isNaN(parsedDate.getTime())) return false;
+
+  const caps = getCategoryCapabilities(
+    item.categoryId || item.category,
+    item.productType,
+    false,
+    true
+  );
+  if (!caps.returnSupported) return false;
+
+  const days = getRemainingReturnDays(item.returnUntil, referenceDate);
+  return days >= 0 && days <= 30;
 }
 
 /**
@@ -227,7 +294,7 @@ export function getWarrantyProgressPercent(
  *
  * States:
  * - Active: "● 2758d warranty left"
- * - Ending soon: "● Warranty ending soon"
+ * - Ending soon: "● 12d warranty left"
  * - Ends today: "● Warranty ends today"
  * - Expired: "● Warranty expired" (Never generic "Expired")
  * - Missing: "● No warranty" (When applicable) or suppressed
@@ -259,13 +326,32 @@ export function formatWarrantyBadge(
     };
   }
 
+  const parsedDate = parseFlexibleDate(endDateStr);
+  if (!parsedDate || isNaN(parsedDate.getTime())) {
+    return {
+      status: 'none',
+      label: isApplicable ? 'No warranty' : '',
+      subtext: isApplicable ? 'Add protection plan' : '',
+      daysRemaining: 0,
+    };
+  }
+
   const days = getRemainingWarrantyDays(endDateStr);
+
+  if (isNaN(days)) {
+    return {
+      status: 'none',
+      label: isApplicable ? 'No warranty' : '',
+      subtext: isApplicable ? 'Add protection plan' : '',
+      daysRemaining: 0,
+    };
+  }
 
   if (days < 0) {
     const expiredDaysAgo = Math.abs(days);
     return {
       status: 'expired',
-      label: 'Warranty expired',
+      label: 'Warranty ended',
       subtext: `Expired ${expiredDaysAgo}d ago`,
       daysRemaining: days,
     };
@@ -283,7 +369,7 @@ export function formatWarrantyBadge(
   if (days <= 30) {
     return {
       status: 'expiring_soon',
-      label: 'Warranty ending soon',
+      label: days === 1 ? '1d warranty left' : `${days}d warranty left`,
       subtext: `${days} days left`,
       daysRemaining: days,
     };
@@ -308,7 +394,7 @@ export function getRemainingReturnDays(
 ): number {
   if (!returnUntilStr) return 0;
   const returnDate = parseFlexibleDate(returnUntilStr);
-  if (!returnDate || isNaN(returnDate.getTime())) return 0;
+  if (!returnDate || isNaN(returnDate.getTime())) return NaN;
 
   const refStart = new Date(
     referenceDate.getFullYear(),
@@ -334,7 +420,10 @@ export function getRemainingReturnDays(
  */
 export function getReturnStatus(returnUntilStr?: string | null): ReturnStatus {
   if (!returnUntilStr) return 'none';
+  const parsedDate = parseFlexibleDate(returnUntilStr);
+  if (!parsedDate || isNaN(parsedDate.getTime())) return 'none';
   const remaining = getRemainingReturnDays(returnUntilStr);
+  if (isNaN(remaining)) return 'none';
   if (remaining < 0) return 'expired';
   if (remaining <= 3) return 'expiring_soon';
   return 'active';
@@ -347,7 +436,7 @@ export function getReturnStatus(returnUntilStr?: string | null): ReturnStatus {
  * - No return date: "No return date"
  * - Active: "X days left" or "Xd return left"
  * - Ends today: "Return ends today"
- * - Expired: "Return period ended" (Never "Expired")
+ * - Expired: "Return ended" (Never "Expired")
  */
 export function formatReturnBadge(returnUntilStr?: string | null): {
   status: ReturnStatus;
@@ -364,13 +453,32 @@ export function formatReturnBadge(returnUntilStr?: string | null): {
     };
   }
 
+  const parsedDate = parseFlexibleDate(returnUntilStr);
+  if (!parsedDate || isNaN(parsedDate.getTime())) {
+    return {
+      status: 'none',
+      label: 'No return date',
+      subtext: '',
+      daysRemaining: 0,
+    };
+  }
+
   const days = getRemainingReturnDays(returnUntilStr);
+
+  if (isNaN(days)) {
+    return {
+      status: 'none',
+      label: 'No return date',
+      subtext: '',
+      daysRemaining: 0,
+    };
+  }
 
   if (days < 0) {
     const expiredDaysAgo = Math.abs(days);
     return {
       status: 'expired',
-      label: 'Return period ended',
+      label: 'Return ended',
       subtext: `Ended ${expiredDaysAgo}d ago`,
       daysRemaining: days,
     };
@@ -496,8 +604,12 @@ export function getDeadlineStatus(
 
       if (returnDaysRemaining < 0) {
         isReturnExpired = true;
+        hasUpcomingReturn = false;
+        returnStatusText = 'Return ended';
+        returnBadgeText = 'Return ended';
       } else if (returnDaysRemaining <= 7) {
         hasUpcomingReturn = true;
+        isReturnExpired = false;
         if (returnDaysRemaining === 0) {
           returnStatusText = 'Return ends today';
           returnBadgeText = 'Return ends today';
@@ -508,6 +620,11 @@ export function getDeadlineStatus(
           returnStatusText = `Return ends in ${returnDaysRemaining} days`;
           returnBadgeText = `Return: ${returnDaysRemaining} days left`;
         }
+      } else {
+        hasUpcomingReturn = false;
+        isReturnExpired = false;
+        returnStatusText = `${returnDaysRemaining} days remaining`;
+        returnBadgeText = `Return: ${returnDaysRemaining} days left`;
       }
 
       const returnMilestones = [7, 3, 1, 0];
@@ -558,8 +675,12 @@ export function getDeadlineStatus(
 
       if (warrantyDaysRemaining < 0) {
         isWarrantyExpired = true;
+        hasUpcomingWarranty = false;
+        warrantyStatusText = 'Warranty ended';
+        warrantyBadgeText = 'Warranty ended';
       } else if (warrantyDaysRemaining <= 30) {
         hasUpcomingWarranty = true;
+        isWarrantyExpired = false;
         if (warrantyDaysRemaining === 0) {
           warrantyStatusText = 'Warranty ends today';
           warrantyBadgeText = 'Warranty ends today';
@@ -570,6 +691,11 @@ export function getDeadlineStatus(
           warrantyStatusText = `Warranty ends in ${warrantyDaysRemaining} days`;
           warrantyBadgeText = `Warranty: ${warrantyDaysRemaining} days left`;
         }
+      } else {
+        hasUpcomingWarranty = false;
+        isWarrantyExpired = false;
+        warrantyStatusText = `${warrantyDaysRemaining} days remaining`;
+        warrantyBadgeText = `Warranty: ${warrantyDaysRemaining} days left`;
       }
 
       const warrantyMilestones = [30, 7, 3, 1, 0];

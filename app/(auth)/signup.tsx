@@ -103,7 +103,7 @@ export default function SignupScreen() {
                 />
                 <TextInput
                   className="flex-1 text-[14px] text-serene-on-surface"
-                  placeholder="Enter your name"
+                  placeholder="Enter your full name"
                   placeholderTextColor={SereneColors.outline}
                   value={fullName}
                   onChangeText={(t) => {
@@ -111,6 +111,7 @@ export default function SignupScreen() {
                     setFormError(null);
                   }}
                   autoCapitalize="words"
+                  accessibilityLabel="Full name"
                 />
               </View>
             </View>
@@ -126,7 +127,7 @@ export default function SignupScreen() {
                 />
                 <TextInput
                   className="flex-1 text-[14px] text-serene-on-surface"
-                  placeholder="Enter your email"
+                  placeholder="Enter your email address"
                   placeholderTextColor={SereneColors.outline}
                   value={email}
                   onChangeText={(t) => {
@@ -136,6 +137,7 @@ export default function SignupScreen() {
                   autoCapitalize="none"
                   keyboardType="email-address"
                   autoComplete="email"
+                  accessibilityLabel="Email address"
                 />
               </View>
             </View>
@@ -160,6 +162,7 @@ export default function SignupScreen() {
                   }}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
+                  accessibilityLabel="Vault password"
                 />
                 <TouchableOpacity
                   onPress={() => setShowPassword(!showPassword)}

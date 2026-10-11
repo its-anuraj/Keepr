@@ -7,7 +7,13 @@ import {
   VaultMetrics,
   Warranty,
 } from '../types';
-import { getWarrantyStatus, getReturnStatus, getCategoryCapabilities } from './warranty';
+import {
+  getWarrantyStatus,
+  getReturnStatus,
+  getCategoryCapabilities,
+  isWarrantyEndingSoon,
+  isReturnEndingSoon,
+} from './warranty';
 
 /**
  * Computes live portfolio metrics across all cataloged items and documents.
@@ -19,7 +25,9 @@ export function calculateVaultMetrics(
   expenses: Expense[],
   documents: VaultDocument[] = []
 ): VaultMetrics {
-  const activeItems = items.filter((i) => i.status !== 'disposed');
+  const activeItems = items.filter(
+    (i) => i && i.id && i.status !== 'disposed' && (i.status as string) !== 'deleted'
+  );
 
   const totalReplacementValue = activeItems.reduce(
     (sum, i) => sum + (Number(i.purchasePrice) || 0),
@@ -29,19 +37,24 @@ export function calculateVaultMetrics(
   let activeWarrantiesCount = 0;
   let expiringWarrantiesCount = 0;
 
-  for (const w of warranties) {
-    const item = items.find((i) => i.id === w.itemId);
-    if (item) {
-      const caps = getCategoryCapabilities(item.categoryId || item.category, item.productType, Boolean(w.endDate));
-      if (!caps.warrantySupported) continue;
+  for (const item of activeItems) {
+    const w = warranties.find((warranty) => warranty.itemId === item.id);
+    const effectiveWarrantyEnd = item.warrantyUntil || w?.endDate;
+    if (effectiveWarrantyEnd) {
+      const caps = getCategoryCapabilities(
+        item.categoryId || item.category,
+        item.productType,
+        true
+      );
+      if (caps.warrantySupported) {
+        const status = getWarrantyStatus(effectiveWarrantyEnd);
+        if (status === 'active' || status === 'expiring_soon') {
+          activeWarrantiesCount++;
+        }
+      }
     }
-
-    const status = getWarrantyStatus(w.endDate);
-    if (status === 'active') {
-      activeWarrantiesCount++;
-    } else if (status === 'expiring_soon') {
+    if (isWarrantyEndingSoon(item, w?.endDate)) {
       expiringWarrantiesCount++;
-      activeWarrantiesCount++; // Expiring soon is still technically active
     }
   }
 
@@ -65,19 +78,16 @@ export function calculateVaultMetrics(
   ).padStart(2, '0')}`;
 
   const eventsThisMonth =
-    items.filter((i) => i.createdAt.startsWith(currentYearMonth)).length +
-    expenses.filter((e) => e.expenseDate.startsWith(currentYearMonth)).length +
+    items.filter((i) => i.createdAt && i.createdAt.startsWith(currentYearMonth)).length +
+    expenses.filter((e) => e.expenseDate && e.expenseDate.startsWith(currentYearMonth)).length +
     maintenanceRecords.filter((m) =>
-      m.serviceDate.startsWith(currentYearMonth)
+      m.serviceDate && m.serviceDate.startsWith(currentYearMonth)
     ).length;
 
   let returnsEndingSoon = 0;
   for (const item of activeItems) {
-    if (item.returnUntil) {
-      const returnStatus = getReturnStatus(item.returnUntil);
-      if (returnStatus === 'expiring_soon') {
-        returnsEndingSoon++;
-      }
+    if (isReturnEndingSoon(item)) {
+      returnsEndingSoon++;
     }
   }
 

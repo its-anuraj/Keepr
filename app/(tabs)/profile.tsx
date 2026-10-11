@@ -27,7 +27,35 @@ export default function ProfileScreen() {
   const [docNotifs, setDocNotifs] = useState(true);
   const [showReportsModal, setShowReportsModal] = useState(false);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    const userId = user?.id;
+    let pendingCount = 0;
+    if (userId) {
+      try {
+        const { getPendingUserSyncOpsCount } = require('../../src/services/syncQueueService');
+        pendingCount = await getPendingUserSyncOpsCount(userId);
+      } catch {}
+    }
+
+    if (pendingCount > 0) {
+      Alert.alert(
+        'Unsynced Changes',
+        `You have ${pendingCount} unsynced change${pendingCount > 1 ? 's' : ''}. They remain safely stored on this device for your account, but will not sync to the cloud until you sign in again with network access.`,
+        [
+          { text: 'Wait & Stay Signed In', style: 'cancel' },
+          {
+            text: 'Sign Out Anyway',
+            style: 'destructive',
+            onPress: async () => {
+              await signOut();
+              router.replace('/(auth)/welcome');
+            },
+          },
+        ]
+      );
+      return;
+    }
+
     Alert.alert(
       'Sign Out of Vault',
       'Are you sure you want to sign out? Your stored items and receipts remain in your private vault.',

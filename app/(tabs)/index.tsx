@@ -42,8 +42,9 @@ export default function VaultDashboardScreen() {
   const getItemById = useItemStore((s) => s.getItemById);
   const getVaultMetrics = useItemStore((s) => s.getVaultMetrics);
   const getRecentlyAdded = useItemStore((s) => s.getRecentlyAdded);
+  const isLoading = useItemStore((s) => s.isLoading);
 
-  const metrics = useMemo(() => getVaultMetrics(), [items, documents, warranties, getVaultMetrics]);
+  const metrics = useMemo(() => getVaultMetrics(), [items, documents, warranties, getVaultMetrics, user?.id]);
 
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
@@ -71,14 +72,14 @@ export default function VaultDashboardScreen() {
       const warrantyForThisItem = warranties.find((w) => w.itemId === item.id);
       const status = getDeadlineStatus(item, warrantyForThisItem?.endDate);
 
-      if (status.hasUpcomingReturn) {
+      if (status.hasUpcomingReturn && !status.isReturnExpired && status.returnDaysRemaining >= 0) {
         list.push({
           id: `urgent-return-${item.id}`,
           itemId: item.id,
           type: 'return',
           urgentLabel:
             status.returnDaysRemaining === 0
-              ? 'Return Ends Today!'
+              ? 'Return Ends Today'
               : `Return Ends in ${status.returnDaysRemaining}d`,
           title: item.name,
           subtitle: `Return deadline: ${formatDate(item.returnUntil)}`,
@@ -87,14 +88,14 @@ export default function VaultDashboardScreen() {
         });
       }
 
-      if (status.hasUpcomingWarranty) {
+      if (status.hasUpcomingWarranty && !status.isWarrantyExpired && status.warrantyDaysRemaining >= 0) {
         list.push({
           id: `urgent-war-${warrantyForThisItem?.id || item.id}`,
           itemId: item.id,
           type: 'warranty',
           urgentLabel:
             status.warrantyDaysRemaining === 0
-              ? 'Warranty Expires Today'
+              ? 'Warranty Ends Today'
               : `Expires in ${status.warrantyDaysRemaining}d`,
           title: item.name,
           subtitle: `${warrantyForThisItem?.provider || 'Warranty'} Expiry`,
@@ -251,7 +252,15 @@ export default function VaultDashboardScreen() {
           <TouchableOpacity
             className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between"
             activeOpacity={0.85}
-            onPress={() => router.push('/(tabs)/items')}
+            onPress={() =>
+              router.push({
+                pathname: '/(tabs)/items',
+                params: { filter: 'all', t: Date.now().toString() },
+              } as any)
+            }
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`Total items: ${metrics.totalItems}`}
           >
             <View className="w-7 h-7 rounded-serene-md bg-serene-surface-container-highest items-center justify-center mb-1">
               <MaterialIcons name="inventory-2" size={15} color={SereneColors.primary} />
@@ -270,6 +279,9 @@ export default function VaultDashboardScreen() {
             className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between"
             activeOpacity={0.85}
             onPress={() => router.push('/(tabs)/documents')}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`Total documents: ${metrics.totalDocuments}`}
           >
             <View className="w-7 h-7 rounded-serene-md bg-blue-50 items-center justify-center mb-1">
               <MaterialIcons name="description" size={15} color={SereneColors.primary} />
@@ -284,7 +296,19 @@ export default function VaultDashboardScreen() {
             </View>
           </TouchableOpacity>
 
-          <View className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between">
+          <TouchableOpacity
+            className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between"
+            activeOpacity={0.85}
+            onPress={() =>
+              router.push({
+                pathname: '/(tabs)/items',
+                params: { filter: 'warranty_ending', t: Date.now().toString() },
+              } as any)
+            }
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`Warranties ending soon: ${metrics.warrantiesEndingSoon}`}
+          >
             <View className="w-7 h-7 rounded-serene-md bg-rose-50 items-center justify-center mb-1">
               <MaterialIcons name="verified-user" size={15} color={SereneColors.error} />
             </View>
@@ -296,9 +320,21 @@ export default function VaultDashboardScreen() {
                 Warranty{'\n'}ending
               </Text>
             </View>
-          </View>
+          </TouchableOpacity>
 
-          <View className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between">
+          <TouchableOpacity
+            className="flex-1 bg-serene-surface-container-lowest px-1.5 py-2.5 rounded-serene-xl border border-serene-subtle-border shadow-sm min-h-[100px] justify-between"
+            activeOpacity={0.85}
+            onPress={() =>
+              router.push({
+                pathname: '/(tabs)/items',
+                params: { filter: 'return_ending', t: Date.now().toString() },
+              } as any)
+            }
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`Returns ending soon: ${metrics.returnsEndingSoon}`}
+          >
             <View className="w-7 h-7 rounded-serene-md bg-amber-50 items-center justify-center mb-1">
               <MaterialIcons name="assignment-return" size={15} color="#D97706" />
             </View>
@@ -310,7 +346,7 @@ export default function VaultDashboardScreen() {
                 Return{'\n'}ending
               </Text>
             </View>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <View className="gap-1.5">
@@ -388,7 +424,12 @@ export default function VaultDashboardScreen() {
               <View className="flex-row items-center gap-2">
                 <TouchableOpacity
                   className="flex-row items-center gap-0.5"
-                  onPress={() => router.push('/(tabs)/items')}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/(tabs)/items',
+                      params: { filter: 'all', t: Date.now().toString() },
+                    } as any)
+                  }
                 >
                   <Text className="text-xs font-semibold text-serene-primary">
                     Items ({metrics.totalItems})
@@ -427,7 +468,7 @@ export default function VaultDashboardScreen() {
                         index < visibleEntries.length - 1 ? 'border-b border-serene-subtle-border/60' : ''
                       }`}
                     >
-                      <View className="relative">
+                      <View className="relative shrink-0">
                         {entry.thumbnail ? (
                           <Image
                             source={{ uri: entry.thumbnail }}
@@ -449,7 +490,7 @@ export default function VaultDashboardScreen() {
                         )}
                       </View>
 
-                      <View className="flex-1 justify-center">
+                      <View className="flex-1 min-w-0 justify-center">
                         <View className="flex-row items-center gap-1.5 mb-1 flex-wrap">
                           <View
                             className={`px-1.5 py-0.5 rounded-full flex-row items-center gap-1 ${
@@ -481,7 +522,7 @@ export default function VaultDashboardScreen() {
                           )}
 
                           {entry.relatedItemName && (
-                            <View className="px-1.5 py-0.5 rounded-full bg-sky-50 border border-sky-200 flex-row items-center gap-0.5">
+                            <View className="px-1.5 py-0.5 rounded-full bg-sky-50 border border-sky-200 flex-row items-center gap-0.5 max-w-[140px]">
                               <MaterialIcons name="link" size={9} color="#0284C7" />
                               <Text className="text-[9px] font-medium text-sky-800" numberOfLines={1}>
                                 {entry.relatedItemName}
@@ -490,14 +531,15 @@ export default function VaultDashboardScreen() {
                           )}
                         </View>
 
-                        <Text className="text-[14px] font-bold text-serene-on-surface" numberOfLines={1}>
+                        <Text className="text-[14px] font-bold text-serene-on-surface leading-tight" numberOfLines={1}>
                           {entry.title}
                         </Text>
 
                         <View className="flex-row items-center gap-1 mt-0.5">
                           {entry.subtitle ? (
                             <Text
-                              className="text-[12px] font-medium text-serene-on-surface-variant"
+                              className="text-[12px] font-medium text-serene-on-surface-variant flex-1"
+                              style={{ flexShrink: 1 }}
                               numberOfLines={1}
                             >
                               {entry.subtitle}
@@ -505,14 +547,16 @@ export default function VaultDashboardScreen() {
                           ) : null}
                           {entry.date ? (
                             <>
-                              <Text className="text-[11px] text-serene-outline">·</Text>
-                              <Text className="text-[11px] text-serene-outline">{formatDate(entry.date)}</Text>
+                              <Text className="text-[11px] text-serene-outline shrink-0">·</Text>
+                              <Text className="text-[11px] text-serene-outline shrink-0">{formatDate(entry.date)}</Text>
                             </>
                           ) : null}
                         </View>
                       </View>
 
-                      <MaterialIcons name="chevron-right" size={18} color={SereneColors.onSurfaceVariant} />
+                      <View className="w-6 h-6 items-center justify-center shrink-0 ml-1">
+                        <MaterialIcons name="chevron-right" size={18} color={SereneColors.onSurfaceVariant} />
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
@@ -533,6 +577,16 @@ export default function VaultDashboardScreen() {
                     </Text>
                   </View>
                 )}
+              </View>
+            ) : isLoading ? (
+              <View className="items-center justify-center py-7 px-4">
+                <ActivityIndicator size="small" color={SereneColors.primary} />
+                <Text className="text-[15px] font-bold text-serene-on-surface text-center mt-2.5">
+                  Syncing your vault...
+                </Text>
+                <Text className="text-[12px] text-serene-on-surface-variant text-center mt-0.5">
+                  Loading your items and documents.
+                </Text>
               </View>
             ) : (
               <View className="items-center justify-center py-7 px-4">

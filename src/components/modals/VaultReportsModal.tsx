@@ -346,6 +346,7 @@ export function VaultReportsModal({ visible, onClose }: Props) {
                       placeholderTextColor={SereneColors.outline}
                       maxLength={10}
                       autoCorrect={false}
+                      accessibilityLabel="Start date (YYYY-MM-DD)"
                     />
                   </View>
                   {dateFrom && !isDateInputValid(dateFrom) && (
@@ -372,6 +373,7 @@ export function VaultReportsModal({ visible, onClose }: Props) {
                       placeholderTextColor={SereneColors.outline}
                       maxLength={10}
                       autoCorrect={false}
+                      accessibilityLabel="End date (YYYY-MM-DD)"
                     />
                   </View>
                   {dateTo && !isDateInputValid(dateTo) && (
