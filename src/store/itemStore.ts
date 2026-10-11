@@ -56,13 +56,20 @@ import {
   mapItemToDbRow,
   mapDocumentToDbRow,
   mapMaintenanceToDbRow,
+  mapWarrantyToDbRow,
+  mapReceiptToDbRow,
 } from '../services/cloudSyncService';
 import {
   uploadItemPhoto,
+  uploadItemReceipt,
+  uploadVaultDocument,
   deleteItemPhotosFromStorage,
   isStoragePath,
 } from '../services/storageService';
-import { reconcileAndMigrateItemImages } from '../services/offlineMigrationService';
+import {
+  reconcileAndMigrateItemImages,
+  reconcileAndMigrateReceiptsAndDocuments,
+} from '../services/offlineMigrationService';
 import { reconcileNotificationsAfterHydration } from '../services/notificationReconciliationService';
 import {
   enqueueSyncOperation,
@@ -336,27 +343,54 @@ interface ItemState {
   clearUserData: () => void;
 }
 
-/** User-scoped backup key prefix to prevent data loss across logout/login */
+/** Full User-scoped vault backup to prevent data loss across logout/login and query failures */
 const USER_BACKUP_KEY_PREFIX = '@keepr_vault_backup_v1_';
 
-export async function saveUserVaultBackup(userId: string, items: Item[]): Promise<void> {
-  if (!userId || !Array.isArray(items) || items.length === 0) return;
+export interface UserVaultBackup {
+  items: Item[];
+  documents?: VaultDocument[];
+  warranties?: Warranty[];
+  receipts?: Receipt[];
+  maintenanceRecords?: MaintenanceRecord[];
+  expenses?: Expense[];
+  activityLogs?: ActivityLog[];
+}
+
+export async function saveUserVaultBackup(
+  userId: string,
+  backupOrItems: Item[] | UserVaultBackup
+): Promise<void> {
+  if (!userId) return;
   try {
     const key = `${USER_BACKUP_KEY_PREFIX}${userId}`;
-    await AsyncStorage.setItem(key, JSON.stringify(items));
+    const payload: UserVaultBackup = Array.isArray(backupOrItems)
+      ? { items: backupOrItems }
+      : backupOrItems;
+    await AsyncStorage.setItem(key, JSON.stringify(payload));
   } catch (err) {
     console.warn('[ItemStore] saveUserVaultBackup note:', err);
   }
 }
 
-export async function getUserVaultBackup(userId: string): Promise<Item[] | null> {
+export async function getUserVaultBackup(userId: string): Promise<UserVaultBackup | null> {
   if (!userId) return null;
   try {
     const key = `${USER_BACKUP_KEY_PREFIX}${userId}`;
     const raw = await AsyncStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : null;
+    if (Array.isArray(parsed)) {
+      return {
+        items: parsed,
+        documents: [],
+        warranties: [],
+        receipts: [],
+        maintenanceRecords: [],
+        expenses: [],
+        activityLogs: [],
+      };
+    }
+    return parsed;
   } catch (err) {
     console.warn('[ItemStore] getUserVaultBackup note:', err);
     return null;
@@ -465,7 +499,7 @@ export const useItemStore = create<ItemState>()(
                 safeItems = currentState.items;
               } else {
                 const backup = await getUserVaultBackup(userId);
-                safeItems = (backup && backup.length > 0) ? backup : [];
+                safeItems = (backup && backup.items && backup.items.length > 0) ? backup.items : [];
               }
             } else if (cloudData.itemsMappingErrors > 0 && cloudData.items.length === 0 && cloudData.itemsRawCount > 0) {
               // All items failed mapping. This is NOT an empty vault!
@@ -475,7 +509,7 @@ export const useItemStore = create<ItemState>()(
                 safeItems = currentState.items;
               } else {
                 const backup = await getUserVaultBackup(userId);
-                safeItems = (backup && backup.length > 0) ? backup : [];
+                safeItems = (backup && backup.items && backup.items.length > 0) ? backup.items : [];
               }
             } else if (cloudData.items.length > 0) {
               // Successfully fetched items from cloud
@@ -496,59 +530,180 @@ export const useItemStore = create<ItemState>()(
                 };
               });
 
-              // Also preserve any local items that are pending sync or failed mapping
+              // Also preserve any local items that are pending sync or un-synced
               const pendingOrMissingLocalItems = currentState.items.filter(
                 (loc) => !mappedCloudIds.has(loc.id) && (pendingItemIds.has(loc.id) || loc.userId === userId)
               );
 
-              safeItems = [...mappedItems, ...pendingOrMissingLocalItems];
+              // Ensure any local-only un-synced items are enqueued for cloud upsert so they are never lost
+              for (const unSyncedItem of pendingOrMissingLocalItems) {
+                if (!pendingItemIds.has(unSyncedItem.id)) {
+                  cloudUpsertItem(unSyncedItem, userId).then((err) => {
+                    if (err) {
+                      enqueueSyncOperation({
+                        type: 'upsertItem',
+                        entityId: unSyncedItem.id,
+                        userId,
+                        payload: mapItemToDbRow(unSyncedItem, userId),
+                      }).catch(() => {});
+                    }
+                  }).catch(() => {});
+                }
+              }
 
-              // Save verified good items to user backup
-              saveUserVaultBackup(userId, safeItems).catch(() => {});
+              safeItems = [...mappedItems, ...pendingOrMissingLocalItems];
             } else {
               // Confirmed zero items from cloud (cloudData.itemsRawCount === 0 and itemsFetchError === false)
-              // If there are pending local items for this user, preserve them!
+              // If there are pending local items for this user, preserve them and enqueue!
               const pendingLocalItems = currentState.items.filter(
-                (loc) => pendingItemIds.has(loc.id) && (!loc.userId || loc.userId === userId)
+                (loc) => (pendingItemIds.has(loc.id) || loc.userId === userId) && (!loc.userId || loc.userId === userId)
               );
               if (pendingLocalItems.length > 0) {
                 safeItems = pendingLocalItems;
+                for (const unSyncedItem of pendingLocalItems) {
+                  if (!pendingItemIds.has(unSyncedItem.id)) {
+                    cloudUpsertItem(unSyncedItem, userId).then((err) => {
+                      if (err) {
+                        enqueueSyncOperation({
+                          type: 'upsertItem',
+                          entityId: unSyncedItem.id,
+                          userId,
+                          payload: mapItemToDbRow(unSyncedItem, userId),
+                        }).catch(() => {});
+                      }
+                    }).catch(() => {});
+                  }
+                }
               } else {
                 safeItems = [];
               }
             }
 
-            const safeWarranties = cloudData.warranties.length > 0
-              ? verifyOwnership(cloudData.warranties)
-              : currentState.warranties.length > 0 ? currentState.warranties : [];
+            // Helper to lazily load user backup on any query failure
+            let userBackup: UserVaultBackup | null = null;
+            const getOrLoadBackup = async () => {
+              if (!userBackup) userBackup = await getUserVaultBackup(userId);
+              return userBackup;
+            };
 
-            const safeDocs = cloudData.documents.length > 0
-              ? verifyOwnership(cloudData.documents).map((cloudDoc) => {
-                  const localDoc = currentState.documents.find((d) => d.id === cloudDoc.id);
-                  return {
-                    ...cloudDoc,
-                    filePath: localDoc?.filePath || cloudDoc.filePath,
-                    fileUrl: localDoc?.fileUrl || cloudDoc.fileUrl,
-                    storagePath: cloudDoc.storagePath || localDoc?.storagePath,
-                  };
-                })
-              : currentState.documents.length > 0 ? currentState.documents : [];
+            // Documents reconciliation with query failure protection
+            let safeDocs: VaultDocument[] = [];
+            if (cloudData.documentsFetchError) {
+              console.warn('[ItemStore] Cloud documents query failed. Preserving local state and user backup.');
+              if (currentState.documents.length > 0) {
+                safeDocs = currentState.documents;
+              } else {
+                const b = await getOrLoadBackup();
+                safeDocs = (b && b.documents && b.documents.length > 0) ? b.documents : [];
+              }
+            } else if (cloudData.documentsMappingErrors > 0 && cloudData.documents.length === 0 && cloudData.documentsRawCount > 0) {
+              console.warn('[ItemStore] All documents failed mapping! Preserving local documents and user backup.');
+              if (currentState.documents.length > 0) {
+                safeDocs = currentState.documents;
+              } else {
+                const b = await getOrLoadBackup();
+                safeDocs = (b && b.documents && b.documents.length > 0) ? b.documents : [];
+              }
+            } else if (cloudData.documents.length > 0) {
+              const cloudDocsOwned = verifyOwnership(cloudData.documents);
+              const mappedCloudIds = new Set(cloudDocsOwned.map((d) => d.id));
+              const mappedDocs = cloudDocsOwned.map((cloudDoc) => {
+                const localDoc = currentState.documents.find((d) => d.id === cloudDoc.id);
+                return {
+                  ...cloudDoc,
+                  filePath: localDoc?.filePath || cloudDoc.filePath,
+                  fileUrl: localDoc?.fileUrl || cloudDoc.fileUrl,
+                  storagePath: cloudDoc.storagePath || localDoc?.storagePath,
+                };
+              });
+              const pendingOrMissingLocalDocs = currentState.documents.filter(
+                (loc) => !mappedCloudIds.has(loc.id) && loc.userId === userId
+              );
+              safeDocs = [...mappedDocs, ...pendingOrMissingLocalDocs];
+            } else {
+              // Confirmed zero documents from cloud
+              const pendingLocalDocs = currentState.documents.filter((loc) => loc.userId === userId);
+              safeDocs = pendingLocalDocs.length > 0 ? pendingLocalDocs : [];
+            }
 
-            const safeReceipts = cloudData.receipts.length > 0
-              ? verifyOwnership(cloudData.receipts)
-              : currentState.receipts.length > 0 ? currentState.receipts : [];
+            // Warranties reconciliation with query failure protection
+            let safeWarranties: Warranty[] = [];
+            if (cloudData.warrantiesFetchError) {
+              console.warn('[ItemStore] Cloud warranties query failed. Preserving local warranties and backup.');
+              if (currentState.warranties.length > 0) {
+                safeWarranties = currentState.warranties;
+              } else {
+                const b = await getOrLoadBackup();
+                safeWarranties = (b && b.warranties && b.warranties.length > 0) ? b.warranties : [];
+              }
+            } else if (cloudData.warranties.length > 0) {
+              safeWarranties = verifyOwnership(cloudData.warranties);
+            } else {
+              safeWarranties = currentState.warranties.filter((w) => w.userId === userId);
+            }
 
-            const safeMaintenance = cloudData.maintenanceRecords.length > 0
-              ? verifyOwnership(cloudData.maintenanceRecords)
-              : currentState.maintenanceRecords.length > 0 ? currentState.maintenanceRecords : [];
+            // Receipts reconciliation with query failure protection
+            let safeReceipts: Receipt[] = [];
+            if (cloudData.receiptsFetchError) {
+              console.warn('[ItemStore] Cloud receipts query failed. Preserving local receipts and backup.');
+              if (currentState.receipts.length > 0) {
+                safeReceipts = currentState.receipts;
+              } else {
+                const b = await getOrLoadBackup();
+                safeReceipts = (b && b.receipts && b.receipts.length > 0) ? b.receipts : [];
+              }
+            } else if (cloudData.receipts.length > 0) {
+              safeReceipts = verifyOwnership(cloudData.receipts);
+            } else {
+              safeReceipts = currentState.receipts.filter((r) => r.userId === userId);
+            }
 
-            const safeExpenses = cloudData.expenses.length > 0
-              ? verifyOwnership(cloudData.expenses)
-              : currentState.expenses.length > 0 ? currentState.expenses : [];
+            // Maintenance records reconciliation with query failure protection
+            let safeMaintenance: MaintenanceRecord[] = [];
+            if (cloudData.maintenanceFetchError) {
+              console.warn('[ItemStore] Cloud maintenance query failed. Preserving local maintenance and backup.');
+              if (currentState.maintenanceRecords.length > 0) {
+                safeMaintenance = currentState.maintenanceRecords;
+              } else {
+                const b = await getOrLoadBackup();
+                safeMaintenance = (b && b.maintenanceRecords && b.maintenanceRecords.length > 0) ? b.maintenanceRecords : [];
+              }
+            } else if (cloudData.maintenanceRecords.length > 0) {
+              safeMaintenance = verifyOwnership(cloudData.maintenanceRecords);
+            } else {
+              safeMaintenance = currentState.maintenanceRecords.filter((m) => m.userId === userId);
+            }
+
+            // Expenses reconciliation with query failure protection
+            let safeExpenses: Expense[] = [];
+            if (cloudData.expensesFetchError) {
+              console.warn('[ItemStore] Cloud expenses query failed. Preserving local expenses and backup.');
+              if (currentState.expenses.length > 0) {
+                safeExpenses = currentState.expenses;
+              } else {
+                const b = await getOrLoadBackup();
+                safeExpenses = (b && b.expenses && b.expenses.length > 0) ? b.expenses : [];
+              }
+            } else if (cloudData.expenses.length > 0) {
+              safeExpenses = verifyOwnership(cloudData.expenses);
+            } else {
+              safeExpenses = currentState.expenses.filter((e) => e.userId === userId);
+            }
 
             const safeActivityLogs = cloudData.activityLogs.length > 0
               ? cloudData.activityLogs.filter((l) => !l.userId || l.userId === userId)
               : currentState.activityLogs.length > 0 ? currentState.activityLogs : [];
+
+            // Save verified complete vault to user backup
+            saveUserVaultBackup(userId, {
+              items: safeItems,
+              documents: safeDocs,
+              warranties: safeWarranties,
+              receipts: safeReceipts,
+              maintenanceRecords: safeMaintenance,
+              expenses: safeExpenses,
+              activityLogs: safeActivityLogs,
+            }).catch(() => {});
 
             // STALE CHECK 2: Re-verify before final set()
             const finalAuthUser = useAuthStore.getState().user;
@@ -587,6 +742,11 @@ export const useItemStore = create<ItemState>()(
             // POST-HYDRATION: Safely reconcile and migrate any device-local item photos to private Supabase Storage
             reconcileAndMigrateItemImages(userId, safeItems).catch((migErr) => {
               console.warn('[ItemStore] Post-hydration image reconciliation note:', migErr);
+            });
+
+            // POST-HYDRATION: Safely reconcile and migrate any device-local receipts and documents
+            reconcileAndMigrateReceiptsAndDocuments(userId).catch((migErr) => {
+              console.warn('[ItemStore] Post-hydration receipt/doc reconciliation note:', migErr);
             });
 
             // POST-HYDRATION: Reconcile notifications asynchronously.
@@ -629,13 +789,19 @@ export const useItemStore = create<ItemState>()(
         clearInFlightCloudHydrations();
         const userId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
 
-        // Save current items to isolated user backup BEFORE clearing in-memory state
+        // Save entire current vault state to isolated user backup BEFORE clearing in-memory state
         // so recoverable local data is not lost across logout/login
         if (userId) {
-          const currentItems = get().items;
-          if (currentItems.length > 0) {
-            saveUserVaultBackup(userId, currentItems).catch(() => {});
-          }
+          const currentState = get();
+          saveUserVaultBackup(userId, {
+            items: currentState.items,
+            documents: currentState.documents,
+            warranties: currentState.warranties,
+            receipts: currentState.receipts,
+            maintenanceRecords: currentState.maintenanceRecords,
+            expenses: currentState.expenses,
+            activityLogs: currentState.activityLogs,
+          }).catch(() => {});
         }
 
         // Cancel all scheduled notifications to prevent previous user's reminders from firing.
@@ -708,7 +874,7 @@ export const useItemStore = create<ItemState>()(
         const canonicalCatId = normalizeToDbCategoryId(params.categoryId);
 
         let persistentReceiptUri = params.receiptUri || params.initialDocumentUri;
-        let persistentStoragePath = params.receiptPath;
+        let persistentStoragePath = params.receiptPath && isStoragePath(params.receiptPath) ? params.receiptPath : undefined;
         if (persistentReceiptUri) {
           try {
             const persistRes = await persistReceiptToVault(
@@ -717,10 +883,30 @@ export const useItemStore = create<ItemState>()(
             );
             if (persistRes.persisted && persistRes.uri) {
               persistentReceiptUri = persistRes.uri;
-              persistentStoragePath = persistRes.storagePath || persistentStoragePath;
             }
           } catch (pErr) {
             console.warn('[ItemStore] Defensive receipt persistence note:', pErr);
+          }
+        }
+
+        // Upload receipt to private Supabase Storage (item-documents) with user-scoped path
+        if (persistentReceiptUri) {
+          if (isStoragePath(persistentReceiptUri)) {
+            persistentStoragePath = persistentReceiptUri;
+          } else if (userId && isSupabaseConfigured) {
+            try {
+              const uRes = await uploadItemReceipt(
+                userId,
+                id,
+                persistentReceiptUri,
+                params.receiptName || params.initialDocumentName || 'receipt.jpg'
+              );
+              if (uRes.storagePath) {
+                persistentStoragePath = uRes.storagePath;
+              }
+            } catch (uErr) {
+              console.warn('[ItemStore] Background receipt upload notice:', uErr);
+            }
           }
         }
 
@@ -804,11 +990,11 @@ export const useItemStore = create<ItemState>()(
         const isMulti = Boolean(params.products && params.products.length > 1);
         const pCount = params.products ? params.products.length : undefined;
 
-        const canonicalStoragePath =
-          persistentStoragePath ||
-          (persistentReceiptUri && persistentReceiptUri.includes('vault_receipts/')
-            ? `vault_receipts/${persistentReceiptUri.split('vault_receipts/')[1]}`
-            : undefined);
+        const canonicalStoragePath = (persistentStoragePath && isStoragePath(persistentStoragePath))
+          ? persistentStoragePath
+          : (params.receiptPath && isStoragePath(params.receiptPath))
+          ? params.receiptPath
+          : undefined;
 
         const cleanReceiptId = (params.receiptId && isValidUUID(params.receiptId)) ? params.receiptId : undefined;
 
@@ -820,7 +1006,7 @@ export const useItemStore = create<ItemState>()(
           productType: params.productType?.trim(),
           categoryConfidence: params.categoryConfidence,
           receiptId: cleanReceiptId,
-          receiptUri: persistentReceiptUri,
+          receiptUri: canonicalStoragePath || persistentReceiptUri,
           receiptPath: canonicalStoragePath,
           receiptName: params.receiptName || (persistentReceiptUri ? (isInvoice ? 'Invoice.jpg' : 'Receipt.jpg') : undefined),
           receiptType: determinedReceiptType,
@@ -953,15 +1139,16 @@ export const useItemStore = create<ItemState>()(
           throw new Error(`[ItemStore] Acceptance failure: Item ${id} not found in store after insert.`);
         }
 
-        if (isSupabaseConfigured && authUser?.id) {
-          cloudUpsertItem(newItem, authUser.id).then((err) => {
+        const effectiveUserId = authUser?.id || authSession?.user?.id || userId;
+        if (isSupabaseConfigured && effectiveUserId) {
+          cloudUpsertItem(newItem, effectiveUserId).then((err) => {
             if (err) {
               // Cloud sync failed — enqueue for retry when connectivity returns.
               enqueueSyncOperation({
                 type: 'upsertItem',
                 entityId: newItem.id,
-                userId: authUser.id,
-                payload: mapItemToDbRow(newItem, authUser.id),
+                userId: effectiveUserId,
+                payload: mapItemToDbRow(newItem, effectiveUserId),
               }).catch(() => {});
             }
           });
@@ -1006,11 +1193,34 @@ export const useItemStore = create<ItemState>()(
 
         const purchaseId = generateUUID();
 
+        // Upload shared receipt to private Supabase Storage (item-documents)
+        let durableReceiptStoragePath: string | undefined = undefined;
+        if (persistentReceiptUri) {
+          if (isStoragePath(persistentReceiptUri)) {
+            durableReceiptStoragePath = persistentReceiptUri;
+          } else if (userId && isSupabaseConfigured) {
+            try {
+              const uRes = await uploadItemReceipt(
+                userId,
+                purchaseId,
+                persistentReceiptUri,
+                receipt.fileName || (isInvoice ? 'Invoice.jpg' : 'Receipt.jpg')
+              );
+              if (uRes.storagePath) {
+                durableReceiptStoragePath = uRes.storagePath;
+              }
+            } catch (uErr) {
+              console.warn('[ItemStore] Multi-item receipt upload notice:', uErr);
+            }
+          }
+        }
+
         // 1. Single shared Receipt record
         const newReceipt: Receipt = {
           id: receiptId,
           userId,
-          fileUri: persistentReceiptUri,
+          fileUri: durableReceiptStoragePath || persistentReceiptUri,
+          storagePath: durableReceiptStoragePath,
           fileName: receipt.fileName || (isInvoice ? 'Invoice.jpg' : 'Receipt.jpg'),
           type: receiptType,
           merchant: receipt.merchant,
@@ -1134,7 +1344,8 @@ export const useItemStore = create<ItemState>()(
           productType: purchasedProducts[0]?.productType,
           categoryConfidence: 'high',
           receiptId,
-          receiptUri: persistentReceiptUri,
+          receiptUri: durableReceiptStoragePath || persistentReceiptUri,
+          receiptPath: durableReceiptStoragePath,
           receiptName: receipt.fileName || (isInvoice ? 'Invoice.jpg' : 'Receipt.jpg'),
           receiptType,
           purchaseDate,
@@ -1194,16 +1405,44 @@ export const useItemStore = create<ItemState>()(
           activityLogs: updatedLogs,
         });
 
-        if (isSupabaseConfigured && authUser?.id) {
-          const uid = authUser.id;
-          cloudUpsertReceipt(newReceipt, uid).catch((e) =>
+        const effectiveUserId = authUser?.id || authSession?.user?.id || userId;
+        if (isSupabaseConfigured && effectiveUserId) {
+          const uid = effectiveUserId;
+          cloudUpsertReceipt(newReceipt, uid).then((err) => {
+            if (err) {
+              enqueueSyncOperation({
+                type: 'upsertReceipt',
+                entityId: newReceipt.id,
+                userId: uid,
+                payload: mapReceiptToDbRow(newReceipt, uid),
+              }).catch(() => {});
+            }
+          }).catch((e) =>
             console.warn('[ItemStore] addMultipleItems receipt sync:', e)
           );
-          cloudUpsertItem(groupedItem, uid).catch((e) =>
+          cloudUpsertItem(groupedItem, uid).then((err) => {
+            if (err) {
+              enqueueSyncOperation({
+                type: 'upsertItem',
+                entityId: groupedItem.id,
+                userId: uid,
+                payload: mapItemToDbRow(groupedItem, uid),
+              }).catch(() => {});
+            }
+          }).catch((e) =>
             console.warn('[ItemStore] addMultipleItems item sync:', e)
           );
           for (const w of createdWarranties) {
-            cloudUpsertWarranty(w, uid).catch((e) =>
+            cloudUpsertWarranty(w, uid).then((err) => {
+              if (err) {
+                enqueueSyncOperation({
+                  type: 'upsertWarranty',
+                  entityId: w.id,
+                  userId: uid,
+                  payload: mapWarrantyToDbRow(w, uid),
+                }).catch(() => {});
+              }
+            }).catch((e) =>
               console.warn('[ItemStore] addMultipleItems warranty sync:', e)
             );
           }
@@ -1254,12 +1493,31 @@ export const useItemStore = create<ItemState>()(
         const authUser = useAuthStore.getState().user;
         const currentItem = get().items.find((i) => i.id === itemId);
         const userId = currentItem?.userId || authUser?.id || 'system';
-        const updatedReceiptPath =
-          updates.receiptPath !== undefined
-            ? updates.receiptPath
-            : updates.receiptUri && updates.receiptUri.includes('vault_receipts/')
-            ? `vault_receipts/${updates.receiptUri.split('vault_receipts/')[1]}`
-            : currentItem?.receiptPath;
+        let updatedReceiptPath = updates.receiptPath && isStoragePath(updates.receiptPath)
+          ? updates.receiptPath
+          : currentItem?.receiptPath && isStoragePath(currentItem.receiptPath)
+          ? currentItem.receiptPath
+          : undefined;
+
+        if (updates.receiptUri) {
+          if (isStoragePath(updates.receiptUri)) {
+            updatedReceiptPath = updates.receiptUri;
+          } else if (userId && isSupabaseConfigured) {
+            try {
+              const uRes = await uploadItemReceipt(
+                userId,
+                itemId,
+                updates.receiptUri,
+                updates.receiptName || currentItem?.receiptName || 'receipt.jpg'
+              );
+              if (uRes.storagePath) {
+                updatedReceiptPath = uRes.storagePath;
+              }
+            } catch (uErr) {
+              console.warn('[ItemStore] updateItem receipt upload notice:', uErr);
+            }
+          }
+        }
 
         let updatedPhotos = updates.productPhotos;
         let updatedStoragePath = updates.imageStoragePath ?? currentItem?.imageStoragePath;
@@ -1305,6 +1563,7 @@ export const useItemStore = create<ItemState>()(
         const finalUpdates: Partial<Item> = {
           ...updates,
           receiptPath: updatedReceiptPath,
+          receiptUri: updatedReceiptPath || updates.receiptUri || currentItem?.receiptUri,
           imageStoragePath: updatedStoragePath,
           imageUrl: updatedStoragePath || updates.imageUrl || currentItem?.imageUrl,
           productPhotos: updatedPhotos ?? currentItem?.productPhotos,
@@ -1386,16 +1645,17 @@ export const useItemStore = create<ItemState>()(
 
         set({ items: updated, warranties: updatedWarranties, documents: updatedDocuments });
 
-        if (isSupabaseConfigured && authUser?.id) {
+        const effectiveUserId = authUser?.id || useAuthStore.getState().session?.user?.id || userId;
+        if (isSupabaseConfigured && effectiveUserId) {
           const updatedItem = get().items.find((i) => i.id === itemId);
           if (updatedItem) {
-            cloudUpsertItem(updatedItem, authUser.id).then((err) => {
+            cloudUpsertItem(updatedItem, effectiveUserId).then((err) => {
               if (err) {
                 enqueueSyncOperation({
                   type: 'upsertItem',
                   entityId: updatedItem.id,
-                  userId: authUser.id,
-                  payload: mapItemToDbRow(updatedItem, authUser.id),
+                  userId: effectiveUserId,
+                  payload: mapItemToDbRow(updatedItem, effectiveUserId),
                 }).catch(() => {});
               }
             }).catch((e) => {
@@ -1801,12 +2061,34 @@ export const useItemStore = create<ItemState>()(
         const fileSizeBytes = docData.fileSizeBytes || 0;
         const filePath = docData.filePath || docData.fileUrl || '';
         const mimeType = docData.mimeType || (docData.fileUrl?.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+
+        let durableStoragePath = docData.storagePath && isStoragePath(docData.storagePath) ? docData.storagePath : undefined;
+        if (filePath && !durableStoragePath && !isStoragePath(filePath) && isSupabaseConfigured && userId) {
+          try {
+            const uploadRes = await uploadVaultDocument(
+              userId,
+              docId,
+              filePath,
+              validItemId,
+              docData.name || docData.title || 'document',
+              ''
+            );
+            if (uploadRes.storagePath) {
+              durableStoragePath = uploadRes.storagePath;
+            }
+          } catch (uErr) {
+            console.warn('[itemStore] addDocument storage upload note:', uErr);
+          }
+        }
+
         const newDoc: VaultDocument = {
           ...docData,
           id: docId,
           itemId: validItemId,
           userId,
-          filePath,
+          filePath: durableStoragePath || filePath,
+          fileUrl: durableStoragePath || docData.fileUrl || filePath,
+          storagePath: durableStoragePath,
           mimeType,
           fileSizeBytes,
           title,
@@ -1862,9 +2144,37 @@ export const useItemStore = create<ItemState>()(
         const current = get().documents.find((d) => d.id === documentId);
         if (!current) return;
 
+        let durableStoragePath = updates.storagePath && isStoragePath(updates.storagePath)
+          ? updates.storagePath
+          : current.storagePath && isStoragePath(current.storagePath)
+          ? current.storagePath
+          : undefined;
+
+        const candidateFilePath = updates.filePath || updates.fileUrl;
+        if (candidateFilePath && !isStoragePath(candidateFilePath) && isSupabaseConfigured && current.userId) {
+          try {
+            const uploadRes = await uploadVaultDocument(
+              current.userId,
+              documentId,
+              candidateFilePath,
+              updates.itemId !== undefined ? updates.itemId : current.itemId,
+              updates.title || current.title,
+              ''
+            );
+            if (uploadRes.storagePath) {
+              durableStoragePath = uploadRes.storagePath;
+            }
+          } catch (uErr) {
+            console.warn('[itemStore] updateDocument storage upload note:', uErr);
+          }
+        }
+
         const updatedDoc: VaultDocument = {
           ...current,
           ...updates,
+          storagePath: durableStoragePath,
+          filePath: durableStoragePath || updates.filePath || current.filePath,
+          fileUrl: durableStoragePath || updates.fileUrl || current.fileUrl,
           title: updates.title || updates.name || current.title,
           name: updates.title || updates.name || current.title,
           updatedAt: now,
@@ -1965,7 +2275,7 @@ export const useItemStore = create<ItemState>()(
       },
 
       getRecentlyAdded: (limit = 20) => {
-        const currentUserId = useAuthStore.getState().user?.id;
+        const currentUserId = useAuthStore.getState().user?.id || useAuthStore.getState().session?.user?.id;
 
         const rawItems = get().items || [];
         const validItems = rawItems.filter((item) => {
@@ -2008,7 +2318,11 @@ export const useItemStore = create<ItemState>()(
             createdAt: item.createdAt || new Date().toISOString(),
             price: item.purchasePrice,
             currency: item.currency || 'INR',
-            thumbnail: item.photoUri || item.imageUrl || null,
+            thumbnail:
+              item.imageStoragePath ||
+              item.imageUrl ||
+              item.photoUri ||
+              (item.productPhotos && item.productPhotos.length > 0 ? item.productPhotos[0] : null),
             date: item.purchaseDate || null,
             item,
           };
@@ -2032,7 +2346,7 @@ export const useItemStore = create<ItemState>()(
             createdAt: doc.createdAt || new Date().toISOString(),
             amount: doc.amount,
             currency: doc.currency || 'INR',
-            thumbnail: doc.fileUrl || null,
+            thumbnail: doc.storagePath || doc.filePath || doc.fileUrl || null,
             date: doc.documentDate || null,
             expiryDate: doc.expiryDate || null,
             dueDate: doc.dueDate || null,

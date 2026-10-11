@@ -231,21 +231,41 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
       const dbImg = row.image_url as string | undefined;
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
-      return dbImg || undefined;
+      const rawPhotos = normalizeProductPhotos(row.product_photos);
+      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      if (photoStorage) return photoStorage;
+      if (dbImg) return dbImg;
+      if (rawPhotos[0]) return rawPhotos[0];
+      return undefined;
     })(),
     imageStoragePath: (() => {
       const dbStorage = row.image_storage_path as string | undefined;
       const dbImg = row.image_url as string | undefined;
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
+      const rawPhotos = normalizeProductPhotos(row.product_photos);
+      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      if (photoStorage) return photoStorage;
       return undefined;
     })(),
     status: (row.status as Item['status']) || 'active',
     receiptId: (row.receipt_id && typeof row.receipt_id === 'string' && isValidUUID(row.receipt_id))
       ? row.receipt_id
       : undefined,
-    receiptUri: (row.receipt_uri as string) || undefined,
-    receiptPath: (row.receipt_path as string) || undefined,
+    receiptUri: (() => {
+      const rPath = row.receipt_path as string | undefined;
+      const rUri = row.receipt_uri as string | undefined;
+      if (rPath && isStoragePath(rPath)) return rPath;
+      if (rUri && isStoragePath(rUri)) return rUri;
+      return rUri || undefined;
+    })(),
+    receiptPath: (() => {
+      const rPath = row.receipt_path as string | undefined;
+      const rUri = row.receipt_uri as string | undefined;
+      if (rPath && isStoragePath(rPath)) return rPath;
+      if (rUri && isStoragePath(rUri)) return rUri;
+      return undefined;
+    })(),
     receiptName: (row.receipt_name as string) || undefined,
     receiptType: (row.receipt_type as 'receipt' | 'invoice') || undefined,
     productPhotos: normalizeProductPhotos(row.product_photos),
@@ -305,13 +325,37 @@ export function mapDbRowToDocument(row: Record<string, unknown>): VaultDocument 
     currency: (row.currency as string) || 'INR',
     expiryDate: (row.expiry_date as string) || null,
     notes: (row.notes as string) || null,
-    filePath: row.file_path as string,
-    fileUrl: row.file_url as string,
+    filePath: (() => {
+      const sp = row.storage_path as string | undefined;
+      const fp = row.file_path as string | undefined;
+      const fu = row.file_url as string | undefined;
+      if (sp && isStoragePath(sp)) return sp;
+      if (fp && isStoragePath(fp)) return fp;
+      if (fu && isStoragePath(fu)) return fu;
+      return fp || fu || '';
+    })(),
+    fileUrl: (() => {
+      const sp = row.storage_path as string | undefined;
+      const fp = row.file_path as string | undefined;
+      const fu = row.file_url as string | undefined;
+      if (sp && isStoragePath(sp)) return sp;
+      if (fu && isStoragePath(fu)) return fu;
+      if (fp && isStoragePath(fp)) return fp;
+      return fu || fp || '';
+    })(),
     fileType: (row.file_type as string) || 'pdf',
     fileSizeBytes: Number(row.file_size_bytes) || 0,
     mimeType: (row.mime_type as string) || 'application/octet-stream',
     thumbnailPath: (row.thumbnail_path as string) || null,
-    storagePath: (row.storage_path as string) || null,
+    storagePath: (() => {
+      const sp = row.storage_path as string | undefined;
+      const fp = row.file_path as string | undefined;
+      const fu = row.file_url as string | undefined;
+      if (sp && isStoragePath(sp)) return sp;
+      if (fp && isStoragePath(fp)) return fp;
+      if (fu && isStoragePath(fu)) return fu;
+      return null;
+    })(),
     createdAt: (row.created_at as string) || new Date().toISOString(),
     updatedAt: (row.updated_at as string) || new Date().toISOString(),
   };
@@ -323,8 +367,20 @@ export function mapDbRowToReceipt(row: Record<string, unknown>): Receipt {
   return {
     id: row.id as string,
     userId: row.user_id as string,
-    fileUri: row.file_uri as string,
-    storagePath: (row.storage_path as string) || undefined,
+    fileUri: (() => {
+      const sp = row.storage_path as string | undefined;
+      const fu = row.file_uri as string | undefined;
+      if (sp && isStoragePath(sp)) return sp;
+      if (fu && isStoragePath(fu)) return fu;
+      return fu || 'receipt.jpg';
+    })(),
+    storagePath: (() => {
+      const sp = row.storage_path as string | undefined;
+      const fu = row.file_uri as string | undefined;
+      if (sp && isStoragePath(sp)) return sp;
+      if (fu && isStoragePath(fu)) return fu;
+      return undefined;
+    })(),
     fileName: (row.file_name as string) || 'receipt.jpg',
     fileSizeBytes: row.file_size_bytes ? Number(row.file_size_bytes) : undefined,
     mimeType: (row.mime_type as string) || undefined,
@@ -450,17 +506,33 @@ export function mapItemToDbRow(item: Item, userId: string): Record<string, unkno
     image_url: (() => {
       if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
       if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      if (Array.isArray(item.productPhotos)) {
+        const found = item.productPhotos.find((p) => isStoragePath(p));
+        if (found) return found;
+      }
       return null;
     })(),
     image_storage_path: (() => {
       if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
       if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      if (Array.isArray(item.productPhotos)) {
+        const found = item.productPhotos.find((p) => isStoragePath(p));
+        if (found) return found;
+      }
       return null;
     })(),
     status: item.status || 'active',
     receipt_id: (item.receiptId && isValidUUID(item.receiptId)) ? item.receiptId : null,
-    receipt_uri: item.receiptUri || null,
-    receipt_path: item.receiptPath || null,
+    receipt_uri: (() => {
+      if (item.receiptPath && isStoragePath(item.receiptPath)) return item.receiptPath;
+      if (item.receiptUri && isStoragePath(item.receiptUri)) return item.receiptUri;
+      return null;
+    })(),
+    receipt_path: (() => {
+      if (item.receiptPath && isStoragePath(item.receiptPath)) return item.receiptPath;
+      if (item.receiptUri && isStoragePath(item.receiptUri)) return item.receiptUri;
+      return null;
+    })(),
     receipt_name: item.receiptName || null,
     receipt_type: item.receiptType || null,
     product_photos: Array.isArray(item.productPhotos) ? item.productPhotos : [],
@@ -492,11 +564,15 @@ export function mapDocumentToDbRow(doc: VaultDocument, userId: string): Record<s
   const itemId = (doc.itemId && isValidUUID(doc.itemId)) ? doc.itemId : null;
 
   let storagePath: string | null = null;
-  if (doc.storagePath && !doc.storagePath.startsWith('file:') && !doc.storagePath.startsWith('content:')) {
+  if (doc.storagePath && isStoragePath(doc.storagePath)) {
     storagePath = doc.storagePath;
-  } else if (doc.filePath && !doc.filePath.startsWith('file:') && !doc.filePath.startsWith('content:')) {
+  } else if (doc.filePath && isStoragePath(doc.filePath)) {
     storagePath = doc.filePath;
+  } else if (doc.fileUrl && isStoragePath(doc.fileUrl)) {
+    storagePath = doc.fileUrl;
   }
+
+  const effectiveCloudFileRef = storagePath || (doc.fileUrl && (doc.fileUrl.startsWith('http://') || doc.fileUrl.startsWith('https://')) ? doc.fileUrl : null);
 
   return {
     id: docId,
@@ -513,12 +589,12 @@ export function mapDocumentToDbRow(doc: VaultDocument, userId: string): Record<s
     currency: doc.currency || 'INR',
     expiry_date: doc.expiryDate || null,
     notes: doc.notes || null,
-    file_path: doc.filePath,
-    file_url: doc.fileUrl,
+    file_path: effectiveCloudFileRef,
+    file_url: effectiveCloudFileRef,
     file_type: doc.fileType || 'pdf',
     file_size_bytes: doc.fileSizeBytes || 0,
     mime_type: doc.mimeType || 'application/octet-stream',
-    thumbnail_path: doc.thumbnailPath || null,
+    thumbnail_path: doc.thumbnailPath && isStoragePath(doc.thumbnailPath) ? doc.thumbnailPath : null,
     storage_path: storagePath,
   };
 }
@@ -559,5 +635,37 @@ export function mapMaintenanceToDbRow(
     status: record.status || 'completed',
     notes: record.notes || null,
     updated_at: new Date().toISOString(),
+  };
+}
+
+export function mapReceiptToDbRow(receipt: Receipt, userId: string): Record<string, unknown> {
+  const durablePath = (receipt.storagePath && isStoragePath(receipt.storagePath))
+    ? receipt.storagePath
+    : (receipt.fileUri && isStoragePath(receipt.fileUri))
+    ? receipt.fileUri
+    : null;
+
+  const effectiveFileUri = durablePath || (receipt.fileUri && (receipt.fileUri.startsWith('http://') || receipt.fileUri.startsWith('https://')) ? receipt.fileUri : null);
+
+  return {
+    id: receipt.id,
+    user_id: userId,
+    file_uri: effectiveFileUri,
+    storage_path: durablePath,
+    file_name: receipt.fileName,
+    file_size_bytes: receipt.fileSizeBytes || 0,
+    mime_type: receipt.mimeType || null,
+    receipt_type: receipt.type || 'receipt',
+    merchant: receipt.merchant || null,
+    seller_address: receipt.sellerAddress || null,
+    gstin: receipt.gstin || null,
+    purchase_date: receipt.purchaseDate || null,
+    total_amount: receipt.totalAmount ?? null,
+    subtotal: receipt.subtotal ?? null,
+    discount: receipt.discount ?? null,
+    gst_tax: receipt.gstTax || null,
+    invoice_number: receipt.invoiceNumber || null,
+    item_count: receipt.itemCount || 1,
+    item_ids: receipt.itemIds || [],
   };
 }

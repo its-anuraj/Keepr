@@ -899,28 +899,6 @@ export default function AddOrEditItemScreen() {
           </View>
 
           <TouchableOpacity
-            className="bg-serene-surface-container-lowest rounded-serene-xl p-3.5 flex-row items-center justify-between border border-[#3368A0]/30 shadow-sm"
-            onPress={() => router.push('/scan-receipt?mode=camera' as any)}
-            activeOpacity={0.88}
-          >
-            <View className="flex-1 flex-row items-center gap-3">
-              <View className="w-10 h-10 rounded-full bg-serene-primary items-center justify-center">
-                <MaterialIcons name="document-scanner" size={20} color="#FFFFFF" />
-              </View>
-              <View className="flex-1">
-                <View className="flex-row items-center gap-1">
-                  <Text className="text-xs font-bold text-serene-primary">SCAN RECEIPT</Text>
-                  <Text className="text-[10px] text-serene-outline">· Auto-detect</Text>
-                </View>
-                <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
-                  Scan invoice to automatically detect category, product, price & seller.
-                </Text>
-              </View>
-            </View>
-            <MaterialIcons name="chevron-right" size={20} color={SereneColors.primary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
             className="bg-serene-surface-container-lowest rounded-serene-xl p-3.5 flex-row items-center justify-between border border-serene-subtle-border shadow-sm active:border-serene-primary"
             onPress={handleChooseFromGalleryEntry}
             activeOpacity={0.88}

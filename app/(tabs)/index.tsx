@@ -10,9 +10,10 @@ import {
   NativeSyntheticEvent,
   NativeScrollEvent,
   Image,
+  RefreshControl,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
 import { PriorityCard } from '../../src/components/ui/PriorityCard';
 import { EmptyState } from '../../src/components/ui/EmptyState';
@@ -30,6 +31,7 @@ import {
 import { stabilizeReceiptImage } from '../../src/services/receiptFileService';
 import { ItemWithOwnerContext, RecentlyAddedEntry } from '../../src/types';
 import { hideSplashScreen } from '../../src/utils/splashCoordinator';
+import { RecentlyAddedThumbnail } from '../../src/components/ui/RecentlyAddedThumbnail';
 
 const INITIAL_BATCH_SIZE = 4;
 const LOAD_MORE_BATCH_SIZE = 4;
@@ -43,6 +45,28 @@ export default function VaultDashboardScreen() {
   const getVaultMetrics = useItemStore((s) => s.getVaultMetrics);
   const getRecentlyAdded = useItemStore((s) => s.getRecentlyAdded);
   const isLoading = useItemStore((s) => s.isLoading);
+  const hydrateFromCloud = useItemStore((s) => s.hydrateFromCloud);
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await hydrateFromCloud();
+    } catch (e) {
+      console.warn('[VaultDashboard] Pull-to-refresh error:', e);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [hydrateFromCloud]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (items.length === 0 && documents.length === 0) {
+        hydrateFromCloud().catch(() => {});
+      }
+    }, [items.length, documents.length, hydrateFromCloud])
+  );
 
   const metrics = useMemo(() => getVaultMetrics(), [items, documents, warranties, getVaultMetrics, user?.id]);
 
@@ -238,6 +262,14 @@ export default function VaultDashboardScreen() {
         showsVerticalScrollIndicator={false}
         onScroll={handleScroll}
         scrollEventThrottle={32}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[SereneColors.primary]}
+            tintColor={SereneColors.primary}
+          />
+        }
       >
         <View className="pt-2 gap-1">
           <Text className="text-2xl font-bold text-serene-on-surface tracking-tight">
@@ -468,27 +500,7 @@ export default function VaultDashboardScreen() {
                         index < visibleEntries.length - 1 ? 'border-b border-serene-subtle-border/60' : ''
                       }`}
                     >
-                      <View className="relative shrink-0">
-                        {entry.thumbnail ? (
-                          <Image
-                            source={{ uri: entry.thumbnail }}
-                            className="w-12 h-12 rounded-serene-md bg-serene-surface-container-high"
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <View
-                            className={`w-12 h-12 rounded-serene-md items-center justify-center ${
-                              isItem ? 'bg-indigo-50' : 'bg-emerald-50'
-                            }`}
-                          >
-                            <MaterialIcons
-                              name={isItem ? 'inventory-2' : 'description'}
-                              size={22}
-                              color={isItem ? '#4F46E5' : '#059669'}
-                            />
-                          </View>
-                        )}
-                      </View>
+                      <RecentlyAddedThumbnail entry={entry} />
 
                       <View className="flex-1 min-w-0 justify-center">
                         <View className="flex-row items-center gap-1.5 mb-1 flex-wrap">

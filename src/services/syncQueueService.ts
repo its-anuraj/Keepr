@@ -10,7 +10,11 @@ export type SyncOpType =
   | 'upsertDocument'
   | 'deleteDocument'
   | 'upsertMaintenance'
-  | 'deleteMaintenance';
+  | 'deleteMaintenance'
+  | 'upsertReceipt'
+  | 'deleteReceipt'
+  | 'upsertWarranty'
+  | 'deleteWarranty';
 
 export interface SyncQueueEntry {
   /**
@@ -218,13 +222,45 @@ export async function flushSyncQueue(userId: string): Promise<void> {
         if (error && error.code !== 'PGRST116') {
           console.warn(`[SyncQueue] deleteItem retry failed for ${entry.entityId}:`, error.message);
         }
-      } else if (entry.type === 'upsertDocument' && entry.payload) {
-        const { error } = await supabase
-          .from('documents')
-          .upsert(entry.payload, { onConflict: 'id' });
-        success = !error;
-        if (error) {
-          console.warn(`[SyncQueue] upsertDocument retry failed for ${entry.entityId}:`, error.message);
+      } else if (entry.type === 'upsertDocument') {
+        try {
+          const { useItemStore } = require('../store/itemStore');
+          const currentDoc = useItemStore.getState().documents.find((d: any) => d.id === entry.entityId);
+          if (currentDoc) {
+            const { cloudUpsertDocument } = require('./cloudSyncService');
+            const upsertErr = await cloudUpsertDocument(currentDoc, userId);
+            success = !upsertErr;
+          }
+        } catch {}
+
+        if (!success && entry.payload) {
+          const { error } = await supabase
+            .from('documents')
+            .upsert(entry.payload, { onConflict: 'id' });
+          success = !error;
+          if (error) {
+            console.warn(`[SyncQueue] upsertDocument retry failed for ${entry.entityId}:`, error.message);
+          }
+        }
+      } else if (entry.type === 'upsertReceipt') {
+        try {
+          const { useItemStore } = require('../store/itemStore');
+          const currentReceipt = useItemStore.getState().receipts.find((r: any) => r.id === entry.entityId);
+          if (currentReceipt) {
+            const { cloudUpsertReceipt } = require('./cloudSyncService');
+            const upsertErr = await cloudUpsertReceipt(currentReceipt, userId);
+            success = !upsertErr;
+          }
+        } catch {}
+
+        if (!success && entry.payload) {
+          const { error } = await supabase
+            .from('receipts')
+            .upsert(entry.payload, { onConflict: 'id' });
+          success = !error;
+          if (error) {
+            console.warn(`[SyncQueue] upsertReceipt retry failed for ${entry.entityId}:`, error.message);
+          }
         }
       } else if (entry.type === 'deleteDocument') {
         const { error } = await supabase
@@ -253,6 +289,24 @@ export async function flushSyncQueue(userId: string): Promise<void> {
         success = !error || error.code === 'PGRST116';
         if (error && error.code !== 'PGRST116') {
           console.warn(`[SyncQueue] deleteMaintenance retry failed for ${entry.entityId}:`, error.message);
+        }
+      } else if (entry.type === 'upsertWarranty' && entry.payload) {
+        const { error } = await supabase
+          .from('warranties')
+          .upsert(entry.payload, { onConflict: 'id' });
+        success = !error;
+        if (error) {
+          console.warn(`[SyncQueue] upsertWarranty retry failed for ${entry.entityId}:`, error.message);
+        }
+      } else if (entry.type === 'deleteWarranty') {
+        const { error } = await supabase
+          .from('warranties')
+          .delete()
+          .eq('id', entry.entityId)
+          .eq('user_id', userId);
+        success = !error || error.code === 'PGRST116';
+        if (error && error.code !== 'PGRST116') {
+          console.warn(`[SyncQueue] deleteWarranty retry failed for ${entry.entityId}:`, error.message);
         }
       }
 

@@ -28,9 +28,15 @@ import {
   cloudUpsertExpense,
   mapItemToDbRow,
 } from './cloudSyncService';
-import { uploadItemPhoto, isStoragePath, isLocalUri } from './storageService';
-import { mapDbRowToItem } from './vaultRowMappers';
-import { getCanonicalReceiptUri } from './receiptFileService';
+import {
+  uploadItemPhoto,
+  uploadItemReceipt,
+  uploadVaultDocument,
+  isStoragePath,
+  isLocalUri,
+} from './storageService';
+import { mapDbRowToItem, mapDbRowToDocument, mapDbRowToReceipt } from './vaultRowMappers';
+import { getCanonicalReceiptUri, getCanonicalDocumentUri } from './receiptFileService';
 import type {
   Item,
   Warranty,
@@ -780,4 +786,228 @@ export async function reconcileAndMigrateItemImages(
 
   return { caseA, caseB, caseC };
 }
+
+/**
+ * Safely audits and migrates existing receipts and documents for a user across devices.
+ *
+ * Implements Phase 6 (Cross-Device Recovery and Existing Files):
+ * - CASE A: Reference already points to Supabase Storage -> keep it.
+ * - CASE B: Reference is local and original file exists on this device:
+ *           Uploads local file to Supabase Storage, updates DB with durable storage path.
+ * - CASE C: Reference is local but file no longer exists on this device:
+ *           Preserves record and metadata; never deletes database records.
+ */
+export async function reconcileAndMigrateReceiptsAndDocuments(
+  userId: string
+): Promise<{
+  receipts: { caseA: number; caseB: number; caseC: number };
+  documents: { caseA: number; caseB: number; caseC: number };
+}> {
+  const result = {
+    receipts: { caseA: 0, caseB: 0, caseC: 0 },
+    documents: { caseA: 0, caseB: 0, caseC: 0 },
+  };
+
+  if (!userId || !isSupabaseConfigured) {
+    return result;
+  }
+
+  try {
+    const { useItemStore } = require('../store/itemStore');
+
+    // 1. Reconcile Item Receipts
+    const itemsToProcess: Item[] = useItemStore.getState().items.filter(
+      (i: Item) => !i.userId || i.userId === userId
+    );
+
+    const updatedItems: Item[] = [];
+
+    for (const item of itemsToProcess) {
+      if (item.receiptPath && isStoragePath(item.receiptPath)) {
+        result.receipts.caseA++;
+        continue;
+      }
+
+      if (item.receiptUri && isStoragePath(item.receiptUri)) {
+        result.receipts.caseA++;
+        continue;
+      }
+
+      const candidateUri = item.receiptUri;
+      if (!candidateUri || !isLocalUri(candidateUri)) {
+        continue;
+      }
+
+      const canonical = getCanonicalReceiptUri(candidateUri) || candidateUri;
+      let existingLocal: string | null = null;
+
+      try {
+        const info = await FileSystem.getInfoAsync(canonical).catch(() => null);
+        if (info?.exists && !info.isDirectory) {
+          existingLocal = canonical;
+        }
+      } catch {}
+
+      if (!existingLocal && canonical !== candidateUri) {
+        try {
+          const rawInfo = await FileSystem.getInfoAsync(candidateUri).catch(() => null);
+          if (rawInfo?.exists && !rawInfo.isDirectory) {
+            existingLocal = candidateUri;
+          }
+        } catch {}
+      }
+
+      if (existingLocal) {
+        // CASE B: Local file exists on this device!
+        try {
+          const uploadRes = await uploadItemReceipt(
+            userId,
+            item.id,
+            existingLocal,
+            item.receiptName || 'receipt.jpg'
+          );
+
+          if (uploadRes.storagePath) {
+            result.receipts.caseB++;
+            await supabase
+              .from('items')
+              .update({
+                receipt_path: uploadRes.storagePath,
+                receipt_uri: uploadRes.storagePath,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', item.id)
+              .eq('user_id', userId);
+
+            updatedItems.push({
+              ...item,
+              receiptPath: uploadRes.storagePath,
+              receiptUri: uploadRes.storagePath,
+            });
+            console.log(`[ReceiptMigration] Migrated receipt for "${item.name}" -> ${uploadRes.storagePath}`);
+          } else {
+            result.receipts.caseC++;
+          }
+        } catch (uErr) {
+          result.receipts.caseC++;
+          console.warn(`[ReceiptMigration] Exception for "${item.name}":`, uErr);
+        }
+      } else {
+        // CASE C: Local file missing on this device (preserve record)
+        result.receipts.caseC++;
+      }
+    }
+
+    if (updatedItems.length > 0) {
+      const current = useItemStore.getState().items;
+      useItemStore.setState({
+        items: current.map((it: Item) => {
+          const up = updatedItems.find((u) => u.id === it.id);
+          return up ? { ...it, ...up } : it;
+        }),
+      });
+    }
+
+    // 2. Reconcile Vault Documents
+    const docsToProcess: VaultDocument[] = useItemStore.getState().documents.filter(
+      (d: VaultDocument) => !d.userId || d.userId === userId
+    );
+
+    const updatedDocs: VaultDocument[] = [];
+
+    for (const doc of docsToProcess) {
+      if (doc.storagePath && isStoragePath(doc.storagePath)) {
+        result.documents.caseA++;
+        continue;
+      }
+
+      const candidateUri = doc.filePath || doc.fileUrl;
+      if (!candidateUri || !isLocalUri(candidateUri)) {
+        continue;
+      }
+
+      const canonical = getCanonicalDocumentUri(candidateUri) || candidateUri;
+      let existingLocal: string | null = null;
+
+      try {
+        const info = await FileSystem.getInfoAsync(canonical).catch(() => null);
+        if (info?.exists && !info.isDirectory) {
+          existingLocal = canonical;
+        }
+      } catch {}
+
+      if (!existingLocal && canonical !== candidateUri) {
+        try {
+          const rawInfo = await FileSystem.getInfoAsync(candidateUri).catch(() => null);
+          if (rawInfo?.exists && !rawInfo.isDirectory) {
+            existingLocal = candidateUri;
+          }
+        } catch {}
+      }
+
+      if (existingLocal) {
+        // CASE B: Local document exists on this device!
+        try {
+          const uploadRes = await uploadVaultDocument(
+            userId,
+            doc.id,
+            existingLocal,
+            doc.itemId,
+            doc.name || doc.title || 'document'
+          );
+
+          if (uploadRes.storagePath) {
+            result.documents.caseB++;
+            await supabase
+              .from('documents')
+              .update({
+                storage_path: uploadRes.storagePath,
+                file_path: uploadRes.storagePath,
+                file_url: uploadRes.storagePath,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', doc.id)
+              .eq('user_id', userId);
+
+            updatedDocs.push({
+              ...doc,
+              storagePath: uploadRes.storagePath,
+              filePath: uploadRes.storagePath,
+              fileUrl: uploadRes.storagePath,
+            });
+            console.log(`[DocMigration] Migrated document "${doc.title}" -> ${uploadRes.storagePath}`);
+          } else {
+            result.documents.caseC++;
+          }
+        } catch (uErr) {
+          result.documents.caseC++;
+          console.warn(`[DocMigration] Exception for "${doc.title}":`, uErr);
+        }
+      } else {
+        // CASE C: Local file missing on this device (preserve record)
+        result.documents.caseC++;
+      }
+    }
+
+    if (updatedDocs.length > 0) {
+      const currentDocs = useItemStore.getState().documents;
+      useItemStore.setState({
+        documents: currentDocs.map((d: VaultDocument) => {
+          const up = updatedDocs.find((u) => u.id === d.id);
+          return up ? { ...d, ...up } : d;
+        }),
+      });
+    }
+
+    console.log(
+      `[VaultReconciliation] Complete: Receipts (A=${result.receipts.caseA}, B=${result.receipts.caseB}, C=${result.receipts.caseC}), ` +
+      `Docs (A=${result.documents.caseA}, B=${result.documents.caseB}, C=${result.documents.caseC})`
+    );
+  } catch (err) {
+    console.warn('[VaultReconciliation] Notice:', err);
+  }
+
+  return result;
+}
+
 

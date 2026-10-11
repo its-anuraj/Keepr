@@ -53,8 +53,7 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 }) => {
   const [imageError, setImageError] = React.useState(false);
 
-  const primaryImagePath = item.imageStoragePath || item.imageUrl || item.photoUri;
-  const { resolvedUri } = useResolvedItemImage(primaryImagePath, item.photoUri);
+  const { resolvedUri } = useResolvedItemImage(item);
 
   React.useEffect(() => {
     setImageError(false);

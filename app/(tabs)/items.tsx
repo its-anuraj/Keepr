@@ -93,6 +93,28 @@ export default function ItemsCatalogScreen() {
   const isLoading = useItemStore((s) => s.isLoading);
   const getItemById = useItemStore((s) => s.getItemById);
   const deleteItem = useItemStore((s) => s.deleteItem);
+  const hydrateFromCloud = useItemStore((s) => s.hydrateFromCloud);
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await hydrateFromCloud();
+    } catch (e) {
+      console.warn('[ItemsCatalog] Pull-to-refresh error:', e);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [hydrateFromCloud]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (items.length === 0) {
+        hydrateFromCloud().catch(() => {});
+      }
+    }, [items.length, hydrateFromCloud])
+  );
 
   const params = useLocalSearchParams<{ filter?: string; t?: string }>();
   type QuickFilterType = 'warranty_ending' | 'return_ending' | null;
@@ -796,6 +818,8 @@ export default function ItemsCatalogScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        refreshing={refreshing}
+        onRefresh={onRefresh}
         windowSize={10}
         maxToRenderPerBatch={20}
         initialNumToRender={15}

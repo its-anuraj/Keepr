@@ -6,6 +6,7 @@ import { StatusBar } from 'expo-status-bar';
 import { View, Platform } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../src/store/authStore';
+import { useItemStore } from '../src/store/itemStore';
 import { SereneColors } from '../src/constants/theme';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NotificationService } from '../src/services/notifications';
@@ -47,6 +48,9 @@ export default function RootLayout() {
         const currentSession = useAuthStore.getState().session;
         if (currentSession) {
           console.log('[StartupAuth] session resolved: logged-in');
+          useItemStore.getState().hydrateFromCloud().catch((err) => {
+            console.warn('[StartupAuth] hydrateFromCloud background error:', err);
+          });
         } else {
           console.log('[StartupAuth] session resolved: logged-out');
         }

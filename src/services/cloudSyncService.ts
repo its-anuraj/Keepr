@@ -7,6 +7,8 @@ import {
   BUCKET_ITEM_IMAGES,
   isStoragePath,
   prefetchItemImageSignedUrls,
+  prefetchReceiptSignedUrls,
+  prefetchVaultDocumentSignedUrls,
 } from './storageService';
 import { getCanonicalReceiptUri } from './receiptFileService';
 import type {
@@ -244,13 +246,21 @@ export function mapDbRowToItem(row: Record<string, unknown>): Item {
       const dbImg = row.image_url as string | undefined;
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
-      return dbImg || undefined;
+      const rawPhotos = normalizeProductPhotos(row.product_photos);
+      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      if (photoStorage) return photoStorage;
+      if (dbImg) return dbImg;
+      if (rawPhotos[0]) return rawPhotos[0];
+      return undefined;
     })(),
     imageStoragePath: (() => {
       const dbStorage = row.image_storage_path as string | undefined;
       const dbImg = row.image_url as string | undefined;
       if (dbStorage && isStoragePath(dbStorage)) return dbStorage;
       if (dbImg && isStoragePath(dbImg)) return dbImg;
+      const rawPhotos = normalizeProductPhotos(row.product_photos);
+      const photoStorage = rawPhotos.find((p) => isStoragePath(p));
+      if (photoStorage) return photoStorage;
       return undefined;
     })(),
     status: (row.status as Item['status']) || 'active',
@@ -525,11 +535,19 @@ export function mapItemToDbRow(item: Item, userId: string): Record<string, unkno
     image_url: (() => {
       if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
       if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      if (Array.isArray(item.productPhotos)) {
+        const found = item.productPhotos.find((p) => isStoragePath(p));
+        if (found) return found;
+      }
       return null;
     })(),
     image_storage_path: (() => {
       if (item.imageStoragePath && isStoragePath(item.imageStoragePath)) return item.imageStoragePath;
       if (item.imageUrl && isStoragePath(item.imageUrl)) return item.imageUrl;
+      if (Array.isArray(item.productPhotos)) {
+        const found = item.productPhotos.find((p) => isStoragePath(p));
+        if (found) return found;
+      }
       return null;
     })(),
     status: item.status || 'active',
@@ -638,11 +656,19 @@ export function mapDocumentToDbRow(doc: VaultDocument, userId: string): Record<s
  * Converts a domain Receipt to a Supabase insert/update payload.
  */
 export function mapReceiptToDbRow(receipt: Receipt, userId: string): Record<string, unknown> {
+  const durablePath = (receipt.storagePath && isStoragePath(receipt.storagePath))
+    ? receipt.storagePath
+    : (receipt.fileUri && isStoragePath(receipt.fileUri))
+    ? receipt.fileUri
+    : null;
+
+  const effectiveFileUri = durablePath || (receipt.fileUri && (receipt.fileUri.startsWith('http://') || receipt.fileUri.startsWith('https://')) ? receipt.fileUri : null);
+
   return {
     id: receipt.id,
     user_id: userId,
-    file_uri: receipt.fileUri,
-    storage_path: receipt.storagePath || null,
+    file_uri: effectiveFileUri,
+    storage_path: durablePath,
     file_name: receipt.fileName,
     file_size_bytes: receipt.fileSizeBytes || 0,
     mime_type: receipt.mimeType || null,
@@ -676,6 +702,28 @@ export interface CloudVaultData {
   itemsMappingErrors: number;
   /** Raw count of items rows returned from the database query before mapping. */
   itemsRawCount: number;
+
+  /** Set to true when the Supabase documents query returned an error or was rejected. */
+  documentsFetchError: boolean;
+  documentsMappingErrors: number;
+  documentsRawCount: number;
+
+  /** Set to true when the Supabase warranties query returned an error or was rejected. */
+  warrantiesFetchError: boolean;
+  warrantiesRawCount: number;
+
+  /** Set to true when the Supabase receipts query returned an error or was rejected. */
+  receiptsFetchError: boolean;
+  receiptsRawCount: number;
+
+  /** Set to true when the Supabase maintenance query returned an error or was rejected. */
+  maintenanceFetchError: boolean;
+  maintenanceRawCount: number;
+
+  /** Set to true when the Supabase expenses query returned an error or was rejected. */
+  expensesFetchError: boolean;
+  expensesRawCount: number;
+
   /** Non-sensitive error messages if any queries or mapping failed. */
   fetchErrorSummary?: string[];
 }
@@ -710,6 +758,17 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
     itemsFetchError: false,
     itemsMappingErrors: 0,
     itemsRawCount: 0,
+    documentsFetchError: false,
+    documentsMappingErrors: 0,
+    documentsRawCount: 0,
+    warrantiesFetchError: false,
+    warrantiesRawCount: 0,
+    receiptsFetchError: false,
+    receiptsRawCount: 0,
+    maintenanceFetchError: false,
+    maintenanceRawCount: 0,
+    expensesFetchError: false,
+    expensesRawCount: 0,
   };
 
   if (!isSupabaseConfigured || !userId) {
@@ -786,6 +845,23 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
     let itemsFetchError = false;
     let itemsMappingErrors = 0;
     let itemsRawCount = 0;
+
+    let documentsFetchError = false;
+    let documentsMappingErrors = 0;
+    let documentsRawCount = 0;
+
+    let warrantiesFetchError = false;
+    let warrantiesRawCount = 0;
+
+    let receiptsFetchError = false;
+    let receiptsRawCount = 0;
+
+    let maintenanceFetchError = false;
+    let maintenanceRawCount = 0;
+
+    let expensesFetchError = false;
+    let expensesRawCount = 0;
+
     const fetchErrorSummary: string[] = [];
 
     if (itemsResult.status === 'fulfilled' && !itemsResult.value.error) {
@@ -805,7 +881,8 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
       // Prefetch signed URLs in the background for instant image rendering across screens
       const storagePathsToPrefetch: string[] = [];
       for (const it of items) {
-        if (it.imageStoragePath) storagePathsToPrefetch.push(it.imageStoragePath);
+        if (it.imageStoragePath && isStoragePath(it.imageStoragePath)) storagePathsToPrefetch.push(it.imageStoragePath);
+        if (it.imageUrl && isStoragePath(it.imageUrl)) storagePathsToPrefetch.push(it.imageUrl);
         if (it.productPhotos) {
           for (const p of it.productPhotos) {
             if (isStoragePath(p)) storagePathsToPrefetch.push(p);
@@ -828,7 +905,9 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
     }
 
     if (warrantiesResult.status === 'fulfilled' && !warrantiesResult.value.error) {
-      for (const row of warrantiesResult.value.data || []) {
+      const rawRows = warrantiesResult.value.data || [];
+      warrantiesRawCount = rawRows.length;
+      for (const row of rawRows) {
         try {
           warranties.push(mapDbRowToWarranty(row as Record<string, unknown>));
         } catch (mapErr) {
@@ -836,25 +915,47 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
           console.warn(`[CloudSync] Failed to map warranty row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
         }
       }
-    } else if (warrantiesResult.status === 'rejected' || (warrantiesResult.status === 'fulfilled' && warrantiesResult.value.error)) {
-      fetchErrorSummary.push('Warranties query failed');
+    } else if (warrantiesResult.status === 'rejected') {
+      warrantiesFetchError = true;
+      fetchErrorSummary.push('Warranties query rejected');
+    } else if (warrantiesResult.status === 'fulfilled' && warrantiesResult.value.error) {
+      warrantiesFetchError = true;
+      fetchErrorSummary.push(`Warranties error: ${warrantiesResult.value.error.message}`);
     }
 
     if (documentsResult.status === 'fulfilled' && !documentsResult.value.error) {
-      for (const row of documentsResult.value.data || []) {
+      const rawRows = documentsResult.value.data || [];
+      documentsRawCount = rawRows.length;
+      for (const row of rawRows) {
         try {
           documents.push(mapDbRowToDocument(row as Record<string, unknown>));
         } catch (mapErr) {
+          documentsMappingErrors++;
           const rowId = (row as Record<string, unknown>)?.id || 'unknown';
           console.warn(`[CloudSync] Failed to map document row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
         }
       }
-    } else if (documentsResult.status === 'rejected' || (documentsResult.status === 'fulfilled' && documentsResult.value.error)) {
-      fetchErrorSummary.push('Documents query failed');
+      const docPathsToPrefetch: string[] = [];
+      for (const d of documents) {
+        if (d.storagePath && isStoragePath(d.storagePath)) docPathsToPrefetch.push(d.storagePath);
+        else if (d.filePath && isStoragePath(d.filePath)) docPathsToPrefetch.push(d.filePath);
+        else if (d.fileUrl && isStoragePath(d.fileUrl)) docPathsToPrefetch.push(d.fileUrl);
+      }
+      if (docPathsToPrefetch.length > 0) {
+        prefetchVaultDocumentSignedUrls(docPathsToPrefetch).catch(() => {});
+      }
+    } else if (documentsResult.status === 'rejected') {
+      documentsFetchError = true;
+      fetchErrorSummary.push('Documents query rejected');
+    } else if (documentsResult.status === 'fulfilled' && documentsResult.value.error) {
+      documentsFetchError = true;
+      fetchErrorSummary.push(`Documents error: ${documentsResult.value.error.message}`);
     }
 
     if (receiptsResult.status === 'fulfilled' && !receiptsResult.value.error) {
-      for (const row of receiptsResult.value.data || []) {
+      const rawRows = receiptsResult.value.data || [];
+      receiptsRawCount = rawRows.length;
+      for (const row of rawRows) {
         try {
           receipts.push(mapDbRowToReceipt(row as Record<string, unknown>));
         } catch (mapErr) {
@@ -862,12 +963,30 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
           console.warn(`[CloudSync] Failed to map receipt row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
         }
       }
-    } else if (receiptsResult.status === 'rejected' || (receiptsResult.status === 'fulfilled' && receiptsResult.value.error)) {
-      fetchErrorSummary.push('Receipts query failed');
+      const receiptPathsToPrefetch: string[] = [];
+      for (const it of items) {
+        if (it.receiptPath && isStoragePath(it.receiptPath)) receiptPathsToPrefetch.push(it.receiptPath);
+        else if (it.receiptUri && isStoragePath(it.receiptUri)) receiptPathsToPrefetch.push(it.receiptUri);
+      }
+      for (const r of receipts) {
+        if (r.storagePath && isStoragePath(r.storagePath)) receiptPathsToPrefetch.push(r.storagePath);
+        else if (r.fileUri && isStoragePath(r.fileUri)) receiptPathsToPrefetch.push(r.fileUri);
+      }
+      if (receiptPathsToPrefetch.length > 0) {
+        prefetchReceiptSignedUrls(receiptPathsToPrefetch).catch(() => {});
+      }
+    } else if (receiptsResult.status === 'rejected') {
+      receiptsFetchError = true;
+      fetchErrorSummary.push('Receipts query rejected');
+    } else if (receiptsResult.status === 'fulfilled' && receiptsResult.value.error) {
+      receiptsFetchError = true;
+      fetchErrorSummary.push(`Receipts error: ${receiptsResult.value.error.message}`);
     }
 
     if (maintenanceResult.status === 'fulfilled' && !maintenanceResult.value.error) {
-      for (const row of maintenanceResult.value.data || []) {
+      const rawRows = maintenanceResult.value.data || [];
+      maintenanceRawCount = rawRows.length;
+      for (const row of rawRows) {
         try {
           maintenanceRecords.push(mapDbRowToMaintenanceRecord(row as Record<string, unknown>));
         } catch (mapErr) {
@@ -875,10 +994,18 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
           console.warn(`[CloudSync] Failed to map maintenance row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
         }
       }
+    } else if (maintenanceResult.status === 'rejected') {
+      maintenanceFetchError = true;
+      fetchErrorSummary.push('Maintenance query rejected');
+    } else if (maintenanceResult.status === 'fulfilled' && maintenanceResult.value.error) {
+      maintenanceFetchError = true;
+      fetchErrorSummary.push(`Maintenance error: ${maintenanceResult.value.error.message}`);
     }
 
     if (expensesResult.status === 'fulfilled' && !expensesResult.value.error) {
-      for (const row of expensesResult.value.data || []) {
+      const rawRows = expensesResult.value.data || [];
+      expensesRawCount = rawRows.length;
+      for (const row of rawRows) {
         try {
           expenses.push(mapDbRowToExpense(row as Record<string, unknown>));
         } catch (mapErr) {
@@ -886,6 +1013,12 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
           console.warn(`[CloudSync] Failed to map expense row ${rowId}: ${mapErr instanceof Error ? mapErr.message : String(mapErr)}`);
         }
       }
+    } else if (expensesResult.status === 'rejected') {
+      expensesFetchError = true;
+      fetchErrorSummary.push('Expenses query rejected');
+    } else if (expensesResult.status === 'fulfilled' && expensesResult.value.error) {
+      expensesFetchError = true;
+      fetchErrorSummary.push(`Expenses error: ${expensesResult.value.error.message}`);
     }
 
     if (activityResult.status === 'fulfilled' && !activityResult.value.error) {
@@ -901,7 +1034,9 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
 
     console.log(
       `[CloudSync] Hydration complete: ${items.length} items (raw: ${itemsRawCount}, mapErrors: ${itemsMappingErrors}, fetchError: ${itemsFetchError}), ` +
-      `${warranties.length} warranties, ${documents.length} docs, ${receipts.length} receipts, ` +
+      `${warranties.length} warranties (raw: ${warrantiesRawCount}, fetchError: ${warrantiesFetchError}), ` +
+      `${documents.length} docs (raw: ${documentsRawCount}, mapErrors: ${documentsMappingErrors}, fetchError: ${documentsFetchError}), ` +
+      `${receipts.length} receipts (raw: ${receiptsRawCount}, fetchError: ${receiptsFetchError}), ` +
       `${maintenanceRecords.length} maintenance, ${expenses.length} expenses, ${activityLogs.length} activity logs`
     );
 
@@ -916,6 +1051,17 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
         itemsFetchError,
         itemsMappingErrors,
         itemsRawCount,
+        documentsFetchError,
+        documentsMappingErrors,
+        documentsRawCount,
+        warrantiesFetchError,
+        warrantiesRawCount,
+        receiptsFetchError,
+        receiptsRawCount,
+        maintenanceFetchError,
+        maintenanceRawCount,
+        expensesFetchError,
+        expensesRawCount,
         fetchErrorSummary: fetchErrorSummary.length > 0 ? fetchErrorSummary : undefined,
       };
     } catch (err) {
@@ -923,6 +1069,9 @@ export async function hydrateVaultFromCloud(userId: string): Promise<CloudVaultD
       return {
         ...empty,
         itemsFetchError: true,
+        documentsFetchError: true,
+        warrantiesFetchError: true,
+        receiptsFetchError: true,
         fetchErrorSummary: [err instanceof Error ? err.message : String(err)],
       };
     } finally {
@@ -1054,7 +1203,17 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
     }
 
     // Update local item store if storage paths were resolved during upload
-    if (effectiveImageStoragePath && (effectiveImageStoragePath !== item.imageStoragePath || durablePhotos.length > 0)) {
+    const receiptPathUpdated = Boolean(
+      effectiveReceiptPath &&
+      isStoragePath(effectiveReceiptPath) &&
+      effectiveReceiptPath !== item.receiptPath
+    );
+    const imagePathUpdated = Boolean(
+      effectiveImageStoragePath &&
+      (effectiveImageStoragePath !== item.imageStoragePath || durablePhotos.length > 0)
+    );
+
+    if (receiptPathUpdated || imagePathUpdated) {
       try {
         const { useItemStore } = require('../store/itemStore');
         const currentItems = useItemStore.getState().items;
@@ -1065,8 +1224,10 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
               it.id === validItemId
                 ? {
                     ...it,
-                    imageStoragePath: effectiveImageStoragePath,
-                    imageUrl: effectiveImageStoragePath,
+                    receiptPath: (effectiveReceiptPath && isStoragePath(effectiveReceiptPath)) ? effectiveReceiptPath : it.receiptPath,
+                    receiptUri: (effectiveReceiptPath && isStoragePath(effectiveReceiptPath)) ? effectiveReceiptPath : it.receiptUri,
+                    imageStoragePath: effectiveImageStoragePath || it.imageStoragePath,
+                    imageUrl: effectiveImageStoragePath || it.imageUrl,
                     productPhotos: durablePhotos.length > 0 ? durablePhotos : it.productPhotos,
                   }
                 : it
@@ -1160,6 +1321,29 @@ export async function cloudUpsertDocument(doc: VaultDocument, userId: string): P
       console.warn('[CloudSync] Document upsert error:', error.message);
       return error.message;
     }
+
+    if (effectiveStoragePath && isStoragePath(effectiveStoragePath) && effectiveStoragePath !== doc.storagePath) {
+      try {
+        const { useItemStore } = require('../store/itemStore');
+        const currentDocs = useItemStore.getState().documents;
+        const existing = currentDocs.find((d: VaultDocument) => d.id === validDocId);
+        if (existing) {
+          useItemStore.setState({
+            documents: currentDocs.map((d: VaultDocument) =>
+              d.id === validDocId
+                ? {
+                    ...d,
+                    storagePath: effectiveStoragePath,
+                    filePath: effectiveStoragePath,
+                    fileUrl: effectiveStoragePath,
+                  }
+                : d
+            ),
+          });
+        }
+      } catch {}
+    }
+
     return null;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1172,13 +1356,82 @@ export async function cloudUpsertDocument(doc: VaultDocument, userId: string): P
 export async function cloudUpsertReceipt(receipt: Receipt, userId: string): Promise<string | null> {
   if (!isSupabaseConfigured || !userId) return null;
   try {
+    let effectiveStoragePath = receipt.storagePath;
+
+    // Check if we should upload local file to Supabase private storage
+    const localUri = receipt.fileUri?.startsWith('file:') || receipt.fileUri?.startsWith('content:') || receipt.fileUri?.startsWith('/')
+      ? receipt.fileUri
+      : null;
+
+    if (localUri && (!effectiveStoragePath || !isStoragePath(effectiveStoragePath))) {
+      try {
+        const canonical = getCanonicalReceiptUri(localUri) || localUri;
+        const fileInfo = await FileSystem.getInfoAsync(canonical).catch(() => null);
+        if (fileInfo?.exists && !fileInfo.isDirectory) {
+          const ext = canonical.toLowerCase().endsWith('.pdf')
+            ? '.pdf'
+            : canonical.toLowerCase().endsWith('.png')
+            ? '.png'
+            : '.jpg';
+          const primaryItemId = (receipt.itemIds && receipt.itemIds.length > 0) ? receipt.itemIds[0] : null;
+          const userScopedPath = primaryItemId
+            ? `${userId}/items/${primaryItemId}/receipt_${receipt.id}${ext}`
+            : `${userId}/receipts/receipt_${receipt.id}${ext}`;
+
+          const base64 = await FileSystem.readAsStringAsync(canonical, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const binaryString = atob(base64);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          const mimeType = receipt.mimeType || (ext === '.pdf' ? 'application/pdf' : ext === '.png' ? 'image/png' : 'image/jpeg');
+
+          const { error: uploadError } = await supabase.storage
+            .from(BUCKET_ITEM_DOCUMENTS)
+            .upload(userScopedPath, bytes, { contentType: mimeType, upsert: true });
+
+          if (!uploadError) {
+            effectiveStoragePath = userScopedPath;
+            console.log(`[CloudSync] Receipt media uploaded to ${BUCKET_ITEM_DOCUMENTS}/${userScopedPath}`);
+          }
+        }
+      } catch (uploadErr) {
+        console.warn('[CloudSync] Receipt background media upload notice:', uploadErr);
+      }
+    }
+
+    const payload = mapReceiptToDbRow({ ...receipt, storagePath: effectiveStoragePath }, userId);
     const { error } = await supabase
       .from('receipts')
-      .upsert(mapReceiptToDbRow(receipt, userId), { onConflict: 'id' });
+      .upsert(payload, { onConflict: 'id' });
     if (error) {
       console.warn('[CloudSync] Receipt upsert error:', error.message);
       return error.message;
     }
+
+    if (effectiveStoragePath && isStoragePath(effectiveStoragePath) && effectiveStoragePath !== receipt.storagePath) {
+      try {
+        const { useItemStore } = require('../store/itemStore');
+        const currentReceipts = useItemStore.getState().receipts;
+        const existing = currentReceipts.find((r: Receipt) => r.id === receipt.id);
+        if (existing) {
+          useItemStore.setState({
+            receipts: currentReceipts.map((r: Receipt) =>
+              r.id === receipt.id
+                ? {
+                    ...r,
+                    storagePath: effectiveStoragePath,
+                    fileUri: effectiveStoragePath,
+                  }
+                : r
+            ),
+          });
+        }
+      } catch {}
+    }
+
     return null;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -108,9 +108,12 @@ export default function AIReceiptScannerScreen() {
   const fallbackParamUri = isExplicitCameraMode ? null : safeNormalizeRouteUri(params.initialUri);
   const initialUri = initialSession?.uri || fallbackParamUri || null;
   const initialSource = isExplicitCameraMode ? 'camera' : (initialSession?.source || (params.mode === 'gallery' ? 'gallery' : 'camera'));
+  const isAutoProcess = params.autoProcess === 'true';
 
   const [screenState, setScreenState] = useState<ScannerScreenState>(
-    isExplicitCameraMode ? 'scan' : (initialUri ? 'preview' : 'scan')
+    isExplicitCameraMode
+      ? 'scan'
+      : (isAutoProcess && initialUri ? 'processing' : (initialUri ? 'preview' : 'scan'))
   );
 
   const [flashMode, setFlashMode] = useState<'off' | 'auto' | 'on'>('auto');
@@ -153,6 +156,7 @@ export default function AIReceiptScannerScreen() {
   useFocusEffect(
     useCallback(() => {
       if (params.mode === 'camera') {
+        autoProcessTriggeredRef.current = false;
         clearActiveReceiptSession();
         setCapturedImageUri(null);
         setCapturedBase64(null);
@@ -170,6 +174,7 @@ export default function AIReceiptScannerScreen() {
 
   useEffect(() => {
     if (params.mode === 'camera') {
+      autoProcessTriggeredRef.current = false;
       clearActiveReceiptSession();
       setCapturedImageUri(null);
       setCapturedBase64(null);
@@ -185,30 +190,27 @@ export default function AIReceiptScannerScreen() {
     }
 
     const session = getActiveReceiptSession();
-    if (session?.uri) {
-      console.log('[ReceiptPreview] Session restored URI:', session.uri);
-      setCapturedImageUri(session.uri);
-      setImageSource(session.source);
-      setCapturedBase64(session.base64 || null);
-      setCapturedImageName(session.fileName);
-      setImageLoadError(false);
-      setScreenState('preview');
-      return;
-    }
+    const effectiveUri = session?.uri || safeNormalizeRouteUri(params.initialUri);
+    const effectiveName = session?.fileName || (params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg');
+    const effectiveBase64 = session?.base64 || null;
+    const effectiveSource = session?.source || (params.mode === 'gallery' ? 'gallery' : 'camera');
 
-    if (params.initialUri) {
-      const cleanUri = safeNormalizeRouteUri(params.initialUri);
-      console.log('[ReceiptPreview] Initial URI:', cleanUri);
-      setImageSource(params.mode === 'gallery' ? 'gallery' : 'camera');
+    if (effectiveUri) {
+      console.log('[ReceiptPreview] Restored/Param URI:', effectiveUri);
+      setCapturedImageUri(effectiveUri);
+      setImageSource(effectiveSource);
+      setCapturedBase64(effectiveBase64);
+      setCapturedImageName(effectiveName);
       setImageLoadError(false);
-      setCapturedImageUri(cleanUri);
-      setCapturedImageName(
-        params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg'
-      );
       setSelectedPresetId(undefined);
-      setScreenState('preview');
+
+      if (params.autoProcess === 'true') {
+        setScreenState('processing');
+      } else if (!autoProcessTriggeredRef.current) {
+        setScreenState('preview');
+      }
     }
-  }, [params.initialUri, params.initialName, params.mode]);
+  }, [params.initialUri, params.initialName, params.mode, params.autoProcess]);
   const [selectedPresetId, setSelectedPresetId] = useState<string | undefined>(undefined);
   const [extractedData, setExtractedData] = useState<ExtractedReceiptData | null>(null);
   const [selectedItemIndex, setSelectedItemIndex] = useState<number>(0);
@@ -731,14 +733,29 @@ export default function AIReceiptScannerScreen() {
     }
   };
 
-  const handleConfirmAndProcessReceipt = async () => {
+  const handleConfirmAndProcessReceipt = async (
+    overrideUri?: string,
+    overrideBase64?: string | null,
+    overrideName?: string
+  ) => {
     if (scanInProgressRef.current) {
       console.log('[ScannerDiagnostics] scan duplicate prevented: scan already in progress');
       return;
     }
 
-    const activeUri = capturedImageUri || (capturedBase64 ? `data:image/jpeg;base64,${capturedBase64}` : '');
+    const effectiveUri = overrideUri || capturedImageUri;
+    const effectiveBase64 = overrideBase64 !== undefined ? overrideBase64 : capturedBase64;
+    const effectiveName = overrideName || capturedImageName;
+
+    const activeUri = effectiveUri || (effectiveBase64 ? `data:image/jpeg;base64,${effectiveBase64}` : '');
     if (!activeUri) return;
+
+    if (overrideUri && !capturedImageUri) {
+      setCapturedImageUri(overrideUri);
+    }
+    if (overrideName && !capturedImageName) {
+      setCapturedImageName(overrideName);
+    }
 
     scanInProgressRef.current = true;
     setIsScanning(true);
@@ -772,8 +789,8 @@ export default function AIReceiptScannerScreen() {
 
       const geminiResponse = await executeGeminiReceiptAnalysis({
         imageUri: activeUri,
-        base64: capturedBase64 || undefined,
-        fileName: capturedImageName,
+        base64: effectiveBase64 || undefined,
+        fileName: effectiveName,
       });
 
       setProcessingSteps((prev) => prev.map((s) => (s.id <= 2 ? { ...s, completed: true } : s)));
@@ -783,7 +800,7 @@ export default function AIReceiptScannerScreen() {
       const parsedData = parseGeminiResponseToExtractedData(
         geminiResponse,
         activeUri,
-        capturedImageName
+        effectiveName
       );
 
       console.log(`[ScannerDiagnostics] result stored: id=${parsedData.id}`);
@@ -922,7 +939,7 @@ export default function AIReceiptScannerScreen() {
         setPendingRoutingData({
           parsedData,
           activeUri,
-          imageName: capturedImageName || 'Document.jpg',
+          imageName: effectiveName || 'Document.jpg',
         });
         setSelectedReviewCategory(docCat || 'Other Important Documents');
         setSelectedReviewDocType(docType || 'Other Important Document');
@@ -936,7 +953,7 @@ export default function AIReceiptScannerScreen() {
       // 2. High-Confidence SERVICE_REPAIR (confidence >= 0.85):
       if (isServiceRepair) {
         console.log(`[ScannerDiagnostics] high-confidence SERVICE_REPAIR, routing to /service/add`);
-        await navigateToServiceAdd(parsedData, activeUri, capturedImageName || 'Service_Record.jpg');
+        await navigateToServiceAdd(parsedData, activeUri, effectiveName || 'Service_Record.jpg');
         return;
       }
 
@@ -944,7 +961,7 @@ export default function AIReceiptScannerScreen() {
       // College fee, utility bill, vehicle RC, insurance, PUC, warranty, service slip -> Document Vault!
       if (classification.topLevelClassification === 'GENERAL_DOCUMENT') {
         console.log(`[ScannerDiagnostics] high-confidence GENERAL_DOCUMENT (${classification.documentSubtype}), routing to /document/add`);
-        await navigateToDocumentAdd(docCat || 'Other Important Documents', docType || 'Document', parsedData, activeUri, capturedImageName || 'Document.jpg');
+        await navigateToDocumentAdd(docCat || 'Other Important Documents', docType || 'Document', parsedData, activeUri, effectiveName || 'Document.jpg');
         return;
       }
 
@@ -960,14 +977,14 @@ export default function AIReceiptScannerScreen() {
         }
 
         console.log(`[ScannerDiagnostics] single physical item purchase detected, routing to /(tabs)/add`);
-        await navigateToItemAdd(parsedData, activeUri, capturedImageName || 'Receipt.jpg');
+        await navigateToItemAdd(parsedData, activeUri, effectiveName || 'Receipt.jpg');
         return;
       }
 
       setPendingRoutingData({
         parsedData,
         activeUri,
-        imageName: capturedImageName || 'Document.jpg',
+        imageName: effectiveName || 'Document.jpg',
       });
       setSelectedReviewCategory(docCat || 'Other Important Documents');
       setSelectedReviewDocType(docType || 'Other Important Document');
@@ -985,17 +1002,21 @@ export default function AIReceiptScannerScreen() {
   useEffect(() => {
     if (
       params.autoProcess === 'true' &&
-      (capturedImageUri || capturedBase64) &&
+      (capturedImageUri || capturedBase64 || initialUri) &&
       !autoProcessTriggeredRef.current &&
       !isScanning
     ) {
       autoProcessTriggeredRef.current = true;
-      const timer = setTimeout(() => {
-        handleConfirmAndProcessReceipt();
-      }, 150);
-      return () => clearTimeout(timer);
+      const targetUri = capturedImageUri || initialUri || undefined;
+      const targetBase64 = capturedBase64 || initialSession?.base64 || null;
+      const targetName =
+        capturedImageName ||
+        initialSession?.fileName ||
+        (params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg');
+      setScreenState('processing');
+      handleConfirmAndProcessReceipt(targetUri, targetBase64, targetName);
     }
-  }, [params.autoProcess, capturedImageUri, capturedBase64, isScanning]);
+  }, [params.autoProcess, capturedImageUri, capturedBase64, initialUri, isScanning]);
 
   const handleUpdateCommonField = (field: keyof ExtractedReceiptData['common'], value: any) => {
     if (!extractedData) return;
@@ -1736,7 +1757,11 @@ export default function AIReceiptScannerScreen() {
               clearActiveReceiptSession();
               setCapturedImageUri(null);
               setCapturedBase64(null);
-              setScreenState('scan');
+              if (params.mode === 'gallery') {
+                router.back();
+              } else {
+                setScreenState('scan');
+              }
             }}
             activeOpacity={0.8}
             accessibilityLabel="Back to Scan"
@@ -1879,7 +1904,9 @@ export default function AIReceiptScannerScreen() {
               opacity: 1,
             }}
             className="w-full flex-row items-center justify-center gap-2 py-3.5 rounded-serene-lg shadow-sm"
-            onPress={handleConfirmAndProcessReceipt}
+            onPress={() => {
+              handleConfirmAndProcessReceipt();
+            }}
             disabled={(!capturedImageUri && !capturedBase64) || isScanning}
             activeOpacity={0.88}
             accessibilityLabel="Scan Receipt"
@@ -2023,6 +2050,26 @@ export default function AIReceiptScannerScreen() {
   if (screenState === 'processing') {
     return (
       <View className="flex-1 bg-serene-surface items-center justify-center px-6" style={{ paddingTop: insets.top }}>
+        <View className="absolute top-4 left-4 z-10" style={{ paddingTop: insets.top }}>
+          <TouchableOpacity
+            className="w-10 h-10 rounded-full bg-white/80 items-center justify-center border border-serene-hairline-border shadow-xs"
+            onPress={() => {
+              scanInProgressRef.current = false;
+              setIsScanning(false);
+              clearActiveReceiptSession();
+              if (params.mode === 'gallery') {
+                router.back();
+              } else {
+                setScreenState('scan');
+              }
+            }}
+            activeOpacity={0.8}
+            accessibilityLabel="Cancel Scan"
+          >
+            <MaterialIcons name="arrow-back" size={22} color={SereneColors.onSurface} />
+          </TouchableOpacity>
+        </View>
+
         {capturedImageUri && (
           <Animated.View
             className="w-28 h-36 rounded-serene-lg overflow-hidden bg-black shadow-lg mb-6 relative"
@@ -2124,7 +2171,9 @@ export default function AIReceiptScannerScreen() {
 
               <TouchableOpacity
                 className="flex-1 py-2.5 rounded-serene-md bg-serene-primary items-center"
-                onPress={handleConfirmAndProcessReceipt}
+                onPress={() => {
+                  handleConfirmAndProcessReceipt();
+                }}
               >
                 <Text className="text-xs font-bold text-white">Retry</Text>
               </TouchableOpacity>

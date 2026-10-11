@@ -1,18 +1,26 @@
 // ==============================================================================
 // KEEPR DIGITAL OWNERSHIP VAULT: useResolvedImage Hook
+// Canonical image-resolution pipeline for items, documents, and vault cards.
 // Resolves private Supabase Storage paths, remote URLs, and local URIs
-// into usable display URIs with memory caching and error handling.
+// into usable display URIs with memory caching, TTL refresh, and graceful fallback.
 // ==============================================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   isStoragePath,
   isRemoteUrl,
+  isLocalUri,
   getItemImageSignedUrl,
+  getVaultDocumentSignedUrl,
   getCachedSignedUrl,
 } from '../services/storageService';
+import {
+  extractItemImageCandidates,
+  extractDocumentImageCandidates,
+} from '../utils/storageUtils';
 import { getCanonicalReceiptUri } from '../services/receiptFileService';
+import type { Item, VaultDocument, RecentlyAddedEntry } from '../types';
 
 export interface ResolvedImageResult {
   resolvedUri: string | null;
@@ -22,37 +30,46 @@ export interface ResolvedImageResult {
 }
 
 /**
- * Resolves a single item image URI or storage path for display in React Native.
+ * Resolves a single item image (or Item object) for display across all screens.
  *
  * Evaluation order:
- * 1. If localFallbackUri is valid and file exists on this device, returns it immediately (instant offline preview).
- * 2. If storagePathOrUri is a remote HTTP URL, returns it directly.
- * 3. If storagePathOrUri is a Supabase Storage path, returns cached or freshly generated signed URL from private bucket.
- * 4. If storagePathOrUri is a local URI, checks if file exists on this device.
- * 5. If none exist (e.g. old Expo Go item on new device), marks isUnavailable: true.
+ * 1. Checks memory cache for signed URL (prevents flicker).
+ * 2. If local URI exists on this physical device, returns it immediately (instant offline preview).
+ * 3. If durable Supabase Storage path exists, resolves signed URL from private 'item-images' bucket.
+ * 4. If remote HTTP URL exists, returns it directly.
+ * 5. If file does not exist locally (e.g. cross-device Expo Go / APK sandbox), seamlessly falls back
+ *    to cloud storage signed URL.
+ * 6. If no valid image exists or fetch fails, marks isUnavailable: true.
  */
 export function useResolvedItemImage(
-  storagePathOrUri?: string | null,
+  itemOrStoragePath?: Partial<Item> | string | null,
   localFallbackUri?: string | null
 ): ResolvedImageResult {
-  // Synchronous cache check to prevent render flicker if already cached
-  const initialUri = (() => {
-    if (localFallbackUri && (localFallbackUri.startsWith('http://') || localFallbackUri.startsWith('https://'))) {
-      return localFallbackUri;
+  const candidates = useMemo(() => {
+    return extractItemImageCandidates(itemOrStoragePath, localFallbackUri);
+  }, [
+    typeof itemOrStoragePath === 'object' && itemOrStoragePath !== null
+      ? `${itemOrStoragePath.id || ''}:${itemOrStoragePath.imageStoragePath || ''}:${itemOrStoragePath.imageUrl || ''}:${itemOrStoragePath.photoUri || ''}:${(itemOrStoragePath.productPhotos || []).join(',')}`
+      : itemOrStoragePath,
+    localFallbackUri,
+  ]);
+
+  const { storagePath, remoteUrl, localUri } = candidates;
+
+  // Synchronous cache check to prevent render flicker
+  const initialUri = useMemo(() => {
+    if (storagePath) {
+      const cached = getCachedSignedUrl(storagePath);
+      if (cached) return cached;
     }
-    if (storagePathOrUri) {
-      if (storagePathOrUri.startsWith('http://') || storagePathOrUri.startsWith('https://')) {
-        return storagePathOrUri;
-      }
-      if (isStoragePath(storagePathOrUri)) {
-        return getCachedSignedUrl(storagePathOrUri);
-      }
-    }
+    if (remoteUrl) return remoteUrl;
     return null;
-  })();
+  }, [storagePath, remoteUrl]);
 
   const [resolvedUri, setResolvedUri] = useState<string | null>(initialUri);
-  const [isLoading, setIsLoading] = useState<boolean>(!initialUri && Boolean(storagePathOrUri || localFallbackUri));
+  const [isLoading, setIsLoading] = useState<boolean>(
+    !initialUri && Boolean(storagePath || remoteUrl || localUri)
+  );
   const [isUnavailable, setIsUnavailable] = useState<boolean>(false);
   const [isLocal, setIsLocal] = useState<boolean>(false);
 
@@ -60,11 +77,31 @@ export function useResolvedItemImage(
     let isMounted = true;
 
     async function resolve() {
-      // 1. Try local fallback URI first if provided (fastest on device that captured it)
-      if (localFallbackUri) {
-        if (isRemoteUrl(localFallbackUri)) {
+      // 1. Try local URI first if provided (fastest on device that captured it)
+      if (localUri) {
+        const canonicalLocal = getCanonicalReceiptUri(localUri) || localUri;
+        try {
+          const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
+          if (info?.exists && !info.isDirectory) {
+            if (isMounted) {
+              setResolvedUri(canonicalLocal);
+              setIsLoading(false);
+              setIsUnavailable(false);
+              setIsLocal(true);
+            }
+            return;
+          }
+        } catch {}
+        // If local file does not exist on this device (e.g. cross-device session),
+        // proceed directly to durable cloud storage without failing!
+      }
+
+      // 2. Try durable Supabase Storage path from private bucket
+      if (storagePath && isStoragePath(storagePath)) {
+        const cached = getCachedSignedUrl(storagePath);
+        if (cached) {
           if (isMounted) {
-            setResolvedUri(localFallbackUri);
+            setResolvedUri(cached);
             setIsLoading(false);
             setIsUnavailable(false);
             setIsLocal(false);
@@ -72,7 +109,90 @@ export function useResolvedItemImage(
           return;
         }
 
-        const canonicalLocal = getCanonicalReceiptUri(localFallbackUri) || localFallbackUri;
+        if (isMounted) setIsLoading(true);
+        const signed = await getItemImageSignedUrl(storagePath);
+        if (isMounted) {
+          if (signed) {
+            setResolvedUri(signed);
+            setIsUnavailable(false);
+            setIsLoading(false);
+            setIsLocal(false);
+            return;
+          }
+        }
+      }
+
+      // 3. Try remote HTTP/HTTPS URL
+      if (remoteUrl && (isRemoteUrl(remoteUrl) || remoteUrl.startsWith('data:'))) {
+        if (isMounted) {
+          setResolvedUri(remoteUrl);
+          setIsLoading(false);
+          setIsUnavailable(false);
+          setIsLocal(false);
+        }
+        return;
+      }
+
+      // 4. No valid cloud or local image found
+      if (isMounted) {
+        setResolvedUri(null);
+        setIsLoading(false);
+        setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
+        setIsLocal(false);
+      }
+    }
+
+    resolve();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [storagePath, remoteUrl, localUri]);
+
+  return { resolvedUri, isLoading, isUnavailable, isLocal };
+}
+
+/**
+ * Resolves a VaultDocument thumbnail or display image.
+ */
+export function useResolvedDocumentImage(
+  docOrStoragePath?: Partial<VaultDocument> | string | null,
+  localFallbackUri?: string | null
+): ResolvedImageResult {
+  const candidates = useMemo(() => {
+    return extractDocumentImageCandidates(docOrStoragePath, localFallbackUri);
+  }, [
+    typeof docOrStoragePath === 'object' && docOrStoragePath !== null
+      ? `${docOrStoragePath.id || ''}:${docOrStoragePath.storagePath || ''}:${docOrStoragePath.filePath || ''}:${docOrStoragePath.fileUrl || ''}`
+      : docOrStoragePath,
+    localFallbackUri,
+  ]);
+
+  const { storagePath, remoteUrl, localUri } = candidates;
+
+  const initialUri = useMemo(() => {
+    if (storagePath) {
+      const cached = getCachedSignedUrl(storagePath);
+      if (cached) return cached;
+    }
+    if (remoteUrl) return remoteUrl;
+    return null;
+  }, [storagePath, remoteUrl]);
+
+  const [resolvedUri, setResolvedUri] = useState<string | null>(initialUri);
+  const [isLoading, setIsLoading] = useState<boolean>(
+    !initialUri && Boolean(storagePath || remoteUrl || localUri)
+  );
+  const [isUnavailable, setIsUnavailable] = useState<boolean>(false);
+  const [isLocal, setIsLocal] = useState<boolean>(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function resolve() {
+      // 1. Check local file on this device
+      if (localUri) {
+        const canonicalLocal = getCanonicalReceiptUri(localUri) || localUri;
         try {
           const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
           if (info?.exists && !info.isDirectory) {
@@ -87,31 +207,9 @@ export function useResolvedItemImage(
         } catch {}
       }
 
-      // 2. No primary target
-      if (!storagePathOrUri) {
-        if (isMounted) {
-          setResolvedUri(null);
-          setIsLoading(false);
-          setIsUnavailable(false);
-          setIsLocal(false);
-        }
-        return;
-      }
-
-      // 3. Remote URL
-      if (isRemoteUrl(storagePathOrUri) || storagePathOrUri.startsWith('data:')) {
-        if (isMounted) {
-          setResolvedUri(storagePathOrUri);
-          setIsLoading(false);
-          setIsUnavailable(false);
-          setIsLocal(false);
-        }
-        return;
-      }
-
-      // 4. Supabase Storage Path (e.g. userId/items/itemId/photo_0.jpg)
-      if (isStoragePath(storagePathOrUri)) {
-        const cached = getCachedSignedUrl(storagePathOrUri);
+      // 2. Supabase Storage signed URL from private 'vault-documents'
+      if (storagePath && isStoragePath(storagePath)) {
+        const cached = getCachedSignedUrl(storagePath);
         if (cached) {
           if (isMounted) {
             setResolvedUri(cached);
@@ -123,45 +221,35 @@ export function useResolvedItemImage(
         }
 
         if (isMounted) setIsLoading(true);
-        const signed = await getItemImageSignedUrl(storagePathOrUri);
+        const signed = await getVaultDocumentSignedUrl(storagePath);
         if (isMounted) {
           if (signed) {
             setResolvedUri(signed);
             setIsUnavailable(false);
-          } else {
-            setResolvedUri(null);
-            setIsUnavailable(true);
+            setIsLoading(false);
+            setIsLocal(false);
+            return;
           }
+        }
+      }
+
+      // 3. Remote URL
+      if (remoteUrl && (isRemoteUrl(remoteUrl) || remoteUrl.startsWith('data:'))) {
+        if (isMounted) {
+          setResolvedUri(remoteUrl);
           setIsLoading(false);
+          setIsUnavailable(false);
           setIsLocal(false);
         }
         return;
       }
 
-      // 5. Local URI from storagePathOrUri itself
-      const canonical = getCanonicalReceiptUri(storagePathOrUri) || storagePathOrUri;
-      try {
-        const info = await FileSystem.getInfoAsync(canonical).catch(() => null);
-        if (isMounted) {
-          if (info?.exists && !info.isDirectory) {
-            setResolvedUri(canonical);
-            setIsUnavailable(false);
-            setIsLocal(true);
-          } else {
-            // Local file does not exist on this device (e.g. Case C: Expo Go legacy path)
-            setResolvedUri(null);
-            setIsUnavailable(true);
-            setIsLocal(false);
-          }
-          setIsLoading(false);
-        }
-      } catch {
-        if (isMounted) {
-          setResolvedUri(null);
-          setIsUnavailable(true);
-          setIsLoading(false);
-          setIsLocal(false);
-        }
+      // 4. Unavailable
+      if (isMounted) {
+        setResolvedUri(null);
+        setIsLoading(false);
+        setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
+        setIsLocal(false);
       }
     }
 
@@ -170,9 +258,25 @@ export function useResolvedItemImage(
     return () => {
       isMounted = false;
     };
-  }, [storagePathOrUri, localFallbackUri]);
+  }, [storagePath, remoteUrl, localUri]);
 
   return { resolvedUri, isLoading, isUnavailable, isLocal };
+}
+
+/**
+ * Resolves an entry from Recently Added list, automatically delegating to item or document resolver.
+ */
+export function useResolvedEntryImage(
+  entry?: RecentlyAddedEntry | null
+): ResolvedImageResult {
+  const isItem = entry?.entityType === 'PURCHASED_ITEM';
+  const itemCandidate = isItem ? entry?.item || entry?.thumbnail : null;
+  const docCandidate = !isItem ? entry?.document || entry?.thumbnail : null;
+
+  const itemResult = useResolvedItemImage(itemCandidate);
+  const docResult = useResolvedDocumentImage(docCandidate);
+
+  return isItem ? itemResult : docResult;
 }
 
 export interface ResolvedPhotoEntry {

@@ -135,7 +135,7 @@ const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
               <MaterialIcons name="picture-as-pdf" size={24} color={SereneColors.error} />
               <Text style={styles.thumbPdfLabel}>PDF</Text>
             </View>
-          ) : canonicalUri && !canonicalUri.startsWith('http') ? (
+          ) : canonicalUri ? (
             <Image source={{ uri: canonicalUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
           ) : (
             <MaterialIcons name={(meta.icon as any) || 'description'} size={24} color={SereneColors.primary} />
@@ -196,10 +196,33 @@ const SelectableDocumentCard = React.memo(function SelectableDocumentCard({
 
 export default function DocumentsVaultScreen() {
   const user = useAuthStore((s) => s.user);
+  const session = useAuthStore((s) => s.session);
   const documents = useItemStore((s) => s.documents);
   const items = useItemStore((s) => s.items);
   const isLoading = useItemStore((s) => s.isLoading);
   const deleteDocument = useItemStore((s) => s.deleteDocument);
+  const hydrateFromCloud = useItemStore((s) => s.hydrateFromCloud);
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await hydrateFromCloud();
+    } catch (e) {
+      console.warn('[DocumentsVault] Pull-to-refresh error:', e);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [hydrateFromCloud]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (documents.length === 0) {
+        hydrateFromCloud().catch(() => {});
+      }
+    }, [documents.length, hydrateFromCloud])
+  );
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSort, setSelectedSort] = useState<DocSortOption>('recent_added');
@@ -243,13 +266,13 @@ export default function DocumentsVaultScreen() {
 
   // ── 1. User-scoped Documents (no Items ever) ───────────────────────────────
   const userDocuments = useMemo(() => {
-    const uid = user?.id;
+    const uid = user?.id || session?.user?.id;
     return (documents || []).filter((doc) => {
       if (!doc || !doc.id) return false;
       if (uid && doc.userId && doc.userId !== uid) return false;
       return true;
     });
-  }, [documents, user?.id]);
+  }, [documents, user?.id, session?.user?.id]);
 
   useEffect(() => {
     if (isSelectionMode && selectedDocIds.size > 0) {
@@ -708,6 +731,8 @@ export default function DocumentsVaultScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
+          refreshing={refreshing}
+          onRefresh={onRefresh}
           ListEmptyComponent={emptyNode}
           removeClippedSubviews
           initialNumToRender={12}

@@ -212,8 +212,28 @@ export const useAuthStore = create<AuthState>()(
       clearRecoveryMode: () => set({ isRecoveryMode: false }),
 
       initialize: async () => {
+        if (isSupabaseConfigured) {
+          setupAuthListener();
+        }
+
         if (get().isInitialized && get().session) {
-          console.log('[AuthDiagnostic] Already initialized with active session, skipping re-init');
+          console.log('[AuthDiagnostic] Already initialized with active session from storage, verifying and hydrating cloud');
+          if (isSupabaseConfigured) {
+            // Verify session token with Supabase and trigger authoritative cloud hydration
+            supabase.auth.getSession().then(({ data, error }) => {
+              if (error) {
+                console.warn('[AuthDiagnostic] Background getSession validation warning:', error.message);
+              }
+              if (data?.session?.user) {
+                try {
+                  const { useItemStore } = require('./itemStore');
+                  useItemStore.getState().hydrateFromCloud();
+                } catch (hErr) {
+                  console.warn('[AuthDiagnostic] Background hydrateFromCloud error:', hErr);
+                }
+              }
+            }).catch(() => {});
+          }
           return;
         }
 
@@ -399,8 +419,14 @@ export const useAuthStore = create<AuthState>()(
                     expenses: localState.expenses,
                   }, cloudIds);
                 }
+                // Always hydrate authoritative cloud vault data on successful sign in
+                await useItemStore.getState().hydrateFromCloud();
               } catch (migErr) {
-                console.warn('[AuthDiagnostic] signIn offline migration deferred:', migErr);
+                console.warn('[AuthDiagnostic] signIn offline migration / hydration deferred:', migErr);
+                try {
+                  const { useItemStore } = require('./itemStore');
+                  await useItemStore.getState().hydrateFromCloud();
+                } catch {}
               }
 
 
@@ -566,6 +592,13 @@ export const useAuthStore = create<AuthState>()(
           useItemStore.getState().clearUserData();
         } catch (e) {
           console.warn('[AuthDiagnostic] clearUserData on signOut failed:', e);
+        }
+
+        try {
+          const { clearSignedUrlCache } = require('../services/storageService');
+          clearSignedUrlCache();
+        } catch (e) {
+          console.warn('[AuthDiagnostic] clearSignedUrlCache on signOut failed:', e);
         }
 
         set({

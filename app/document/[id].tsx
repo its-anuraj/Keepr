@@ -30,8 +30,11 @@ import {
 } from '../../src/services/receiptFileService';
 import {
   createPrivateSignedUrl,
+  getVaultDocumentSignedUrl,
   BUCKET_VAULT_DOCUMENTS,
+  BUCKET_ITEM_DOCUMENTS,
 } from '../../src/services/storageService';
+import { isStoragePath } from '../../src/utils/storageUtils';
 import * as FileSystem from 'expo-file-system/legacy';
 
 export default function DocumentDetailsScreen() {
@@ -66,8 +69,18 @@ export default function DocumentDetailsScreen() {
     async function resolvePhotos() {
       if (!doc) return;
 
+      const preferredBucket = doc.itemId ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS;
+
+      const sp1 = (doc.storagePath && isStoragePath(doc.storagePath))
+        ? doc.storagePath
+        : (doc.filePath && isStoragePath(doc.filePath))
+        ? doc.filePath
+        : (doc.fileUrl && isStoragePath(doc.fileUrl))
+        ? doc.fileUrl
+        : null;
+
       let raw1 = doc.filePath ? getCanonicalDocumentUri(doc.filePath) : null;
-      let norm1 = raw1 ? safeNormalizeRouteUri(raw1) : null;
+      let norm1 = raw1 && !isStoragePath(raw1) ? safeNormalizeRouteUri(raw1) : null;
       let p1Exists = norm1 ? await verifyDocumentFileExists(norm1) : false;
 
       if (p1Exists && norm1) {
@@ -82,8 +95,8 @@ export default function DocumentDetailsScreen() {
           } catch {
           }
         }
-      } else if (doc.storagePath && !doc.storagePath.startsWith('file:')) {
-        const signed = await createPrivateSignedUrl(BUCKET_VAULT_DOCUMENTS, doc.storagePath);
+      } else if (sp1) {
+        const signed = await getVaultDocumentSignedUrl(sp1, preferredBucket);
         if (isMounted && signed) {
           setPhoto1Url(signed);
           setFileExists(true);
@@ -97,14 +110,22 @@ export default function DocumentDetailsScreen() {
         if (isMounted) setFileExists(false);
       }
 
+      const sp2 = (doc.storagePathBack && isStoragePath(doc.storagePathBack))
+        ? doc.storagePathBack
+        : (doc.filePathBack && isStoragePath(doc.filePathBack))
+        ? doc.filePathBack
+        : (doc.fileUrlBack && isStoragePath(doc.fileUrlBack))
+        ? doc.fileUrlBack
+        : null;
+
       let raw2 = doc.filePathBack ? getCanonicalDocumentUri(doc.filePathBack) : null;
-      let norm2 = raw2 ? safeNormalizeRouteUri(raw2) : null;
+      let norm2 = raw2 && !isStoragePath(raw2) ? safeNormalizeRouteUri(raw2) : null;
       let p2Exists = norm2 ? await verifyDocumentFileExists(norm2) : false;
 
       if (p2Exists && norm2) {
         if (isMounted) setPhoto2Url(norm2);
-      } else if (doc.storagePathBack && !doc.storagePathBack.startsWith('file:')) {
-        const signed2 = await createPrivateSignedUrl(BUCKET_VAULT_DOCUMENTS, doc.storagePathBack);
+      } else if (sp2) {
+        const signed2 = await getVaultDocumentSignedUrl(sp2, preferredBucket);
         if (isMounted && signed2) setPhoto2Url(signed2);
       } else if (doc.fileUrlBack && (doc.fileUrlBack.startsWith('http://') || doc.fileUrlBack.startsWith('https://'))) {
         if (isMounted) setPhoto2Url(doc.fileUrlBack);

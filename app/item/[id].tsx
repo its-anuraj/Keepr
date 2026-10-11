@@ -30,6 +30,8 @@ import {
   verifyReceiptFileExists,
   logReceiptDiagnostics,
 } from '../../src/services/receiptFileService';
+import { isStoragePath } from '../../src/utils/storageUtils';
+import { getItemReceiptSignedUrl } from '../../src/services/storageService';
 
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -106,8 +108,14 @@ export default function ItemDetailScreen() {
     item.photoUri ||
     (item.imageUrl && item.imageUrl !== item.receiptUri ? item.imageUrl : undefined);
 
-  const { resolvedUri: resolvedMainPhoto } =
-    useResolvedItemImage(primaryPhotoCandidate, item.photoUri);
+  const itemForImage = useMemo(() => {
+    if (item.imageUrl === item.receiptUri && !item.imageStoragePath) {
+      return { ...item, imageUrl: undefined };
+    }
+    return item;
+  }, [item]);
+
+  const { resolvedUri: resolvedMainPhoto } = useResolvedItemImage(itemForImage);
 
   const rawPhotoCandidateList = useMemo(() => {
     if (item.productPhotos && item.productPhotos.length > 0) {
@@ -132,76 +140,116 @@ export default function ItemDetailScreen() {
   );
 
   // Receipt / Invoice (proof of purchase document)
-  // Use getCanonicalReceiptUri to re-anchor vault_receipts/ paths to the current
-  // documentDirectory (survives app reinstall, iOS container UUID changes, Android restarts)
-  const rawReceiptUri =
-    item.receiptUri ||
-    item.documents?.find((d) => d.fileType === 'receipt' || d.fileType === 'invoice')?.fileUrl;
-  const receiptUri = rawReceiptUri
-    ? (getCanonicalReceiptUri(rawReceiptUri) || normalizeImageUri(rawReceiptUri) || undefined)
-    : undefined;
-
   const isInvoice = Boolean(
     item.receiptType === 'invoice' ||
     Boolean(item.invoiceNumber && item.invoiceNumber.trim())
   );
   const documentLabel = isInvoice ? 'Invoice' : 'Receipt';
 
-  // Physical disk file existence verification (Requirement 10 & 21)
+  // Find candidate durable cloud storage path for this item's receipt
+  const candidateStoragePath = useMemo(() => {
+    if (!item) return null;
+    if (item.receiptPath && isStoragePath(item.receiptPath)) return item.receiptPath;
+    if (item.receiptUri && isStoragePath(item.receiptUri)) return item.receiptUri;
+    if (item.receiptId) {
+      const rec = useItemStore.getState().getReceiptById(item.receiptId);
+      if (rec?.storagePath && isStoragePath(rec.storagePath)) return rec.storagePath;
+      if (rec?.fileUri && isStoragePath(rec.fileUri)) return rec.fileUri;
+    }
+    const linkedReceiptDoc = linkedDocuments.find((d) => d.fileType === 'receipt' || d.fileType === 'invoice');
+    if (linkedReceiptDoc?.storagePath && isStoragePath(linkedReceiptDoc.storagePath)) {
+      return linkedReceiptDoc.storagePath;
+    }
+    if (linkedReceiptDoc?.filePath && isStoragePath(linkedReceiptDoc.filePath)) {
+      return linkedReceiptDoc.filePath;
+    }
+    return null;
+  }, [item?.receiptPath, item?.receiptUri, item?.receiptId, linkedDocuments]);
+
+  // Find candidate local URI for immediate offline/local preview
+  const candidateLocalUri = useMemo(() => {
+    if (!item) return null;
+    const raw = item.receiptUri ||
+      (item.receiptId ? useItemStore.getState().getReceiptById(item.receiptId)?.fileUri : null) ||
+      linkedDocuments.find((d) => d.fileType === 'receipt' || d.fileType === 'invoice')?.fileUrl;
+    if (!raw || isStoragePath(raw)) return null;
+    return getCanonicalReceiptUri(raw) || normalizeImageUri(raw) || null;
+  }, [item?.receiptUri, item?.receiptId, linkedDocuments]);
+
+  const hasAnyReceiptAttachment = Boolean(candidateStoragePath || candidateLocalUri || item?.receiptId);
+
+  const [displayReceiptUri, setDisplayReceiptUri] = useState<string | null>(null);
   const [receiptState, setReceiptState] = useState<{
     status: 'idle' | 'checking' | 'exists' | 'unavailable';
     fileSize?: number;
-  }>({ status: receiptUri ? 'checking' : 'idle' });
+  }>({ status: hasAnyReceiptAttachment ? 'checking' : 'idle' });
 
   const verifyReceipt = useCallback(async () => {
-    if (!receiptUri) {
+    if (!hasAnyReceiptAttachment) {
+      setDisplayReceiptUri(null);
       setReceiptState({ status: 'idle' });
       return;
     }
+
     setReceiptState((prev) => ({ ...prev, status: 'checking' }));
-    try {
-      if (
-        receiptUri.startsWith('http://') ||
-        receiptUri.startsWith('https://') ||
-        receiptUri.startsWith('data:')
-      ) {
-        logReceiptDiagnostics({
-          itemId: item.id,
-          receiptId: item.receiptId,
-          storagePath: receiptUri,
-          resolvedUri: receiptUri,
-          fileExists: true,
-        });
-        setReceiptState({ status: 'exists' });
-        return;
-      }
+    let resolved = false;
 
-      const exists = await verifyReceiptFileExists(receiptUri);
-      let fileSize: number | undefined;
-      if (exists) {
-        const info = await FileSystem.getInfoAsync(receiptUri).catch(() => null);
-        fileSize = info?.exists ? info.size : undefined;
+    // 1. Check local file on this device first for instant display
+    if (candidateLocalUri) {
+      try {
+        if (
+          candidateLocalUri.startsWith('http://') ||
+          candidateLocalUri.startsWith('https://') ||
+          candidateLocalUri.startsWith('data:')
+        ) {
+          setDisplayReceiptUri(candidateLocalUri);
+          setReceiptState({ status: 'exists' });
+          resolved = true;
+        } else {
+          const exists = await verifyReceiptFileExists(candidateLocalUri);
+          if (exists) {
+            const info = await FileSystem.getInfoAsync(candidateLocalUri).catch(() => null);
+            setDisplayReceiptUri(candidateLocalUri);
+            setReceiptState({ status: 'exists', fileSize: info?.exists ? info.size : undefined });
+            resolved = true;
+          }
+        }
+      } catch (localErr) {
+        console.warn('[ItemDetails] Local receipt file check notice:', localErr);
       }
+    }
 
+    // 2. If storage path is available, obtain durable private signed URL from Supabase Storage
+    if (candidateStoragePath) {
+      try {
+        const signedUrl = await getItemReceiptSignedUrl(candidateStoragePath);
+        if (signedUrl) {
+          setDisplayReceiptUri(signedUrl);
+          setReceiptState({ status: 'exists' });
+          resolved = true;
+          logReceiptDiagnostics({
+            itemId: item.id,
+            receiptId: item.receiptId,
+            storagePath: candidateStoragePath,
+            resolvedUri: signedUrl,
+            fileExists: true,
+          });
+        }
+      } catch (cloudErr) {
+        console.warn('[ItemDetails] Cloud receipt signed URL resolution notice:', cloudErr);
+      }
+    }
+
+    if (!resolved) {
       logReceiptDiagnostics({
         itemId: item.id,
         receiptId: item.receiptId,
-        storagePath: rawReceiptUri,
-        resolvedUri: receiptUri,
-        fileExists: exists,
-        fileSize,
+        storagePath: candidateStoragePath || candidateLocalUri || 'unknown',
+        fileExists: false,
       });
-
-      if (exists) {
-        setReceiptState({ status: 'exists', fileSize });
-      } else {
-        setReceiptState({ status: 'unavailable' });
-      }
-    } catch (err) {
-      console.warn('[ItemDetails] Receipt verification error:', err);
       setReceiptState({ status: 'unavailable' });
     }
-  }, [receiptUri, rawReceiptUri, item.id, item.receiptId]);
+  }, [hasAnyReceiptAttachment, candidateLocalUri, candidateStoragePath, item?.id, item?.receiptId]);
 
   useEffect(() => {
     verifyReceipt();
@@ -857,18 +905,18 @@ export default function ItemDetailScreen() {
               </Text>
             </View>
 
-            {receiptUri && receiptState.status === 'exists' ? (
+            {hasAnyReceiptAttachment && receiptState.status === 'exists' ? (
               <View className="bg-emerald-50 px-2.5 py-0.5 rounded-full">
                 <Text className="text-[10px] font-semibold text-emerald-700">✓ {documentLabel} Attached</Text>
               </View>
-            ) : receiptUri && receiptState.status === 'unavailable' ? (
+            ) : hasAnyReceiptAttachment && receiptState.status === 'unavailable' ? (
               <View className="bg-red-50 px-2.5 py-0.5 rounded-full">
                 <Text className="text-[10px] font-semibold text-red-600">Unavailable</Text>
               </View>
             ) : null}
           </View>
 
-          {receiptUri ? (
+          {hasAnyReceiptAttachment ? (
             receiptState.status === 'checking' ? (
               <View className="bg-serene-surface-container-low p-6 rounded-serene-lg items-center justify-center gap-2">
                 <ActivityIndicator size="small" color={SereneColors.primary} />
@@ -876,14 +924,14 @@ export default function ItemDetailScreen() {
                   Verifying {documentLabel.toLowerCase()} attachment...
                 </Text>
               </View>
-            ) : receiptState.status === 'exists' ? (
+            ) : receiptState.status === 'exists' && displayReceiptUri ? (
               <View className="gap-3">
                 <TouchableOpacity
                   className="w-full h-48 rounded-serene-lg overflow-hidden border border-serene-subtle-border relative bg-serene-surface-container-low"
                   activeOpacity={0.9}
-                  onPress={() => setPreviewModal({ uri: receiptUri, title: `${item.name} · ${documentLabel}` })}
+                  onPress={() => setPreviewModal({ uri: displayReceiptUri, title: `${item.name} · ${documentLabel}` })}
                 >
-                  {receiptUri.toLowerCase().endsWith('.pdf') ? (
+                  {(displayReceiptUri.toLowerCase().includes('.pdf') || (item.receiptName && item.receiptName.toLowerCase().endsWith('.pdf'))) ? (
                     <View className="w-full h-full items-center justify-center bg-serene-surface-container-low">
                       <MaterialIcons name="picture-as-pdf" size={48} color={SereneColors.error} />
                       <Text className="text-[12px] font-mono text-serene-on-surface mt-2 font-semibold">
@@ -892,7 +940,7 @@ export default function ItemDetailScreen() {
                     </View>
                   ) : (
                     <Image
-                      source={{ uri: receiptUri }}
+                      source={{ uri: displayReceiptUri }}
                       style={{ width: '100%', height: '100%' }}
                       className="w-full h-full"
                       resizeMode="contain"
@@ -911,7 +959,7 @@ export default function ItemDetailScreen() {
                   </Text>
                   <TouchableOpacity
                     className="bg-serene-surface-container-high px-3 py-1.5 rounded-serene-md flex-row items-center gap-1"
-                    onPress={() => setPreviewModal({ uri: receiptUri, title: `${item.name} · ${documentLabel}` })}
+                    onPress={() => setPreviewModal({ uri: displayReceiptUri, title: `${item.name} · ${documentLabel}` })}
                   >
                     <MaterialIcons name="fullscreen" size={16} color={SereneColors.primary} />
                     <Text className="text-[12px] font-semibold text-serene-primary">View {documentLabel}</Text>
