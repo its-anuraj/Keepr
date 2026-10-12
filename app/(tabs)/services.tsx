@@ -18,6 +18,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
+import { EmptyState } from '../../src/components/ui/EmptyState';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
 import { useAuthStore } from '../../src/store/authStore';
@@ -544,42 +545,29 @@ export default function ServicesScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <View style={styles.emptyIconCircle}>
-              <MaterialIcons name="build" size={36} color={SereneColors.primary} />
-            </View>
-            <Text style={styles.emptyTitle}>
-              {userRecords.length === 0
-                ? 'No Service Records Yet'
-                : 'No Matching Service Records'}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {userRecords.length === 0
-                ? 'Track repairs, maintenance, and part replacements for your purchased items.'
-                : 'Try adjusting your search terms or clearing your active filters.'}
-            </Text>
-            {userRecords.length === 0 ? (
-              <TouchableOpacity
-                style={styles.emptyAddBtn}
-                onPress={() => router.push('/service/add' as any)}
-                activeOpacity={0.85}
-              >
-                <MaterialIcons name="add" size={18} color="#FFFFFF" />
-                <Text style={styles.emptyAddBtnText}>Add First Service</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={styles.emptyResetBtn}
-                onPress={() => {
-                  setSearchQuery('');
-                  setFilters(DEFAULT_SERVICE_FILTERS);
-                }}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.emptyResetText}>Reset Search & Filters</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          userRecords.length === 0 ? (
+            <EmptyState
+              icon="build"
+              title="No Service Records Yet"
+              description="Track repairs, maintenance, and part replacements for your purchased items."
+              actionText="Add First Service"
+              actionIcon="add"
+              onActionPress={() => router.push('/service/add' as any)}
+            />
+          ) : (
+            <EmptyState
+              icon="search-off"
+              title="No Matching Service Records"
+              description="Try adjusting your search terms or clearing your active filters."
+              actionText="Reset Search & Filters"
+              actionIcon={null}
+              actionVariant="secondary"
+              onActionPress={() => {
+                setSearchQuery('');
+                setFilters(DEFAULT_SERVICE_FILTERS);
+              }}
+            />
+          )
         }
       />
 

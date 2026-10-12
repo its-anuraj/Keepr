@@ -440,10 +440,13 @@ export default function AddOrEditItemScreen() {
     return true;
   }, [isEditMode, categoryId, confirmDiscardIfUnsaved, resetFormState]);
 
+  const handleBackRef = useRef(handleBack);
+  handleBackRef.current = handleBack;
+
   useFocusEffect(
     useCallback(() => {
       const onHardwareBack = () => {
-        return handleBack();
+        return handleBackRef.current();
       };
 
       const subscription = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
@@ -454,7 +457,7 @@ export default function AddOrEditItemScreen() {
           resetFormState();
         }
       };
-    }, [handleBack, isEditMode, isFromScan, resetFormState])
+    }, [isEditMode, isFromScan, resetFormState])
   );
 
   useEffect(() => {

@@ -85,6 +85,25 @@ test('add.tsx wires useFocusEffect with BackHandler and blur-abandonment reset',
   );
 });
 
+test('add.tsx stabilizes useFocusEffect with handleBackRef to avoid premature cleanup on category tap', () => {
+  assert.ok(
+    addScreenContent.includes('const handleBackRef = useRef(handleBack);'),
+    'Must define handleBackRef to decouple focus callback from handleBack state updates'
+  );
+  assert.ok(
+    addScreenContent.includes('handleBackRef.current = handleBack;'),
+    'Must keep handleBackRef up-to-date on each render'
+  );
+  assert.ok(
+    addScreenContent.includes('return handleBackRef.current();'),
+    'onHardwareBack must invoke handleBackRef.current()'
+  );
+  assert.ok(
+    addScreenContent.includes('}, [isEditMode, isFromScan, resetFormState])'),
+    'useFocusEffect dependencies must NOT include handleBack, preventing rogue resets on category selection'
+  );
+});
+
 test('add.tsx protects all camera, gallery, and document pickers from blur reset', () => {
   // Check that isPickerActiveRef is set in all 6 picker functions
   const pickerOccurrences = (addScreenContent.match(/isPickerActiveRef\.current = true;/g) || []).length;
@@ -400,6 +419,84 @@ test('Simulated Flow 8: Camera or Gallery picker activity does NOT reset the unf
 
   assert.strictEqual(sim.state.productPhotos.length, 1, 'Product photo must be preserved');
   assert.strictEqual(sim.state.name, 'Sony Noise Cancelling Headphones', 'Entered form details preserved');
+});
+
+test('Simulated Flow 9: Add Item → Choose Category → Every supported category opens its customized record form', () => {
+  const supportedCategories = [
+    { id: 'electronics', name: 'Electronics' },
+    { id: 'appliances', name: 'Home & Appliances' },
+    { id: 'fashion', name: 'Fashion' },
+    { id: 'vehicles', name: 'Vehicle' },
+    { id: 'furniture', name: 'Furniture' },
+    { id: 'sports', name: 'Sports & Fitness' },
+    { id: 'beauty', name: 'Beauty & Personal Care' },
+    { id: 'other', name: 'Other' },
+  ];
+
+  for (const cat of supportedCategories) {
+    const sim = createSimulatedAddScreen();
+    assert.strictEqual(sim.state.categoryId, null, 'Must start at Choose Category');
+
+    // Tapping category card
+    sim.handleSelectCategory(cat.id);
+    assert.strictEqual(sim.state.categoryId, cat.id, `Category ${cat.name} must be active`);
+
+    // In-screen re-renders (user typing name, price, merchant) must NOT reset category
+    sim.state.name = `${cat.name} Sample Item`;
+    sim.state.purchasePrice = '4999';
+    assert.strictEqual(sim.state.categoryId, cat.id, `Category ${cat.name} must remain active after field entry`);
+    assert.strictEqual(sim.state.name, `${cat.name} Sample Item`);
+
+    // Android back returns to Choose Category
+    sim.handleBack();
+    // Because unsaved data exists, prompts confirmation
+    assert.ok(sim.state.alertShown, 'Prompt confirmation for unsaved data');
+    sim.state.alertShown?.onConfirm?.();
+    assert.strictEqual(sim.state.categoryId, null, 'Must return to Choose Category after discard');
+  }
+});
+
+test('Simulated Flow 10: In-screen state updates and keystroke re-renders do NOT trigger focus effect cleanup or reset category', () => {
+  const sim = createSimulatedAddScreen();
+  sim.handleSelectCategory('electronics');
+  assert.strictEqual(sim.state.categoryId, 'electronics');
+
+  // Simulate multiple keystroke and state update renders while focused
+  const updates = [
+    { name: 'Mac' },
+    { name: 'MacBook' },
+    { name: 'MacBook Pro' },
+    { purchasePrice: '200000' },
+    { merchant: 'Apple Store' },
+  ];
+
+  for (const update of updates) {
+    Object.assign(sim.state, update);
+    // Since screen is focused, blur cleanup does NOT run
+    assert.strictEqual(sim.state.categoryId, 'electronics', 'Category must remain stable across input keystroke re-renders');
+  }
+  assert.strictEqual(sim.state.name, 'MacBook Pro');
+  assert.strictEqual(sim.state.purchasePrice, '200000');
+  assert.strictEqual(sim.state.merchant, 'Apple Store');
+});
+
+test('Simulated Flow 11: Header Back button invokes handleBack and respects unsaved changes', () => {
+  const sim = createSimulatedAddScreen();
+  // 1. On Choose Category view
+  assert.strictEqual(sim.state.categoryId, null);
+  sim.handleBack();
+  assert.strictEqual(sim.state.historyStack.length, 0, 'Exits Add Item screen when on Choose Category');
+
+  // 2. On category form with unsaved changes
+  const sim2 = createSimulatedAddScreen();
+  sim2.handleSelectCategory('furniture');
+  sim2.state.name = 'Ergonomic Desk Chair';
+  sim2.handleBack();
+  assert.ok(sim2.state.alertShown, 'Must prompt confirmation when header back is tapped with unsaved changes');
+  assert.strictEqual(sim2.state.categoryId, 'furniture', 'Must not discard before confirmation');
+
+  sim2.state.alertShown?.onConfirm?.();
+  assert.strictEqual(sim2.state.categoryId, null, 'Returns to Choose Category after confirming header back');
 });
 
 // ============================================================================

@@ -23,6 +23,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { Header } from '../../src/components/ui/Header';
+import { EmptyState } from '../../src/components/ui/EmptyState';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
 import { useAuthStore } from '../../src/store/authStore';
@@ -707,51 +708,40 @@ export default function DocumentsVaultScreen() {
         );
       }
       return (
-        <View style={styles.emptyContainer}>
-          <View style={styles.emptyIcon}>
-            <MaterialIcons name="folder-open" size={28} color={SereneColors.primary} />
-          </View>
-          <Text style={styles.emptyTitle}>No documents in vault</Text>
-          <Text style={styles.emptySubtitle}>
-            Store invoices, RC, insurance policies, college receipts, and utility bills safely.
-          </Text>
-          <TouchableOpacity style={styles.emptyAction} onPress={() => router.push('/document/add' as any)} activeOpacity={0.85}>
-            <MaterialIcons name="add" size={16} color="#FFFFFF" />
-            <Text style={styles.emptyActionText}>Add First Document</Text>
-          </TouchableOpacity>
-        </View>
+        <EmptyState
+          icon="folder-open"
+          title="No documents in vault"
+          description="Store invoices, RC, insurance policies, college receipts, and utility bills safely."
+          actionText="Add First Document"
+          actionIcon="add"
+          onActionPress={() => router.push('/document/add' as any)}
+        />
       );
     }
     if (hasActiveSearch && filteredDocuments.length === 0 && activeFilterCount === 0) {
       return (
-        <View style={styles.emptyContainer}>
-          <View style={styles.emptyIcon}>
-            <MaterialIcons name="search-off" size={28} color={SereneColors.primary} />
-          </View>
-          <Text style={styles.emptyTitle}>No documents found</Text>
-          <Text style={styles.emptySubtitle}>
-            No documents match "{searchQuery}". Try a different search term.
-          </Text>
-          <TouchableOpacity style={styles.clearBtn} onPress={() => setSearchQuery('')} activeOpacity={0.85}>
-            <Text style={styles.clearBtnText}>Clear Search</Text>
-          </TouchableOpacity>
-        </View>
+        <EmptyState
+          icon="search-off"
+          title="No documents found"
+          description={`No documents match "${searchQuery}". Try a different search term.`}
+          actionText="Clear Search"
+          actionIcon={null}
+          actionVariant="secondary"
+          onActionPress={() => setSearchQuery('')}
+        />
       );
     }
     if (filteredDocuments.length === 0) {
       return (
-        <View style={styles.emptyContainer}>
-          <View style={styles.emptyIcon}>
-            <MaterialIcons name="filter-alt-off" size={28} color={SereneColors.primary} />
-          </View>
-          <Text style={styles.emptyTitle}>No documents match your filters</Text>
-          <Text style={styles.emptySubtitle}>
-            Try adjusting your active filters or clearing them.
-          </Text>
-          <TouchableOpacity style={styles.clearBtn} onPress={handleClearAllSearchAndFilters} activeOpacity={0.85}>
-            <Text style={styles.clearBtnText}>Clear All Filters</Text>
-          </TouchableOpacity>
-        </View>
+        <EmptyState
+          icon="filter-alt-off"
+          title="No documents match your filters"
+          description="Try adjusting your active filters or clearing them."
+          actionText="Clear All Filters"
+          actionIcon={null}
+          actionVariant="secondary"
+          onActionPress={handleClearAllSearchAndFilters}
+        />
       );
     }
     return null;
