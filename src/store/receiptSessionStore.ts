@@ -3,12 +3,15 @@ import { create } from 'zustand';
 
 export interface ReceiptSession {
   uri: string;
-  source: 'camera' | 'gallery';
+  source: 'camera' | 'gallery' | 'pdf';
   fileName: string;
   base64?: string | null;
   mimeType?: string;
+  sizeBytes?: number;
   width?: number;
   height?: number;
+  pageCount?: number;
+  pdfType?: 'text' | 'scanned' | 'mixed' | 'empty';
   timestamp: number;
 }
 

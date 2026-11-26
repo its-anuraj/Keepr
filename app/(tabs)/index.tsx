@@ -23,6 +23,7 @@ import { useAuthStore } from '../../src/store/authStore';
 import { getDeadlineStatus } from '../../src/utils/warranty';
 import { formatDate } from '../../src/utils/currency';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { AddReceiptModal } from '../../src/components/scanner/AddReceiptModal';
 import {
   setActiveReceiptSession,
@@ -251,6 +252,54 @@ export default function VaultDashboardScreen() {
       }
     } catch (err) {
       console.warn('Gallery pick error:', err);
+    }
+  };
+
+  const handleModalUploadPdf = async () => {
+    setShowAddReceiptModal(false);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const asset = result.assets[0];
+        if (asset.size === 0) {
+          Alert.alert('Invalid PDF', 'The selected PDF file appears to be empty.');
+          return;
+        }
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const rawName = asset.name || `Receipt_${dateStr}.pdf`;
+        const fileName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
+
+        const stabilized = await stabilizeReceiptImage(asset.uri, null, {
+          mimeType: 'application/pdf',
+          fileName,
+        });
+
+        setActiveReceiptSession({
+          uri: stabilized.uri,
+          source: 'pdf',
+          fileName: stabilized.fileName || fileName,
+          base64: null,
+          mimeType: 'application/pdf',
+          sizeBytes: asset.size,
+        });
+
+        router.push({
+          pathname: '/scan-receipt',
+          params: {
+            mode: 'pdf',
+            autoProcess: 'true',
+            initialUri: stabilized.uri,
+            initialName: encodeURIComponent(stabilized.fileName || fileName),
+          },
+        } as any);
+      }
+    } catch (err) {
+      console.warn('PDF pick error:', err);
+      Alert.alert('PDF Notice', 'Could not open PDF document picker on this device.');
     }
   };
 
@@ -639,6 +688,7 @@ export default function VaultDashboardScreen() {
         onClose={() => setShowAddReceiptModal(false)}
         onScanWithCamera={handleScanWithCamera}
         onChooseFromGallery={handleModalChooseGallery}
+        onUploadPdf={handleModalUploadPdf}
       />
     </View>
   );

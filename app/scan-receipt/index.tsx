@@ -17,6 +17,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
@@ -92,6 +94,21 @@ import { evaluateRoutingDecision } from '../../src/services/documentClassifier';
 import { matchDocumentToItem } from '../../src/services/itemMatcherService';
 import { DirectCameraScanner } from '../../src/components/scanner/DirectCameraScanner';
 import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
+import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
+import {
+  PdfProcessorWebView,
+  PdfProcessorWebViewHandle,
+  cleanupTempPdfRenderFiles,
+} from '../../src/components/scanner/PdfProcessorWebView';
+import {
+  base64ToUint8Array,
+  extractSearchablePdfTextFromBytes,
+  validatePdfBytes,
+} from '../../src/services/pdfReceiptProcessor';
+import {
+  detectFormatFromBase64Prefix,
+  detectFormatFromUriOrName,
+} from '../../src/utils/imageIntegrity';
 
 export default function AIReceiptScannerScreen() {
   const insets = useSafeAreaInsets();
@@ -109,7 +126,9 @@ export default function AIReceiptScannerScreen() {
   const initialSession = isExplicitCameraMode ? null : getActiveReceiptSession();
   const fallbackParamUri = isExplicitCameraMode ? null : safeNormalizeRouteUri(params.initialUri);
   const initialUri = initialSession?.uri || fallbackParamUri || null;
-  const initialSource = isExplicitCameraMode ? 'camera' : (initialSession?.source || (params.mode === 'gallery' ? 'gallery' : 'camera'));
+  const initialSource: 'camera' | 'gallery' | 'pdf' = isExplicitCameraMode
+    ? 'camera'
+    : initialSession?.source || (params.mode === 'pdf' ? 'pdf' : params.mode === 'gallery' ? 'gallery' : 'camera');
   const isAutoProcess = params.autoProcess === 'true';
 
   const [screenState, setScreenState] = useState<ScannerScreenState>(
@@ -125,13 +144,27 @@ export default function AIReceiptScannerScreen() {
   const [capturedImageName, setCapturedImageName] = useState<string>(
     isExplicitCameraMode
       ? 'Receipt.jpg'
-      : (initialSession?.fileName || (params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg'))
+      : (initialSession?.fileName ||
+          (params.initialName ? decodeURIComponent(params.initialName) : (initialSource === 'pdf' ? 'Receipt.pdf' : 'Receipt.jpg')))
   );
   const [capturedBase64, setCapturedBase64] = useState<string | null>(
     isExplicitCameraMode ? null : (initialSession?.base64 || null)
   );
 
-  const [imageSource, setImageSource] = useState<'camera' | 'gallery'>(initialSource);
+  const [imageSource, setImageSource] = useState<'camera' | 'gallery' | 'pdf'>(initialSource);
+  const [pdfMeta, setPdfMeta] = useState<{
+    pageCount?: number;
+    pdfType?: 'text' | 'scanned' | 'mixed' | 'empty';
+    sizeBytes?: number;
+  }>({
+    pageCount: initialSession?.pageCount,
+    pdfType: initialSession?.pdfType,
+    sizeBytes: initialSession?.sizeBytes,
+  });
+  const [processingSubtitle, setProcessingSubtitle] = useState<string>(
+    "We're identifying items, documents, warranties, bills, and service details."
+  );
+  const pdfProcessorRef = useRef<PdfProcessorWebViewHandle | null>(null);
   const [imageLoadError, setImageLoadError] = useState(false);
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -193,16 +226,23 @@ export default function AIReceiptScannerScreen() {
 
     const session = getActiveReceiptSession();
     const effectiveUri = session?.uri || safeNormalizeRouteUri(params.initialUri);
-    const effectiveName = session?.fileName || (params.initialName ? decodeURIComponent(params.initialName) : 'Receipt.jpg');
+    const defaultName = params.mode === 'pdf' ? 'Receipt.pdf' : 'Receipt.jpg';
+    const effectiveName = session?.fileName || (params.initialName ? decodeURIComponent(params.initialName) : defaultName);
     const effectiveBase64 = session?.base64 || null;
-    const effectiveSource = session?.source || (params.mode === 'gallery' ? 'gallery' : 'camera');
+    const effectiveSource: 'camera' | 'gallery' | 'pdf' =
+      session?.source || (params.mode === 'pdf' ? 'pdf' : params.mode === 'gallery' ? 'gallery' : 'camera');
 
     if (effectiveUri) {
-      console.log('[ReceiptPreview] Restored/Param URI:', effectiveUri);
+      console.log('[ReceiptPreview] Restored/Param URI:', effectiveUri, 'source:', effectiveSource);
       setCapturedImageUri(effectiveUri);
       setImageSource(effectiveSource);
       setCapturedBase64(effectiveBase64);
       setCapturedImageName(effectiveName);
+      setPdfMeta({
+        pageCount: session?.pageCount,
+        pdfType: session?.pdfType,
+        sizeBytes: session?.sizeBytes,
+      });
       setImageLoadError(false);
       setSelectedPresetId(undefined);
 
@@ -415,6 +455,52 @@ export default function AIReceiptScannerScreen() {
     }
   };
 
+  const handleChoosePdf = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const asset = result.assets[0];
+        if (asset.size === 0) {
+          Alert.alert('Invalid PDF', 'The selected PDF file appears to be empty.');
+          return;
+        }
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const rawName = asset.name || `Receipt_${dateStr}.pdf`;
+        const fileName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
+
+        const stabilized = await stabilizeReceiptImage(asset.uri, null, {
+          mimeType: 'application/pdf',
+          fileName,
+        });
+
+        setActiveReceiptSession({
+          uri: stabilized.uri,
+          source: 'pdf',
+          fileName: stabilized.fileName || fileName,
+          base64: null,
+          mimeType: 'application/pdf',
+          sizeBytes: asset.size ?? stabilized.size,
+        });
+
+        setPdfMeta({ sizeBytes: asset.size ?? stabilized.size });
+        setImageSource('pdf');
+        setImageLoadError(false);
+        setCapturedImageUri(stabilized.uri);
+        setCapturedBase64(null);
+        setCapturedImageName(stabilized.fileName || fileName);
+        setSelectedPresetId(undefined);
+        setScreenState('preview');
+      }
+    } catch (err) {
+      console.warn('PDF pick error:', err);
+      Alert.alert('PDF Notice', 'Could not open PDF document picker on this device.');
+    }
+  };
+
   const handleSelectPreset = (preset: DemoReceiptPreset) => {
     console.log('[ReceiptSelection]\nSelected URI:', preset.imageUri);
     setActiveReceiptSession({
@@ -614,8 +700,12 @@ export default function AIReceiptScannerScreen() {
       setActiveReceiptSession({
         uri: finalUri,
         source: imageSource,
-        fileName: imageName || 'Receipt.jpg',
+        fileName: imageName || (imageSource === 'pdf' ? 'Receipt.pdf' : 'Receipt.jpg'),
         base64: capturedBase64 || null,
+        mimeType:
+          imageSource === 'pdf' || (imageName || finalUri).toLowerCase().includes('.pdf')
+            ? 'application/pdf'
+            : 'image/jpeg',
       });
 
       console.log(
@@ -627,7 +717,7 @@ export default function AIReceiptScannerScreen() {
         params: {
           fromScan: 'true',
           scannedReceiptUri: finalUri,
-          scannedReceiptName: imageName || 'Receipt.jpg',
+          scannedReceiptName: imageName || (imageSource === 'pdf' ? 'Receipt.pdf' : 'Receipt.jpg'),
           scannedProductName: primaryProductName,
           scannedMerchant: data.common.merchant?.value || '',
           scannedSellerAddress: detectedAddress,
@@ -767,6 +857,16 @@ export default function AIReceiptScannerScreen() {
     }
   };
 
+  const isReceiptPdfAsset = (uriVal?: string | null, nameVal?: string | null, base64Val?: string | null): boolean => {
+    if (imageSource === 'pdf') return true;
+    const u = (uriVal || '').toLowerCase();
+    const n = (nameVal || '').toLowerCase();
+    if (u.endsWith('.pdf') || u.includes('.pdf?') || n.endsWith('.pdf')) return true;
+    if (detectFormatFromUriOrName(nameVal || uriVal).mimeType === 'application/pdf') return true;
+    if (detectFormatFromBase64Prefix(base64Val)?.mimeType === 'application/pdf') return true;
+    return false;
+  };
+
   const handleConfirmAndProcessReceipt = async (
     overrideUri?: string,
     overrideBase64?: string | null,
@@ -780,8 +880,13 @@ export default function AIReceiptScannerScreen() {
     const effectiveUri = overrideUri || capturedImageUri;
     const effectiveBase64 = overrideBase64 !== undefined ? overrideBase64 : capturedBase64;
     const effectiveName = overrideName || capturedImageName;
+    const isPdfDoc = isReceiptPdfAsset(effectiveUri, effectiveName, effectiveBase64);
 
-    const activeUri = effectiveUri || (effectiveBase64 ? `data:image/jpeg;base64,${effectiveBase64}` : '');
+    const activeUri =
+      effectiveUri ||
+      (effectiveBase64
+        ? `data:${isPdfDoc ? 'application/pdf' : 'image/jpeg'};base64,${effectiveBase64}`
+        : '');
     if (!activeUri) return;
 
     if (overrideUri && !capturedImageUri) {
@@ -793,7 +898,7 @@ export default function AIReceiptScannerScreen() {
 
     scanInProgressRef.current = true;
     setIsScanning(true);
-    console.log(`[ScannerDiagnostics] scan started: activeUri=${activeUri}`);
+    console.log(`[ScannerDiagnostics] scan started: activeUri=${activeUri} isPdf=${isPdfDoc}`);
     console.log(`[ScannerDiagnostics] image URI received: uri=${activeUri}`);
 
     setScreenState('processing');
@@ -801,13 +906,27 @@ export default function AIReceiptScannerScreen() {
     setReceiptRejection(null);
     setDetailsFound(false);
 
-    setProcessingSteps([
-      { id: 1, label: 'Reading document', completed: false },
-      { id: 2, label: 'Identifying what this is', completed: false },
-      { id: 3, label: 'Extracting important details', completed: false },
-      { id: 4, label: 'Preparing your information', completed: false },
-    ]);
-    setProcessingTitle('Understanding your document');
+    setProcessingSteps(
+      isPdfDoc
+        ? [
+            { id: 1, label: 'Validating PDF document', completed: false },
+            { id: 2, label: 'Extracting text & page structure', completed: false },
+            { id: 3, label: 'Analyzing receipt details', completed: false },
+            { id: 4, label: 'Preparing extracted information', completed: false },
+          ]
+        : [
+            { id: 1, label: 'Reading document', completed: false },
+            { id: 2, label: 'Identifying what this is', completed: false },
+            { id: 3, label: 'Extracting important details', completed: false },
+            { id: 4, label: 'Preparing your information', completed: false },
+          ]
+    );
+    setProcessingTitle(isPdfDoc ? 'Reading PDF receipt' : 'Understanding your document');
+    setProcessingSubtitle(
+      isPdfDoc
+        ? 'Checking PDF structure, extracting text layers, and scanning invoice pages.'
+        : "We're identifying items, documents, warranties, bills, and service details."
+    );
 
     Animated.loop(
       Animated.sequence([
@@ -816,20 +935,117 @@ export default function AIReceiptScannerScreen() {
       ])
     ).start();
 
+    let tempPdfRenderUris: string[] = [];
+
     try {
       setProcessingSteps((prev) => prev.map((s) => (s.id <= 1 ? { ...s, completed: true } : s)));
-      setProcessingTitle('Identifying what this is');
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 120));
 
-      const geminiResponse = await executeGeminiReceiptAnalysis({
-        imageUri: activeUri,
-        base64: effectiveBase64 || undefined,
-        fileName: effectiveName,
-      });
+      let geminiResponse;
+      if (isPdfDoc) {
+        setProcessingTitle('Validating PDF & extracting text');
+        let pdfBase64 = (effectiveBase64 || '').replace(/^data:[^;]+;base64,/, '');
+        if (!pdfBase64 && effectiveUri && !effectiveUri.startsWith('data:')) {
+          pdfBase64 = await FileSystem.readAsStringAsync(effectiveUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          setCapturedBase64(pdfBase64);
+        }
 
-      setProcessingSteps((prev) => prev.map((s) => (s.id <= 2 ? { ...s, completed: true } : s)));
-      setProcessingTitle('Extracting important details');
-      await new Promise((r) => setTimeout(r, 200));
+        const pdfBytes = base64ToUint8Array(pdfBase64);
+        const validation = validatePdfBytes(pdfBytes);
+        if (!validation.valid) {
+          throw new Error(
+            validation.errorMessage || 'This PDF file is invalid, encrypted, or corrupted.'
+          );
+        }
+
+        setProcessingTitle('Inspecting PDF pages');
+        let extractedText = '';
+        let pdfType: 'text' | 'scanned' | 'mixed' | 'empty' = validation.pdfType;
+        let pageCount = validation.estimatedPageCount;
+        let pageImagesPayload: Array<{
+          pageNumber: number;
+          base64: string;
+          mimeType: string;
+          extractedText?: string;
+        }> = [];
+
+        if (pdfProcessorRef.current) {
+          const webRes = await pdfProcessorRef.current.processPdf(pdfBase64, {
+            maxPages: 10,
+            onProgress: (prog) => {
+              if (prog.stage) {
+                setProcessingTitle(prog.stage);
+              }
+            },
+          });
+
+          if (!webRes.success && (webRes.errorCode === 'PASSWORD_PROTECTED_PDF' || webRes.errorCode === 'CORRUPTED_PDF' || webRes.errorCode === 'EMPTY_PDF')) {
+            throw new Error(webRes.errorMessage || 'Could not process this PDF file.');
+          }
+
+          if (webRes.success) {
+            tempPdfRenderUris = webRes.tempImageUris || [];
+            extractedText = webRes.combinedText || '';
+            pdfType = webRes.pdfType;
+            pageCount = webRes.totalPages;
+            setPdfMeta((prev) => ({
+              ...prev,
+              pageCount: webRes.totalPages,
+              pdfType: webRes.pdfType,
+            }));
+
+            pageImagesPayload = webRes.pages
+              .filter((p) => Boolean(p.renderedImageBase64))
+              .map((p) => ({
+                pageNumber: p.pageNumber,
+                base64: p.renderedImageBase64!,
+                mimeType: p.renderedImageMimeType || 'image/jpeg',
+                extractedText: p.text || undefined,
+              }));
+
+            if (webRes.truncatedByPageLimit) {
+              setProcessingSubtitle(
+                `Processed first ${webRes.processedPages} of ${webRes.totalPages} pages.`
+              );
+            }
+          }
+        }
+
+        // Pure-TS offline fallback if PDF.js engine could not load (e.g. CDN unreachable)
+        if (!extractedText && pageImagesPayload.length === 0) {
+          extractedText = extractSearchablePdfTextFromBytes(pdfBytes);
+        }
+
+        setProcessingSteps((prev) => prev.map((s) => (s.id <= 2 ? { ...s, completed: true } : s)));
+        setProcessingTitle('Processing receipt details');
+
+        geminiResponse = await executeGeminiReceiptAnalysis({
+          imageUri: activeUri,
+          base64: pdfBase64 || undefined,
+          mimeType: 'application/pdf',
+          fileName: effectiveName,
+          extractedText: extractedText || undefined,
+          pdfType,
+          pageCount,
+          pageImages: pageImagesPayload.length > 0 ? pageImagesPayload : undefined,
+        });
+      } else {
+        setProcessingTitle('Identifying what this is');
+        await new Promise((r) => setTimeout(r, 150));
+
+        geminiResponse = await executeGeminiReceiptAnalysis({
+          imageUri: activeUri,
+          base64: effectiveBase64 || undefined,
+          mimeType: 'image/jpeg',
+          fileName: effectiveName,
+        });
+      }
+
+      setProcessingSteps((prev) => prev.map((s) => (s.id <= 3 ? { ...s, completed: true } : s)));
+      setProcessingTitle('Preparing extracted information');
+      await new Promise((r) => setTimeout(r, 150));
 
       const parsedData = parseGeminiResponseToExtractedData(
         geminiResponse,
@@ -1028,6 +1244,9 @@ export default function AIReceiptScannerScreen() {
       console.error('[ScannerDiagnostics] error/failure in scanner pipeline:', err);
       setProcessingError(err?.message || "Some details couldn't be read. Please review them.");
     } finally {
+      if (tempPdfRenderUris.length > 0) {
+        cleanupTempPdfRenderFiles(tempPdfRenderUris).catch(() => {});
+      }
       setIsScanning(false);
       scanInProgressRef.current = false;
     }
@@ -1597,19 +1816,27 @@ export default function AIReceiptScannerScreen() {
     return null;
   };
 
-  if (screenState === 'scan') {
-    return (
-      <View className="flex-1 bg-black">
-        <DirectCameraScanner
-          onCapture={handleDirectCameraCapture}
-          onClose={() => {
-            clearActiveReceiptSession();
-            router.back();
-          }}
-          onOpenGallery={handleChooseGallery}
-          initialFacing={cameraFacing}
-          initialFlash={flashMode}
-        />
+  const isPdfViewTarget = isReceiptPdfAsset(
+    extractedData?.receiptUri || capturedImageUri,
+    extractedData?.receiptImageName || capturedImageName,
+    capturedBase64
+  );
+
+  const renderScreenContent = () => {
+    if (screenState === 'scan') {
+      return (
+        <View className="flex-1 bg-black">
+          <DirectCameraScanner
+            onCapture={handleDirectCameraCapture}
+            onClose={() => {
+              clearActiveReceiptSession();
+              router.back();
+            }}
+            onOpenGallery={handleChooseGallery}
+            onOpenPdf={handleChoosePdf}
+            initialFacing={cameraFacing}
+            initialFlash={flashMode}
+          />
 
         {/* Demo Presets Drawer for Test/Evaluation convenience */}
         <View className="absolute bottom-28 left-0 right-0 px-4">
@@ -1652,6 +1879,7 @@ export default function AIReceiptScannerScreen() {
   }
 
   if (screenState === 'preview') {
+    const isPdfPreview = isReceiptPdfAsset(capturedImageUri, capturedImageName, capturedBase64);
     return (
       <View className="flex-1 bg-serene-surface" style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}>
         <View className="flex-row items-center justify-between px-4 py-2 border-b border-serene-hairline-border">
@@ -1661,7 +1889,7 @@ export default function AIReceiptScannerScreen() {
               clearActiveReceiptSession();
               setCapturedImageUri(null);
               setCapturedBase64(null);
-              if (params.mode === 'gallery') {
+              if (params.mode === 'gallery' || params.mode === 'pdf') {
                 router.back();
               } else {
                 setScreenState('scan');
@@ -1672,35 +1900,72 @@ export default function AIReceiptScannerScreen() {
           >
             <MaterialIcons name="arrow-back" size={22} color={SereneColors.onSurface} />
           </TouchableOpacity>
-          <Text className="text-base font-bold text-serene-on-surface">Receipt Preview</Text>
+          <Text className="text-base font-bold text-serene-on-surface">
+            {isPdfPreview ? 'PDF Receipt Preview' : 'Receipt Preview'}
+          </Text>
           <View className="w-10 h-10" />
         </View>
 
         <View className="flex-1 px-4 pt-3">
-          {(!capturedImageUri && !capturedBase64) || (imageLoadError && !capturedBase64) ? (
+          {(!capturedImageUri && !capturedBase64) || (!isPdfPreview && imageLoadError && !capturedBase64) ? (
             <View className="flex-1 items-center justify-center p-6 bg-serene-surface-container-low rounded-serene-xl border border-serene-hairline-border mb-4">
               <View className="w-12 h-12 rounded-full bg-red-50 items-center justify-center mb-3">
-                <MaterialIcons name="broken-image" size={26} color="#DC2626" />
+                <MaterialIcons name={isPdfPreview ? 'picture-as-pdf' : 'broken-image'} size={26} color="#DC2626" />
               </View>
               <Text className="text-sm font-bold text-serene-on-surface text-center mb-1">
-                Couldn't load this image
+                {isPdfPreview ? "Couldn't load this PDF" : "Couldn't load this image"}
               </Text>
               <Text className="text-xs text-serene-on-surface-variant text-center mb-4 leading-4 px-4">
-                The receipt image file is invalid or could not be loaded from storage.
+                {isPdfPreview
+                  ? 'The selected PDF file is invalid or could not be opened.'
+                  : 'The receipt image file is invalid or could not be loaded from storage.'}
               </Text>
               <TouchableOpacity
                 className="py-2.5 px-4 rounded-serene-md bg-white border border-serene-hairline-border flex-row items-center gap-1.5 shadow-sm"
-                onPress={imageSource === 'camera' ? handleTakePhoto : handleChooseGallery}
+                onPress={
+                  imageSource === 'camera'
+                    ? handleTakePhoto
+                    : isPdfPreview
+                    ? handleChoosePdf
+                    : handleChooseGallery
+                }
                 activeOpacity={0.8}
               >
                 <MaterialIcons
-                  name={imageSource === 'camera' ? 'refresh' : 'photo-library'}
+                  name={imageSource === 'camera' ? 'refresh' : isPdfPreview ? 'picture-as-pdf' : 'photo-library'}
                   size={16}
                   color={SereneColors.primary}
                 />
                 <Text className="text-xs font-semibold text-serene-primary">
                   {imageSource === 'camera' ? 'Retake' : 'Choose Another'}
                 </Text>
+              </TouchableOpacity>
+            </View>
+          ) : isPdfPreview ? (
+            <View
+              className="w-full rounded-serene-xl overflow-hidden relative border border-serene-hairline-border mb-4 bg-serene-surface-container-low"
+              style={{ height: 420, justifyContent: 'center', alignItems: 'center' }}
+            >
+              <TouchableOpacity
+                activeOpacity={0.92}
+                onPress={() => setShowImageModal(true)}
+                className="w-full h-full items-center justify-center p-6"
+                accessibilityLabel="Tap to open PDF preview"
+              >
+                <View className="w-24 h-28 rounded-2xl bg-red-50 border border-red-200 items-center justify-center mb-4 shadow-xs">
+                  <MaterialIcons name="picture-as-pdf" size={52} color="#DC2626" />
+                </View>
+                <Text className="text-base font-bold text-serene-on-surface text-center px-4" numberOfLines={2}>
+                  {capturedImageName}
+                </Text>
+                <Text className="text-xs text-serene-on-surface-variant mt-1.5 text-center">
+                  PDF Document{pdfMeta.pageCount ? ` · ${pdfMeta.pageCount} page${pdfMeta.pageCount === 1 ? '' : 's'}` : ''}
+                  {pdfMeta.sizeBytes ? ` · ${(pdfMeta.sizeBytes / 1024).toFixed(0)} KB` : ''}
+                </Text>
+                <View className="mt-4 bg-white px-4 py-2 rounded-full border border-serene-subtle-border flex-row items-center gap-1.5 shadow-xs">
+                  <MaterialIcons name="visibility" size={16} color={SereneColors.primary} />
+                  <Text className="text-xs font-semibold text-serene-primary">Tap to View PDF</Text>
+                </View>
               </TouchableOpacity>
             </View>
           ) : (
@@ -1792,11 +2057,17 @@ export default function AIReceiptScannerScreen() {
           ) : (
             <TouchableOpacity
               className="w-full flex-row items-center justify-center gap-1.5 py-3 rounded-serene-lg bg-serene-surface-container-lowest border border-serene-hairline-border"
-              onPress={handleChooseGallery}
+              onPress={imageSource === 'pdf' ? handleChoosePdf : handleChooseGallery}
               activeOpacity={0.8}
             >
-              <MaterialIcons name="photo-library" size={18} color={SereneColors.onSurface} />
-              <Text className="text-[13px] font-semibold text-serene-on-surface">Choose Another</Text>
+              <MaterialIcons
+                name={imageSource === 'pdf' ? 'picture-as-pdf' : 'photo-library'}
+                size={18}
+                color={imageSource === 'pdf' ? '#DC2626' : SereneColors.onSurface}
+              />
+              <Text className="text-[13px] font-semibold text-serene-on-surface">
+                {imageSource === 'pdf' ? 'Choose Another PDF' : 'Choose Another'}
+              </Text>
             </TouchableOpacity>
           )}
 
@@ -1843,11 +2114,22 @@ export default function AIReceiptScannerScreen() {
           </TouchableOpacity>
         </View>
 
-        <HighResImageViewer
-          visible={showImageModal}
-          images={capturedImageUri ? [{ uri: capturedImageUri, title: capturedImageName || 'Receipt Preview' }] : []}
-          onClose={() => setShowImageModal(false)}
-        />
+        {!isPdfViewTarget && (
+          <HighResImageViewer
+            visible={showImageModal}
+            images={
+              (capturedImageUri || extractedData?.receiptUri)
+                ? [
+                    {
+                      uri: (capturedImageUri || extractedData?.receiptUri)!,
+                      title: extractedData?.receiptImageName || capturedImageName || 'Receipt Image',
+                    },
+                  ]
+                : []
+            }
+            onClose={() => setShowImageModal(false)}
+          />
+        )}
 
         <Modal visible={showCropModal} transparent animationType="slide">
           <View className="flex-1 bg-black/80 justify-end">
@@ -1940,6 +2222,7 @@ export default function AIReceiptScannerScreen() {
   }
 
   if (screenState === 'processing') {
+    const isPdfProcessing = isReceiptPdfAsset(capturedImageUri, capturedImageName, capturedBase64);
     return (
       <View className="flex-1 bg-serene-surface items-center justify-center px-6" style={{ paddingTop: insets.top }}>
         <View className="absolute top-4 left-4 z-10" style={{ paddingTop: insets.top }}>
@@ -1949,7 +2232,7 @@ export default function AIReceiptScannerScreen() {
               scanInProgressRef.current = false;
               setIsScanning(false);
               clearActiveReceiptSession();
-              if (params.mode === 'gallery') {
+              if (params.mode === 'gallery' || params.mode === 'pdf') {
                 router.back();
               } else {
                 setScreenState('scan');
@@ -1964,18 +2247,24 @@ export default function AIReceiptScannerScreen() {
 
         {capturedImageUri && (
           <Animated.View
-            className="w-28 h-36 rounded-serene-lg overflow-hidden bg-black shadow-lg mb-6 relative"
+            className={`w-28 h-36 rounded-serene-lg overflow-hidden shadow-lg mb-6 relative items-center justify-center ${
+              isPdfProcessing ? 'bg-red-50 border border-red-200' : 'bg-black'
+            }`}
             style={{ transform: [{ scale: pulseAnim }] }}
           >
-            <Image
-              source={{ uri: capturedImageUri }}
-              className="w-full h-full"
-              resizeMode="cover"
-            />
+            {isPdfProcessing ? (
+              <MaterialIcons name="picture-as-pdf" size={44} color="#DC2626" />
+            ) : (
+              <Image
+                source={{ uri: capturedImageUri }}
+                className="w-full h-full"
+                resizeMode="cover"
+              />
+            )}
             <View className="absolute bottom-0 inset-x-0 bg-serene-surface-container-lowest/95 flex-row items-center justify-center py-1.5 border-t border-serene-hairline-border">
               <MaterialIcons name="document-scanner" size={13} color={SereneColors.primary} />
               <Text className="text-serene-on-surface text-[9px] font-bold tracking-wider ml-1">
-                SCANNING
+                {isPdfProcessing ? 'SCANNING PDF' : 'SCANNING'}
               </Text>
             </View>
           </Animated.View>
@@ -1985,21 +2274,19 @@ export default function AIReceiptScannerScreen() {
           {processingTitle}
         </Text>
         <Text className="text-[13px] text-serene-on-surface-variant text-center max-w-[300px] mb-8">
-          {detailsFound
-            ? 'Details found.'
-            : "We're identifying items, documents, warranties, bills, and service details."}
+          {detailsFound ? 'Details found.' : processingSubtitle}
         </Text>
 
         {receiptRejection ? (
           <View className="w-full max-w-[340px] bg-red-50 rounded-serene-lg p-5 border border-red-200 items-center">
             <View className="w-12 h-12 rounded-full bg-red-100 items-center justify-center mb-2">
-              <MaterialIcons name="image-not-supported" size={28} color="#DC2626" />
+              <MaterialIcons name={isPdfProcessing ? 'picture-as-pdf' : 'image-not-supported'} size={28} color="#DC2626" />
             </View>
             <Text className="text-[17px] font-bold text-serene-on-surface mt-1 text-center">
               That doesn't look like a supported document
             </Text>
             <Text className="text-xs text-serene-on-surface-variant text-center mt-1.5 mb-5 leading-4 px-2">
-              {receiptRejection.message || 'Please upload a clear photo of your receipt, bill, warranty, or service record.'}
+              {receiptRejection.message || 'Please upload a clear receipt, bill, warranty, or service record.'}
             </Text>
 
             <View className="flex-row gap-2.5 w-full">
@@ -2007,11 +2294,19 @@ export default function AIReceiptScannerScreen() {
                 className="flex-1 py-2.5 rounded-serene-md border border-serene-subtle-border items-center bg-white flex-row justify-center gap-1.5 shadow-xs"
                 onPress={() => {
                   setReceiptRejection(null);
-                  handleChooseGallery();
+                  if (isPdfProcessing || imageSource === 'pdf') {
+                    handleChoosePdf();
+                  } else {
+                    handleChooseGallery();
+                  }
                 }}
                 activeOpacity={0.8}
               >
-                <MaterialIcons name="photo-library" size={16} color={SereneColors.primary} />
+                <MaterialIcons
+                  name={isPdfProcessing || imageSource === 'pdf' ? 'picture-as-pdf' : 'photo-library'}
+                  size={16}
+                  color={SereneColors.primary}
+                />
                 <Text className="text-xs font-semibold text-serene-primary">Choose Another</Text>
               </TouchableOpacity>
 
@@ -2055,7 +2350,13 @@ export default function AIReceiptScannerScreen() {
                 className="flex-1 py-2.5 rounded-serene-md border border-serene-subtle-border items-center bg-white"
                 onPress={() => {
                   setProcessingError(null);
-                  setScreenState('scan');
+                  if (imageSource === 'pdf') {
+                    handleChoosePdf();
+                  } else if (imageSource === 'gallery') {
+                    handleChooseGallery();
+                  } else {
+                    setScreenState('scan');
+                  }
                 }}
               >
                 <Text className="text-xs font-semibold text-serene-on-surface">Choose Another</Text>
@@ -2960,11 +3261,17 @@ export default function AIReceiptScannerScreen() {
         <ScrollView contentContainerClassName="px-4 pb-28" showsVerticalScrollIndicator={false}>
           <View className="bg-serene-surface-container-lowest rounded-serene-xl p-4 border border-serene-hairline-border gap-3 mb-4 mt-2">
             <View className="flex-row items-center gap-3.5">
-              <Image
-                source={{ uri: extractedData.receiptUri }}
-                className="w-16 h-16 rounded-serene-md bg-serene-surface-container-low"
-                resizeMode="cover"
-              />
+              {isReceiptPdfAsset(extractedData.receiptUri, extractedData.receiptImageName, capturedBase64) ? (
+                <View className="w-16 h-16 rounded-serene-md bg-red-50 border border-red-200 items-center justify-center">
+                  <MaterialIcons name="picture-as-pdf" size={30} color="#DC2626" />
+                </View>
+              ) : (
+                <Image
+                  source={{ uri: extractedData.receiptUri }}
+                  className="w-16 h-16 rounded-serene-md bg-serene-surface-container-low"
+                  resizeMode="cover"
+                />
+              )}
               <View className="flex-1 gap-0.5">
                 <View className="self-start bg-serene-primary/10 px-2 py-0.5 rounded-full mb-1">
                   <Text className="text-[10px] font-bold text-serene-primary">
@@ -3204,18 +3511,28 @@ export default function AIReceiptScannerScreen() {
           onPress={() => setShowImageModal(true)}
           activeOpacity={0.9}
         >
-          <Image
-            source={{ uri: extractedData.receiptUri }}
-            className="w-14 h-14 rounded-serene-md bg-serene-surface-container-low"
-            resizeMode="cover"
-          />
+          {isReceiptPdfAsset(extractedData.receiptUri, extractedData.receiptImageName, capturedBase64) ? (
+            <View className="w-14 h-14 rounded-serene-md bg-red-50 border border-red-200 items-center justify-center">
+              <MaterialIcons name="picture-as-pdf" size={28} color="#DC2626" />
+            </View>
+          ) : (
+            <Image
+              source={{ uri: extractedData.receiptUri }}
+              className="w-14 h-14 rounded-serene-md bg-serene-surface-container-low"
+              resizeMode="cover"
+            />
+          )}
           <View className="flex-1 gap-0.5">
             <View className="flex-row items-center bg-serene-primary px-1.5 py-0.5 rounded self-start gap-1">
               <MaterialIcons name="receipt-long" size={12} color="#FFFFFF" />
               <Text className="text-[9px] font-bold text-white tracking-wider">RECEIPT ATTACHED</Text>
             </View>
             <Text className="text-xs font-bold text-serene-on-surface">{extractedData.receiptImageName}</Text>
-            <Text className="text-[10px] text-serene-on-surface-variant">Tap to view full receipt image</Text>
+            <Text className="text-[10px] text-serene-on-surface-variant">
+              {isReceiptPdfAsset(extractedData.receiptUri, extractedData.receiptImageName, capturedBase64)
+                ? 'Tap to view full PDF receipt'
+                : 'Tap to view full receipt image'}
+            </Text>
           </View>
           <MaterialIcons name="zoom-in" size={24} color={SereneColors.outline} />
         </TouchableOpacity>
@@ -3562,20 +3879,22 @@ export default function AIReceiptScannerScreen() {
         </View>
       </Modal>
 
-      <HighResImageViewer
-        visible={showImageModal}
-        images={
-          (capturedImageUri || extractedData?.receiptUri)
-            ? [
-                {
-                  uri: (capturedImageUri || extractedData?.receiptUri)!,
-                  title: extractedData?.receiptImageName || capturedImageName || 'Receipt Image',
-                },
-              ]
-            : []
-        }
-        onClose={() => setShowImageModal(false)}
-      />
+      {!isPdfViewTarget && (
+        <HighResImageViewer
+          visible={showImageModal}
+          images={
+            (capturedImageUri || extractedData?.receiptUri)
+              ? [
+                  {
+                    uri: (capturedImageUri || extractedData?.receiptUri)!,
+                    title: extractedData?.receiptImageName || capturedImageName || 'Receipt Image',
+                  },
+                ]
+              : []
+          }
+          onClose={() => setShowImageModal(false)}
+        />
+      )}
 
       <OcrInspectorModal
         visible={showOcrInspector}
@@ -3583,6 +3902,22 @@ export default function AIReceiptScannerScreen() {
         ocrResult={ocrResult}
         preprocessed={ocrPreprocessed}
       />
+    </View>
+    );
+  };
+
+  return (
+    <View className="flex-1">
+      {renderScreenContent()}
+      <PdfProcessorWebView ref={pdfProcessorRef} />
+      {isPdfViewTarget && (
+        <UniversalPdfViewer
+          visible={showImageModal}
+          pdfUri={capturedImageUri || extractedData?.receiptUri || ''}
+          title={extractedData?.receiptImageName || capturedImageName || 'PDF Receipt'}
+          onClose={() => setShowImageModal(false)}
+        />
+      )}
     </View>
   );
 }

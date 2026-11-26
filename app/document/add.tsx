@@ -248,7 +248,7 @@ export default function AddDocumentScreen() {
   const handlePickDocumentFile = async () => {
     try {
       const res = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
+        type: 'application/pdf',
         copyToCacheDirectory: true,
       });
       if (!res.canceled && res.assets && res.assets[0]) {

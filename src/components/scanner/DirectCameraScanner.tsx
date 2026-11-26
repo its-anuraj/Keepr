@@ -17,6 +17,7 @@ export interface DirectCameraScannerProps {
   onCapture: (photo: { uri: string; width?: number; height?: number }) => void;
   onClose: () => void;
   onOpenGallery: () => void;
+  onOpenPdf?: () => void;
   initialFacing?: 'back' | 'front';
   initialFlash?: 'off' | 'on' | 'auto';
 }
@@ -25,6 +26,7 @@ export const DirectCameraScanner: React.FC<DirectCameraScannerProps> = ({
   onCapture,
   onClose,
   onOpenGallery,
+  onOpenPdf,
   initialFacing = 'back',
   initialFlash = 'auto',
 }) => {
@@ -299,8 +301,19 @@ export const DirectCameraScanner: React.FC<DirectCameraScannerProps> = ({
             </View>
           </TouchableOpacity>
 
-          {/* Placeholder to balance shutter symmetry */}
-          <View className="w-14 h-14" />
+          {/* Upload PDF option */}
+          {onOpenPdf ? (
+            <TouchableOpacity
+              className="w-14 h-14 rounded-full bg-black/50 items-center justify-center border border-white/25"
+              onPress={onOpenPdf}
+              activeOpacity={0.8}
+              accessibilityLabel="Upload PDF receipt"
+            >
+              <MaterialIcons name="picture-as-pdf" size={23} color="#FFFFFF" />
+            </TouchableOpacity>
+          ) : (
+            <View className="w-14 h-14" />
+          )}
         </View>
       </View>
     </View>

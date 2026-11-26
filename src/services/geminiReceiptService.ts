@@ -12,6 +12,13 @@ import {
 import { supabase, isSupabaseConfigured, supabaseAnonKey, supabaseUrl } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
 import { prepareImageForAnalysis } from './receiptFileService';
+import {
+  base64ToUint8Array,
+  consolidateMultiPageExtractions,
+  validatePdfBytes,
+} from './pdfReceiptProcessor';
+import { validateExtractedReceiptPayload } from '../schemas/receiptExtractionSchema';
+import { detectFormatFromBase64Prefix, detectFormatFromUriOrName } from '../utils/imageIntegrity';
 
 export { isGeminiConfigured, getGeminiApiKey, setGeminiApiKey };
 
@@ -28,6 +35,12 @@ export type ScannerErrorCode =
   | 'NETWORK_ERROR'
   | 'TIMEOUT'
   | 'UNREADABLE_RECEIPT'
+  | 'PASSWORD_PROTECTED_PDF'
+  | 'CORRUPTED_PDF'
+  | 'EMPTY_PDF'
+  | 'PDF_TOO_LARGE'
+  | 'NOT_A_PDF'
+  | 'UNREADABLE_PDF'
   | 'SERVICE_UNAVAILABLE'
   | 'SERVER_ERROR';
 
@@ -60,9 +73,21 @@ function toUserFacingErrorMessage(code: ScannerErrorCode): string {
     case 'NETWORK_ERROR':
       return "Couldn't connect to the scanner. Please try again.";
     case 'TIMEOUT':
-      return 'The scan timed out. Please try again with a clearer photo.';
+      return 'The scan timed out. Please try again with a clearer file or fewer pages.';
+    case 'PASSWORD_PROTECTED_PDF':
+      return 'This PDF is password-protected or encrypted. Please unlock it before uploading.';
+    case 'CORRUPTED_PDF':
+      return 'This PDF file appears corrupted or incomplete and could not be read.';
+    case 'EMPTY_PDF':
+      return 'This PDF contains no readable text or pages.';
+    case 'PDF_TOO_LARGE':
+      return 'This PDF exceeds the maximum allowed size (20 MB).';
+    case 'NOT_A_PDF':
+      return 'The selected file is not a valid PDF document.';
+    case 'UNREADABLE_PDF':
+      return "We couldn't extract details from this PDF. Please verify the file is clear and unlocked.";
     case 'UNREADABLE_RECEIPT':
-      return "We couldn't read this document clearly. Please upload a clearer photo.";
+      return "We couldn't read this document clearly. Please upload a clearer photo or PDF.";
     case 'SERVICE_UNAVAILABLE':
     case 'SERVER_ERROR':
     default:
@@ -82,12 +107,15 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
   }
 
   async analyzeReceiptWithOcr(input: GeminiMultimodalInput): Promise<GeminiReceiptResponse> {
-    if (!input.imageUri && !input.base64) {
-      throw new Error('No receipt image was provided for analysis.');
+    if (!input.imageUri && !input.base64 && !input.extractedText && (!input.pageImages || input.pageImages.length === 0)) {
+      throw new Error('No receipt image or PDF content was provided for analysis.');
     }
 
-    // Deduplication key based on image URI or leading base64 signature
-    const dedupKey = input.imageUri || (input.base64 ? input.base64.substring(0, 128) : 'default');
+    // Deduplication key based on image URI, text signature, or leading base64 signature
+    const dedupKey =
+      input.imageUri ||
+      (input.base64 ? input.base64.substring(0, 128) : undefined) ||
+      (input.extractedText ? input.extractedText.substring(0, 128) : 'default');
     const existing = this.inFlightScans.get(dedupKey);
     if (existing) {
       console.log(`[ReceiptScanner] Reusing in-flight scan for key=${dedupKey.substring(0, 32)}...`);
@@ -110,10 +138,150 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
     const requestId = `receipt-scan-${scanDate}-${randSuffix}`;
     const startTime = Date.now();
 
-    const prepared = await prepareImageForAnalysis(input.imageUri || '', input.base64);
-    const base64Data = prepared.base64;
-    const mimeType = prepared.mimeType || 'image/jpeg';
+    let base64Data = '';
+    let mimeType = input.mimeType || 'image/jpeg';
 
+    if (input.imageUri || input.base64) {
+      const prepared = await prepareImageForAnalysis(input.imageUri || '', input.base64, {
+        mimeType: input.mimeType,
+        fileName: input.fileName,
+      });
+      base64Data = prepared.base64;
+      mimeType = prepared.mimeType || mimeType;
+    }
+
+    const isPdfRequest =
+      mimeType === 'application/pdf' ||
+      input.mimeType === 'application/pdf' ||
+      detectFormatFromUriOrName(input.fileName || input.imageUri).mimeType === 'application/pdf' ||
+      detectFormatFromBase64Prefix(base64Data)?.mimeType === 'application/pdf';
+
+    if (isPdfRequest) {
+      mimeType = 'application/pdf';
+      if (base64Data) {
+        const pdfBytes = base64ToUint8Array(base64Data);
+        const validation = validatePdfBytes(pdfBytes);
+        if (!validation.valid) {
+          const code = (validation.errorCode || 'CORRUPTED_PDF') as ScannerErrorCode;
+          throw new ScannerError(
+            validation.errorMessage || toUserFacingErrorMessage(code),
+            code,
+            requestId,
+            422
+          );
+        }
+      }
+    }
+
+    // Controlled batching for multi-page scanned PDFs (> 4 rendered pages)
+    if (input.pageImages && input.pageImages.length > 4) {
+      const batchSize = 4;
+      const batchResults: Array<{ pageNumber: number; extraction: Record<string, unknown> }> = [];
+
+      for (let i = 0; i < input.pageImages.length; i += batchSize) {
+        const batch = input.pageImages.slice(i, i + batchSize);
+        const batchText = batch
+          .filter((p) => p.extractedText && p.extractedText.trim())
+          .map((p) => `--- PAGE ${p.pageNumber} ---\n${p.extractedText!.trim()}`)
+          .join('\n\n');
+
+        const batchPayload = await this.dispatchBackendScanPayload(
+          {
+            mimeType: 'application/pdf',
+            fileName: input.fileName,
+            extractedText: batchText || input.extractedText,
+            pdfType: input.pdfType || 'mixed',
+            pageCount: input.pageCount || input.pageImages.length,
+            pageImages: batch,
+            requestId: `${requestId}-b${Math.floor(i / batchSize) + 1}`,
+          },
+          startTime
+        );
+        batchResults.push({
+          pageNumber: batch[0].pageNumber,
+          extraction: batchPayload as unknown as Record<string, unknown>,
+        });
+      }
+
+      const consolidated = consolidateMultiPageExtractions(batchResults);
+      const mergedResponse = {
+        ...consolidated.consolidated,
+        isReceipt: true,
+        merchantName: consolidated.consolidated.storeName,
+        merchantAddress: consolidated.consolidated.storeAddress,
+        merchantGstin: consolidated.consolidated.gstin,
+        taxAmount: consolidated.consolidated.totalGst,
+        taxRate: consolidated.consolidated.gstPercentage,
+        grandTotal: consolidated.consolidated.finalAmountPaid,
+        total: consolidated.consolidated.finalAmountPaid,
+        source: {
+          receiptImageRequired: true,
+          provider: 'keepr-multipage-pdf',
+          requestId,
+        },
+      };
+      return this.parseAndValidateResponse(mergedResponse, 'keepr-multipage-pdf');
+    }
+
+    // For Type A text-based PDFs with rich searchable text, omit oversized raw binary > 4MB to stay fast and under Edge limits
+    const shouldIncludeRawBinary =
+      Boolean(base64Data) &&
+      !(
+        isPdfRequest &&
+        input.pdfType === 'text' &&
+        (input.extractedText || '').trim().length >= 45 &&
+        base64Data.length > 3_500_000
+      ) &&
+      !(isPdfRequest && input.pageImages && input.pageImages.length > 0 && base64Data.length > 3_500_000);
+
+    const { rawResult, providerName } = await this.dispatchBackendScanPayloadWithMeta(
+      {
+        imageBase64: shouldIncludeRawBinary ? base64Data : undefined,
+        mimeType,
+        fileName: input.fileName,
+        extractedText: input.extractedText,
+        pdfType: input.pdfType,
+        pageCount: input.pageCount,
+        pageImages: input.pageImages,
+        requestId,
+      },
+      startTime
+    );
+
+    return this.parseAndValidateResponse(rawResult, providerName);
+  }
+
+  private async dispatchBackendScanPayload(
+    payload: {
+      imageBase64?: string;
+      mimeType: string;
+      fileName?: string;
+      extractedText?: string;
+      pdfType?: string;
+      pageCount?: number;
+      pageImages?: GeminiMultimodalInput['pageImages'];
+      requestId: string;
+    },
+    startTime: number
+  ): Promise<GeminiReceiptResponse> {
+    const { rawResult, providerName } = await this.dispatchBackendScanPayloadWithMeta(payload, startTime);
+    return this.parseAndValidateResponse(rawResult, providerName);
+  }
+
+  private async dispatchBackendScanPayloadWithMeta(
+    payload: {
+      imageBase64?: string;
+      mimeType: string;
+      fileName?: string;
+      extractedText?: string;
+      pdfType?: string;
+      pageCount?: number;
+      pageImages?: GeminiMultimodalInput['pageImages'];
+      requestId: string;
+    },
+    startTime: number
+  ): Promise<{ rawResult: any; providerName: string }> {
+    const { requestId } = payload;
     let rawResult: any = null;
     let providerName = 'supabase-edge-function';
 
@@ -149,12 +317,7 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
         const devRes = await fetch(devBackendUrl, {
           method: 'POST',
           headers,
-          body: JSON.stringify({
-            imageBase64: base64Data,
-            mimeType,
-            fileName: input.fileName,
-            requestId,
-          }),
+          body: JSON.stringify(payload),
           signal: devController.signal,
         });
 
@@ -164,9 +327,19 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
           rawResult = await devRes.json();
           providerName = rawResult.source?.provider || 'local-dev-backend';
           console.log(`[ReceiptScanner] [DEV ONLY] Success via local dev proxy for requestId=${requestId}`);
+        } else if (devRes.status === 400 || devRes.status === 422) {
+          const errJson = await devRes.json().catch(() => null);
+          const code = (errJson?.errorCode as ScannerErrorCode) || 'UNREADABLE_RECEIPT';
+          throw new ScannerError(
+            errJson?.error || toUserFacingErrorMessage(code),
+            code,
+            requestId,
+            devRes.status
+          );
         }
       } catch (devErr: any) {
         clearTimeout(devTimeoutId);
+        if (devErr instanceof ScannerError) throw devErr;
         console.warn(`[ReceiptScanner] [DEV ONLY] Local dev proxy invocation failed:`, devErr?.message);
       }
     }
@@ -175,7 +348,6 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
       try {
         console.log(`[ReceiptScanner] Preparing production Edge Function invocation (requestId=${requestId})`);
 
-        // 1. Mitigate startup race conditions: wait briefly if auth store is actively initializing
         if (!useAuthStore.getState().isInitialized || useAuthStore.getState().isLoading) {
           console.log(`[ReceiptScanner] Waiting for auth store restoration (requestId=${requestId})...`);
           const maxWaitMs = 2500;
@@ -187,7 +359,6 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
           }
         }
 
-        // 2. Retrieve active Supabase Auth session
         let { data: sessionData } = await supabase.auth.getSession();
         let session = sessionData?.session || useAuthStore.getState().session;
 
@@ -215,7 +386,6 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
         const accessToken = session?.access_token || useAuthStore.getState().token;
         const currentUserId = session?.user?.id || useAuthStore.getState().user?.id || 'none';
 
-        // 4. Safe Diagnostic Logging (Section 8 - NEVER log the access token)
         console.log(
           `[ReceiptScanner] Auth Telemetry: sessionExists=${Boolean(session)} tokenExists=${Boolean(accessToken)} userId=${currentUserId} authInitialized=${useAuthStore.getState().isInitialized} requestId=${requestId}`
         );
@@ -230,7 +400,6 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
           );
         }
 
-        // 6. Section 4: Direct fetch with apikey and Authorization: Bearer <accessToken>
         const targetSupabaseUrl =
           supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://lqzhfnsxgytwbeudtzks.supabase.co';
         const edgeFunctionUrl = `${targetSupabaseUrl}/functions/v1/scan-receipt`;
@@ -254,12 +423,7 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
                 'Authorization': `Bearer ${accessToken}`,
                 'x-request-id': requestId,
               },
-              body: JSON.stringify({
-                imageBase64: base64Data,
-                mimeType,
-                fileName: input.fileName,
-                requestId,
-              }),
+              body: JSON.stringify(payload),
               signal: controller.signal,
             });
 
@@ -270,7 +434,6 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
               break;
             }
 
-            // Retry on transient 503/429/502/504
             if (attempt < maxAttempts && (res.status === 503 || res.status === 429 || res.status === 502 || res.status === 504)) {
               const backoff = attempt === 1 ? 1500 : 3000;
               console.warn(`[ReceiptScanner] Transient status ${res.status}, retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})...`);
@@ -305,7 +468,6 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
         const durationMs = Date.now() - startTime;
         console.log(`[ScannerDiagnostics] backend response received: status=${response.status} duration=${durationMs}ms requestId=${requestId}`);
 
-        // 7. Section 9: Specific Error Code Disambiguation
         if (response.status === 401) {
           throw new ScannerError(
             toUserFacingErrorMessage('SESSION_EXPIRED'),
@@ -330,12 +492,16 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
             408
           );
         }
-        if (response.status === 422) {
+        if (response.status === 422 || response.status === 400) {
+          const errJson = await response.json().catch(() => null);
+          const serverCode = errJson?.errorCode as ScannerErrorCode | undefined;
+          const mappedCode: ScannerErrorCode =
+            serverCode || (response.status === 422 ? 'UNREADABLE_RECEIPT' : 'UNREADABLE_PDF');
           throw new ScannerError(
-            toUserFacingErrorMessage('UNREADABLE_RECEIPT'),
-            'UNREADABLE_RECEIPT',
+            errJson?.error || toUserFacingErrorMessage(mappedCode),
+            mappedCode,
             requestId,
-            422
+            response.status
           );
         }
         if (!response.ok) {
@@ -361,8 +527,8 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
         } else if (resJson?.error) {
           console.error(`[ReceiptScanner] Edge function payload error requestId=${requestId}:`, resJson.error);
           throw new ScannerError(
-            toUserFacingErrorMessage('SERVER_ERROR'),
-            'SERVER_ERROR',
+            resJson.error || toUserFacingErrorMessage('SERVER_ERROR'),
+            (resJson.errorCode as ScannerErrorCode) || 'SERVER_ERROR',
             requestId,
             500
           );
@@ -406,7 +572,7 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
       );
     }
 
-    return this.parseAndValidateResponse(rawResult, providerName);
+    return { rawResult, providerName };
   }
 
   private parseAndValidateResponse(rawInput: any, provider: string): GeminiReceiptResponse {
@@ -420,7 +586,7 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
       }
       try {
         parsed = JSON.parse(cleanJson);
-      } catch (e: any) {
+      } catch {
         throw new Error('Failed to parse response structure from receipt scanner.');
       }
     } else {
@@ -431,12 +597,31 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
       throw new Error('Invalid response structure received from receipt scanner.');
     }
 
+    // Normalize flat top-level fields with Zod without touching nested docFields or fabricating nulls
+    const zodChecked = validateExtractedReceiptPayload(parsed);
+    const zData = zodChecked.data;
+
     console.log(`[ScannerDiagnostics] OCR completed: mode=vision-multimodal`);
     console.log(`[ScannerDiagnostics] extraction completed: items=${parsed.items?.length || 0} fieldsCount=${Object.keys(parsed.document?.fields || {}).length}`);
     console.log(`[ScannerDiagnostics] normalization completed`);
 
     return {
       ...parsed,
+      merchantName: parsed.merchantName ?? zData.merchantName ?? zData.storeName,
+      merchantAddress: parsed.merchantAddress ?? zData.storeAddress,
+      merchantGstin: parsed.merchantGstin ?? zData.gstin,
+      invoiceDate: parsed.invoiceDate ?? zData.invoiceDate,
+      purchaseDate: parsed.purchaseDate ?? zData.purchaseDate,
+      taxableAmount: parsed.taxableAmount ?? zData.taxableAmount,
+      taxAmount: parsed.taxAmount ?? zData.totalGst,
+      taxRate: parsed.taxRate ?? zData.gstPercentage,
+      cgst: parsed.cgst ?? zData.cgst,
+      sgst: parsed.sgst ?? zData.sgst,
+      igst: parsed.igst ?? zData.igst,
+      grandTotal: parsed.grandTotal ?? zData.finalAmountPaid,
+      total: parsed.total ?? zData.finalAmountPaid,
+      paymentMethod: parsed.paymentMethod ?? zData.paymentMethod,
+      itemDescription: parsed.itemDescription ?? zData.itemDescription,
       isReceipt: parsed.isReceipt !== false,
       source: {
         receiptImageRequired: true,

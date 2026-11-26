@@ -23,11 +23,10 @@ const PORT = process.env.PORT || 3001;
 
 // Verified active Gemini multimodal candidate cascade
 const candidateModels = [
-  'gemini-3.1-flash-lite',
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.6-flash',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
   'gemini-flash-latest',
+  'gemini-2.0-flash',
 ];
 
 const systemPrompt = `
@@ -271,42 +270,55 @@ Return a single strictly valid JSON object matching this schema:
   "documentCategory": string | null,
   "documentType": string | null,
   "documentTitle": string | null,
-  "receiptNumber": string | null,
-  "referenceNumber": string | null,
-  "purchaseDate": string | null,
-  "documentDate": string | null,
-  "expiryDate": string | null,
-  "dueDate": string | null,
-  "merchantName": string | null,
-  "issuerName": string | null,
-  "merchantAddress": string | null,
-  "merchantPhone": string | null,
-  "merchantGstin": string | null,
-  "currency": string | null,
-  "subtotal": number | null,
-  "discount": number | null,
-  "taxAmount": number | null,
-  "taxRate": string | null,
-  "grandTotal": number | null,
-  "items": [
+  'receiptNumber': string | null,
+  'invoiceNumber': string | null,
+  'referenceNumber': string | null,
+  'invoiceDate': string | null,
+  'purchaseDate': string | null,
+  'documentDate': string | null,
+  'expiryDate': string | null,
+  'dueDate': string | null,
+  'merchantName': string | null,
+  'issuerName': string | null,
+  'merchantAddress': string | null,
+  'merchantPhone': string | null,
+  'merchantGstin': string | null,
+  'currency': string | null,
+  'paymentMethod': string | null,
+  'itemDescription': string | null,
+  'subtotal': number | null,
+  'discount': number | null,
+  'taxableAmount': number | null,
+  'gstPercentage': number | null,
+  'cgst': number | null,
+  'sgst': number | null,
+  'igst': number | null,
+  'totalGst': number | null,
+  'taxAmount': number | null,
+  'taxRate': string | null,
+  'grandTotal': number | null,
+  'finalAmountPaid': number | null,
+  'items': [
     {
-      "name": string | null,
-      "category": string | null,
-      "productType": string | null,
-      "brand": string | null,
-      "model": string | null,
-      "serialNumber": string | null,
-      "quantity": number | null,
-      "unitPrice": number | null,
-      "lineSubtotal": number | null,
-      "lineDiscount": number | null,
-      "lineTax": number | null,
-      "lineTotal": number | null,
-      "returnUntil": string | null,
-      "warrantyUntil": string | null
+      'name': string | null,
+      'description': string | null,
+      'category': string | null,
+      'productType': string | null,
+      'brand': string | null,
+      'model': string | null,
+      'serialNumber': string | null,
+      'quantity': number | null,
+      'unitPrice': number | null,
+      'lineSubtotal': number | null,
+      'lineDiscount': number | null,
+      'lineTax': number | null,
+      'lineTotal': number | null,
+      'returnUntil': string | null,
+      'warrantyUntil': string | null
     }
   ]
 }
+NEVER invent missing values (use null). Keep invoiceDate distinct from purchaseDate when both exist. Consolidate multi-page PDF items without double-counting totals.
 Return ONLY pure JSON. No markdown backticks, no preamble.
 `;
 
@@ -354,32 +366,109 @@ const server = http.createServer(async (req, res) => {
       try {
         const body = JSON.parse(bodyData);
         const requestId = body.requestId || req.headers['x-request-id'] || fallbackRequestId;
-        const { imageBase64, mimeType = 'image/jpeg', fileName } = body;
+        const {
+          imageBase64,
+          mimeType = 'image/jpeg',
+          fileName,
+          extractedText,
+          pdfType,
+          pageCount,
+          pageImages,
+        } = body;
 
-        if (!imageBase64 || typeof imageBase64 !== 'string') {
+        const hasBase64 = typeof imageBase64 === 'string' && imageBase64.trim().length > 0;
+        const hasExtractedText = typeof extractedText === 'string' && extractedText.trim().length > 0;
+        const hasPageImages = Array.isArray(pageImages) && pageImages.length > 0;
+
+        if (!hasBase64 && !hasExtractedText && !hasPageImages) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Bad Request: Missing imageBase64 payload.', requestId }));
+          res.end(
+            JSON.stringify({
+              error: 'Bad Request: Missing receipt image or PDF payload.',
+              errorCode: 'EMPTY_PDF',
+              requestId,
+            })
+          );
           return;
         }
 
-        const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+        const cleanBase64 = hasBase64
+          ? (imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64).replace(/\s+/g, '')
+          : '';
         let resolvedMime = mimeType;
         const cleanName = (fileName || '').toLowerCase();
-        if (cleanName.endsWith('.png')) resolvedMime = 'image/png';
+        if (cleanBase64.startsWith('JVBERi0')) resolvedMime = 'application/pdf';
+        else if (cleanBase64.startsWith('iVBORw0K')) resolvedMime = 'image/png';
+        else if (cleanBase64.startsWith('UklGR')) resolvedMime = 'image/webp';
+        else if (cleanBase64.startsWith('/9j/')) resolvedMime = 'image/jpeg';
+        else if (cleanName.endsWith('.pdf')) resolvedMime = 'application/pdf';
+        else if (cleanName.endsWith('.png')) resolvedMime = 'image/png';
         else if (cleanName.endsWith('.webp')) resolvedMime = 'image/webp';
         else if (cleanName.endsWith('.heic') || cleanName.endsWith('.heif')) resolvedMime = 'image/heic';
 
-        const hashPrefix = crypto.createHash('sha256').update(cleanBase64).digest('hex').slice(0, 16);
-        console.log(`[DevBackendProxy] requestId=${requestId} mime=${resolvedMime} base64Len=${cleanBase64.length} sha256Prefix=${hashPrefix}`);
+        if (resolvedMime === 'application/pdf' && cleanBase64) {
+          const decodedBuf = Buffer.from(cleanBase64, 'base64');
+          const rawLatin = decodedBuf.toString('latin1');
+          if (!rawLatin.slice(0, 1024).includes('%PDF-')) {
+            res.writeHead(422, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Uploaded file is not a valid PDF document.', errorCode: 'NOT_A_PDF', requestId }));
+            return;
+          }
+          if (/\/Encrypt\s+(\d+\s+\d+\s+R|<<)/.test(rawLatin) || /\/Filter\s*\/Standard\b/.test(rawLatin)) {
+            res.writeHead(422, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'This PDF is password-protected or encrypted.', errorCode: 'PASSWORD_PROTECTED_PDF', requestId }));
+            return;
+          }
+          if (decodedBuf.length < 64 || !/\d+\s+\d+\s+obj\b/.test(rawLatin)) {
+            res.writeHead(422, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'This PDF appears corrupted or incomplete.', errorCode: 'CORRUPTED_PDF', requestId }));
+            return;
+          }
+        }
+
+        const hashPrefix = crypto
+          .createHash('sha256')
+          .update(cleanBase64 || extractedText || JSON.stringify(pageImages || []))
+          .digest('hex')
+          .slice(0, 16);
+        console.log(
+          `[DevBackendProxy] requestId=${requestId} mime=${resolvedMime} pdfType=${pdfType || 'none'} pages=${pageCount || 1} base64Len=${cleanBase64.length} sha256Prefix=${hashPrefix}`
+        );
+
+        const parts = [];
+        if (hasPageImages) {
+          parts.push({
+            text: `PDF RECEIPT DOCUMENT (${pageCount || pageImages.length} total pages, type: ${pdfType || 'scanned'}). Consolidate across pages without double-counting totals.`,
+          });
+          if (hasExtractedText) {
+            parts.push({ text: `SEARCHABLE TEXT LAYER:\n${extractedText.slice(0, 80000)}` });
+          }
+          for (const page of pageImages.slice(0, 6)) {
+            const pB64 = (page?.base64 || '').replace(/^data:[^;]+;base64,/, '').trim();
+            if (pB64) {
+              parts.push({ text: `[Rendered Page ${page.pageNumber || ''}]` });
+              parts.push({ inlineData: { mimeType: page.mimeType || 'image/jpeg', data: pB64 } });
+            }
+          }
+        } else if (hasExtractedText && resolvedMime === 'application/pdf') {
+          parts.push({
+            text: `PDF RECEIPT TEXT CONTENT (${pageCount || 1} pages, file: ${fileName || 'receipt.pdf'}):\n\n${extractedText.slice(0, 100000)}`,
+          });
+          if (cleanBase64 && cleanBase64.length <= 4000000) {
+            parts.push({ inlineData: { mimeType: 'application/pdf', data: cleanBase64 } });
+          }
+        } else if (cleanBase64) {
+          parts.push({ inlineData: { mimeType: resolvedMime, data: cleanBase64 } });
+        } else if (hasExtractedText) {
+          parts.push({ text: `DOCUMENT TEXT CONTENT:\n\n${extractedText.slice(0, 100000)}` });
+        }
+        parts.push({ text: systemPrompt });
 
         const requestPayload = {
           contents: [
             {
               role: 'user',
-              parts: [
-                { inlineData: { mimeType: resolvedMime, data: cleanBase64 } },
-                { text: systemPrompt },
-              ],
+              parts,
             },
           ],
           generationConfig: {
@@ -427,7 +516,7 @@ const server = http.createServer(async (req, res) => {
               continue;
             }
 
-            if (candidateResp.status === 404) break;
+            if (candidateResp.status === 404) continue;
             response = candidateResp;
             break;
           } catch (e) {

@@ -124,3 +124,49 @@ export function detectFormatFromUriOrName(uriOrName?: string | null): DetectedIm
 
   return { mimeType: 'image/jpeg', extension: '.jpg', format: 'jpeg' };
 }
+
+/**
+ * Inspects a raw Base64 payload (with or without data URL prefix) to identify exact format
+ * from its binary magic header bytes. Returns null if not confidently identifiable.
+ */
+export function detectFormatFromBase64Prefix(
+  base64Input?: string | null
+): DetectedImageFormat | null {
+  if (!base64Input || typeof base64Input !== 'string') return null;
+
+  const trimmed = base64Input.trim();
+  if (trimmed.startsWith('data:application/pdf')) {
+    return { mimeType: 'application/pdf', extension: '.pdf', format: 'pdf' };
+  }
+  if (trimmed.startsWith('data:image/png')) {
+    return { mimeType: 'image/png', extension: '.png', format: 'png' };
+  }
+  if (trimmed.startsWith('data:image/webp')) {
+    return { mimeType: 'image/webp', extension: '.webp', format: 'webp' };
+  }
+  if (trimmed.startsWith('data:image/heic')) {
+    return { mimeType: 'image/heic', extension: '.heic', format: 'heic' };
+  }
+
+  const clean = trimmed.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+  if (!clean) return null;
+
+  // %PDF- encoded as base64 always starts with JVBERi0
+  if (clean.startsWith('JVBERi0')) {
+    return { mimeType: 'application/pdf', extension: '.pdf', format: 'pdf' };
+  }
+  // PNG: \x89PNG -> iVBORw0KGgo
+  if (clean.startsWith('iVBORw0K')) {
+    return { mimeType: 'image/png', extension: '.png', format: 'png' };
+  }
+  // WebP: RIFF -> UklGR
+  if (clean.startsWith('UklGR')) {
+    return { mimeType: 'image/webp', extension: '.webp', format: 'webp' };
+  }
+  // JPEG: FF D8 FF -> /9j/
+  if (clean.startsWith('/9j/')) {
+    return { mimeType: 'image/jpeg', extension: '.jpg', format: 'jpeg' };
+  }
+
+  return null;
+}

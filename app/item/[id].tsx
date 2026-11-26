@@ -33,6 +33,7 @@ import {
 import { isStoragePath, canonicalizeProductPhotos } from '../../src/utils/storageUtils';
 import { getItemReceiptSignedUrl } from '../../src/services/storageService';
 import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
+import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
 
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -1361,20 +1362,34 @@ export default function ItemDetailScreen() {
         </View>
       </ScrollView>
 
-      <HighResImageViewer
-        visible={Boolean(previewModal)}
-        images={
-          previewModal
-            ? [
-                {
-                  uri: previewModal.uri,
-                  title: previewModal.title,
-                },
-              ]
-            : []
-        }
-        onClose={() => setPreviewModal(null)}
-      />
+      {Boolean(
+        previewModal &&
+          (previewModal.uri.toLowerCase().includes('.pdf') ||
+            previewModal.title.toLowerCase().endsWith('.pdf') ||
+            item.receiptName?.toLowerCase().endsWith('.pdf'))
+      ) ? (
+        <UniversalPdfViewer
+          visible={Boolean(previewModal)}
+          pdfUri={previewModal?.uri || ''}
+          title={previewModal?.title || `${item.name} · ${documentLabel}`}
+          onClose={() => setPreviewModal(null)}
+        />
+      ) : (
+        <HighResImageViewer
+          visible={Boolean(previewModal)}
+          images={
+            previewModal
+              ? [
+                  {
+                    uri: previewModal.uri,
+                    title: previewModal.title,
+                  },
+                ]
+              : []
+          }
+          onClose={() => setPreviewModal(null)}
+        />
+      )}
     </View>
   );
 }

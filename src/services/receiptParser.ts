@@ -486,30 +486,63 @@ export function parseGeminiResponseToExtractedData(
     serviceRepairData?.coverageReferenceNumber ??
     legacyCommon.invoiceNumber;
 
-  let rawDateField: any =
+  let rawPurchaseDateField: any =
     docFields.paymentDate ??
+    geminiResponse.purchaseDate ??
+    legacyCommon.purchaseDate;
+  let rawInvoiceDateField: any =
     docFields.issueDate ??
     docFields.registrationDate ??
     docFields.warrantyStartDate ??
-    geminiResponse.purchaseDate ??
     geminiResponse.invoiceDate ??
     (geminiResponse as any).documentDate ??
-    serviceRepairData?.serviceDate ??
-    legacyCommon.purchaseDate;
-  let invoiceDateField = normalizeDateToIso(rawDateField) ?? rawDateField;
+    serviceRepairData?.serviceDate;
+
+  const purchaseDateNormalized =
+    normalizeDateToIso(rawPurchaseDateField) ??
+    (typeof rawPurchaseDateField === 'object' && rawPurchaseDateField !== null
+      ? rawPurchaseDateField.value
+      : rawPurchaseDateField) ??
+    null;
+  const invoiceDateOnlyNormalized =
+    normalizeDateToIso(rawInvoiceDateField) ??
+    (typeof rawInvoiceDateField === 'object' && rawInvoiceDateField !== null
+      ? rawInvoiceDateField.value
+      : rawInvoiceDateField) ??
+    null;
+
+  let invoiceDateField = purchaseDateNormalized ?? invoiceDateOnlyNormalized ?? null;
 
   let currencyField = docFields.currency ?? geminiResponse.currency ?? serviceRepairData?.currency ?? legacyCommon.currency ?? 'INR';
   let subtotalField = docFields.subtotal ?? geminiResponse.subtotal ?? legacyCommon.subtotal;
-  let taxField = docFields.taxAmount ?? geminiResponse.taxAmount ?? geminiResponse.tax ?? legacyCommon.tax ?? legacyCommon.gst;
+  let taxableAmountField =
+    docFields.taxableAmount ??
+    geminiResponse.taxableAmount ??
+    (geminiResponse as any).taxableValue;
+  let taxField =
+    docFields.taxAmount ??
+    geminiResponse.taxAmount ??
+    geminiResponse.totalGst ??
+    geminiResponse.tax ??
+    legacyCommon.tax ??
+    legacyCommon.gst;
   let discountField = docFields.discount ?? geminiResponse.discount ?? legacyCommon.discount;
   let totalField: any =
     docFields.amount ??
     docFields.grandTotal ??
     docFields.premiumAmount ??
+    geminiResponse.finalAmountPaid ??
     geminiResponse.grandTotal ??
     geminiResponse.total ??
     serviceRepairData?.amountPaid ??
     legacyCommon.totalAmount;
+
+  const itemDescriptionField =
+    geminiResponse.itemDescription ??
+    (Array.isArray(geminiResponse.items) && geminiResponse.items[0]
+      ? (geminiResponse.items[0] as any).description
+      : null) ??
+    null;
 
   let paymentMethodField = docFields.paymentMode ?? geminiResponse.paymentMethod ?? legacyCommon.paymentMethod;
   let serialField = docFields.serialNumber ?? geminiResponse.serialNumber ?? legacyCategorySpecific.serialNumber;
@@ -654,27 +687,33 @@ export function parseGeminiResponseToExtractedData(
 
   const scannerCat = canonicalToScannerCode(canonical);
 
-  const gstRateField = geminiResponse.taxRate ?? geminiResponse.gstRate;
+  const gstRateField = geminiResponse.gstPercentage ?? geminiResponse.taxRate ?? geminiResponse.gstRate;
   const cgstField = geminiResponse.cgst;
   const sgstField = geminiResponse.sgst;
   const igstField = geminiResponse.igst;
 
   const common: CommonReceiptInfo = {
     productName: buildFieldValue<string | null>(primaryItemName, 0.95),
+    itemDescription: buildFieldValue<string | null>(
+      typeof itemDescriptionField === 'string' ? itemDescriptionField : null,
+      0.88
+    ),
     category: buildFieldValue<ScannerCategory>(scannerCat, 0.95),
     brand: buildFieldValue<string | null>(primaryItemBrand, 0.92),
     merchant: buildFieldValue<string | null>(merchantField, 0.95),
     merchantAddress: buildFieldValue<string | null>(merchantAddressField, 0.85),
     merchantPhone: buildFieldValue<string | null>(merchantPhoneField, 0.85),
     gstin: buildFieldValue<string | null>(gstinField, 0.90, true),
-    purchaseDate: buildFieldValue<string | null>(invoiceDateField, 0.95),
+    invoiceDate: buildFieldValue<string | null>(invoiceDateOnlyNormalized ?? invoiceDateField, 0.95),
+    purchaseDate: buildFieldValue<string | null>(purchaseDateNormalized ?? invoiceDateField, 0.95),
     invoiceNumber: buildFieldValue<string | null>(invoiceNumberField, 0.95, true),
     quantity: buildFieldValue<number | null>(toNum(primaryItemQty) ?? toNum(legacyCommon.quantity) ?? 1, 0.95),
     unitPrice: buildFieldValue<number | null>(toNum(primaryItemUnitPrice) ?? toNum(subtotalField) ?? toNum(totalField), 0.95),
     subtotal: buildFieldValue<number | null>(toNum(subtotalField), 0.95),
     discount: buildFieldValue<number | null>(toNum(discountField), 0.95),
+    taxableAmount: buildFieldValue<number | null>(toNum(taxableAmountField), 0.92),
     taxGst: buildFieldValue<number | null>(toNum(taxField), 0.92),
-    gstRate: buildFieldValue<string | null>(gstRateField ? String(gstRateField) : null, 0.90),
+    gstRate: buildFieldValue<string | null>(gstRateField != null ? String(gstRateField) : null, 0.90),
     cgst: buildFieldValue<number | null>(toNum(cgstField), 0.90),
     sgst: buildFieldValue<number | null>(toNum(sgstField), 0.90),
     igst: buildFieldValue<number | null>(toNum(igstField), 0.90),
@@ -1083,14 +1122,21 @@ export function parseGeminiResponseToExtractedData(
   }));
 
   const purchaseContract = isActualReceipt ? {
-    purchaseDate: invoiceDateField || null,
+    invoiceDate: invoiceDateOnlyNormalized || invoiceDateField || null,
+    purchaseDate: purchaseDateNormalized || invoiceDateField || null,
     merchantName: derivedIssuer || null,
     merchantAddress: (typeof merchantAddressField === 'object' && merchantAddressField !== null ? merchantAddressField.value : merchantAddressField) || null,
     invoiceNumber: (typeof invoiceNumberField === 'object' && invoiceNumberField !== null ? invoiceNumberField.value : invoiceNumberField) || null,
     subtotal: toNum(subtotalField) ?? null,
     discount: toNum(discountField) ?? null,
+    taxableAmount: toNum(taxableAmountField) ?? null,
+    gstRate: gstRateField != null ? String(gstRateField) : null,
+    cgst: toNum(cgstField) ?? null,
+    sgst: toNum(sgstField) ?? null,
+    igst: toNum(igstField) ?? null,
     taxAmount: toNum(taxField) ?? null,
     grandTotal: toNum(totalField) ?? null,
+    paymentMethod: (typeof paymentMethodField === 'object' && paymentMethodField !== null ? paymentMethodField.value : paymentMethodField) || null,
     products: canonicalProducts,
   } : undefined;
 

@@ -7,7 +7,10 @@
 import { Platform, Image } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import { detectFormatFromUriOrName } from '../utils/imageIntegrity';
+import {
+  detectFormatFromBase64Prefix,
+  detectFormatFromUriOrName,
+} from '../utils/imageIntegrity';
 
 export interface StabilizedReceiptResult {
   uri: string;
@@ -16,6 +19,13 @@ export interface StabilizedReceiptResult {
   size?: number;
   isStable: boolean;
   base64?: string | null;
+  mimeType?: string;
+  fileName?: string;
+}
+
+export interface StabilizeReceiptOptions {
+  mimeType?: string | null;
+  fileName?: string | null;
 }
 
 /**
@@ -159,21 +169,85 @@ export function safeNormalizeRouteUri(rawParam?: string | null): string {
  * On Android, content:// URIs from photo pickers are copied into the app's cache directory
  * so that React Native's Image component (Fresco) can reliably read them without permission denial.
  */
+/**
+ * Reads up to 64 base64 characters from a local file URI to inspect its true binary magic signature
+ * (e.g. %PDF- -> JVBERi0, PNG -> iVBORw0K, JPEG -> /9j/, WebP -> UklGR).
+ */
+async function sniffLocalFileFormat(
+  fileUri: string
+): Promise<{ mimeType: string; extension: string; format: string } | null> {
+  if (!fileUri || fileUri.startsWith('http://') || fileUri.startsWith('https://')) {
+    return null;
+  }
+  try {
+    const headBase64 = await FileSystem.readAsStringAsync(fileUri, {
+      encoding: FileSystem.EncodingType.Base64,
+      position: 0,
+      length: 32,
+    });
+    const detected = detectFormatFromBase64Prefix(headBase64);
+    if (detected) return detected;
+  } catch {
+    // Some URIs/platforms ignore position/length options; ignore gracefully
+  }
+  return null;
+}
+
+function resolveStabilizedFormat(
+  rawUri: string,
+  base64?: string | null,
+  options?: StabilizeReceiptOptions
+): { mimeType: string; extension: string } {
+  const fromBase64 = detectFormatFromBase64Prefix(base64);
+  if (fromBase64) return fromBase64;
+
+  const optMime = (options?.mimeType || '').toLowerCase();
+  if (optMime.includes('pdf')) return { mimeType: 'application/pdf', extension: '.pdf' };
+  if (optMime.includes('png')) return { mimeType: 'image/png', extension: '.png' };
+  if (optMime.includes('webp')) return { mimeType: 'image/webp', extension: '.webp' };
+  if (optMime.includes('heic') || optMime.includes('heif')) {
+    return { mimeType: 'image/heic', extension: '.heic' };
+  }
+
+  if (options?.fileName) {
+    const byName = detectFormatFromUriOrName(options.fileName);
+    if (byName.format !== 'jpeg' || options.fileName.toLowerCase().match(/\.jpe?g$/)) {
+      return byName;
+    }
+  }
+
+  return detectFormatFromUriOrName(rawUri);
+}
+
+/**
+ * Ensures any picked receipt file (especially Android content:// URIs or ephemeral cache URIs)
+ * is copied/stabilized into a guaranteed readable persistent cache path preserving exact format (.pdf, .png, .webp, .jpg).
+ */
 export async function stabilizeReceiptImage(
   rawUri: string,
-  base64?: string | null
+  base64?: string | null,
+  options?: StabilizeReceiptOptions
 ): Promise<StabilizedReceiptResult> {
   if (!rawUri) {
     return { uri: '', exists: false, isStable: false };
   }
 
+  const resolvedFormat = resolveStabilizedFormat(rawUri, base64, options);
+
   // Web platform or remote URLs
   if (Platform.OS === 'web' || rawUri.startsWith('http://') || rawUri.startsWith('https://') || rawUri.startsWith('data:')) {
-    return { uri: rawUri, exists: true, isStable: true, base64 };
+    return {
+      uri: rawUri,
+      exists: true,
+      isStable: true,
+      base64,
+      mimeType: resolvedFormat.mimeType,
+      fileName: options?.fileName || undefined,
+    };
   }
 
   try {
-    // 1. Android content:// URIs - copy to app cache for permanent read access
+    // 1. Android content:// URIs - copy to app cache preserving authentic format & extension
     if (rawUri.startsWith('content://')) {
       const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
       if (cacheDir) {
@@ -183,7 +257,8 @@ export async function stabilizeReceiptImage(
           await FileSystem.makeDirectoryAsync(receiptsDir, { intermediates: true }).catch(() => {});
         }
 
-        const stableTarget = `${receiptsDir}receipt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.jpg`;
+        const token = `receipt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        let stableTarget = `${receiptsDir}${token}${resolvedFormat.extension}`;
         console.log('[ReceiptFileService] Copying content:// URI to stable path:', stableTarget);
 
         await FileSystem.copyAsync({
@@ -191,15 +266,48 @@ export async function stabilizeReceiptImage(
           to: stableTarget,
         });
 
-        const targetInfo = await FileSystem.getInfoAsync(stableTarget);
+        let targetInfo = await FileSystem.getInfoAsync(stableTarget);
         if (targetInfo.exists) {
-          console.log('[ReceiptFileService] Successfully stabilized content:// to file://', stableTarget, 'size:', targetInfo.size);
+          // Verify actual magic bytes of the copied file so content:// PDFs NEVER keep a wrong extension
+          const sniffed = await sniffLocalFileFormat(stableTarget);
+          let finalMime = resolvedFormat.mimeType;
+          let finalExt = resolvedFormat.extension;
+
+          if (sniffed && sniffed.extension !== resolvedFormat.extension) {
+            const correctedTarget = `${receiptsDir}${token}${sniffed.extension}`;
+            try {
+              await FileSystem.moveAsync({ from: stableTarget, to: correctedTarget });
+              stableTarget = correctedTarget;
+              targetInfo = await FileSystem.getInfoAsync(stableTarget);
+              finalMime = sniffed.mimeType;
+              finalExt = sniffed.extension;
+            } catch {
+              // Keep copied path if move fails
+            }
+          }
+
+          const resolvedSize = 'size' in targetInfo ? targetInfo.size : undefined;
+          const resolvedName =
+            options?.fileName && options.fileName.toLowerCase().endsWith(finalExt)
+              ? options.fileName
+              : `${token}${finalExt}`;
+
+          console.log(
+            '[ReceiptFileService] Successfully stabilized content:// to file://',
+            stableTarget,
+            'mime:',
+            finalMime,
+            'size:',
+            resolvedSize
+          );
           return {
             uri: stableTarget,
             exists: true,
-            size: targetInfo.size,
+            size: resolvedSize,
             isStable: true,
             base64,
+            mimeType: finalMime,
+            fileName: resolvedName,
           };
         }
       }
@@ -207,17 +315,21 @@ export async function stabilizeReceiptImage(
 
     const fileInfo = await FileSystem.getInfoAsync(rawUri).catch(() => null);
     if (fileInfo && fileInfo.exists) {
-      console.log('[ReceiptFileService] Verified file exists at URI:', rawUri, 'size:', fileInfo.size);
+      const sniffed = await sniffLocalFileFormat(rawUri);
+      const finalMime = sniffed?.mimeType || resolvedFormat.mimeType;
+      console.log('[ReceiptFileService] Verified file exists at URI:', rawUri, 'mime:', finalMime, 'size:', fileInfo.size);
       return {
         uri: rawUri,
         exists: true,
         size: fileInfo.size,
         isStable: true,
         base64,
+        mimeType: finalMime,
+        fileName: options?.fileName || rawUri.split('/').pop(),
       };
     }
 
-    if (base64 && base64.length > 50) {
+    if (base64 && base64.length > 16) {
       const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
       if (cacheDir) {
         const receiptsDir = `${cacheDir}receipts/`;
@@ -225,9 +337,10 @@ export async function stabilizeReceiptImage(
         if (!dirInfo?.exists) {
           await FileSystem.makeDirectoryAsync(receiptsDir, { intermediates: true }).catch(() => {});
         }
-        const recoveredUri = `${receiptsDir}recovered_${Date.now()}.jpg`;
+        const recoveryFormat = detectFormatFromBase64Prefix(base64) || resolvedFormat;
+        const recoveredUri = `${receiptsDir}recovered_${Date.now()}${recoveryFormat.extension}`;
         console.log('[ReceiptFileService] Restoring file from base64 to:', recoveredUri);
-        const cleanBase64 = base64.replace(/^data:image\/\w+;base64,/, '');
+        const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '');
         await FileSystem.writeAsStringAsync(recoveredUri, cleanBase64, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -239,6 +352,8 @@ export async function stabilizeReceiptImage(
             size: recInfo.size,
             isStable: true,
             base64,
+            mimeType: recoveryFormat.mimeType,
+            fileName: options?.fileName || recoveredUri.split('/').pop(),
           };
         }
       }
@@ -250,6 +365,7 @@ export async function stabilizeReceiptImage(
       exists: false,
       isStable: false,
       base64,
+      mimeType: resolvedFormat.mimeType,
     };
   } catch (err) {
     console.error('[ReceiptFileService] Error stabilizing receipt URI:', err);
@@ -258,6 +374,7 @@ export async function stabilizeReceiptImage(
       exists: false,
       isStable: false,
       base64,
+      mimeType: resolvedFormat.mimeType,
     };
   }
 }
@@ -387,7 +504,10 @@ export async function persistFileToVault(
       await FileSystem.makeDirectoryAsync(targetDir, { intermediates: true }).catch(() => {});
     }
 
-    const detected = detectFormatFromUriOrName(preferredFileName || cleanSource);
+    const fromBase64 = detectFormatFromBase64Prefix(base64Fallback);
+    const detected =
+      fromBase64 ||
+      detectFormatFromUriOrName(preferredFileName || cleanSource);
     let ext = detected.extension;
 
     const defaultBase = folder === 'vault_documents' ? 'document' : 'receipt';
@@ -454,8 +574,8 @@ export async function persistFileToVault(
     }
 
     // 3. Fallback: Write directly from base64 if source file was missing or copy failed
-    if (base64Fallback && base64Fallback.length > 50) {
-      const cleanBase64 = base64Fallback.replace(/^data:[a-zA-Z0-9/]+;base64,/, '');
+    if (base64Fallback && base64Fallback.length > 16) {
+      const cleanBase64 = base64Fallback.replace(/^data:[^;]+;base64,/, '');
       await FileSystem.writeAsStringAsync(destinationUri, cleanBase64, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -742,13 +862,51 @@ export function logReceiptDebug(
  */
 export async function prepareImageForAnalysis(
   imageUri: string,
-  existingBase64?: string | null
+  existingBase64?: string | null,
+  options?: { mimeType?: string | null; fileName?: string | null }
 ): Promise<{ base64: string; mimeType: string }> {
-  try {
-    const detected = detectFormatFromUriOrName(imageUri);
+  const resolveLikelyPdf = async (): Promise<{
+    isPdf: boolean;
+    mimeType: string;
+  }> => {
+    const optMime = (options?.mimeType || '').toLowerCase();
+    if (optMime.includes('pdf')) {
+      return { isPdf: true, mimeType: 'application/pdf' };
+    }
+    const fromB64 = detectFormatFromBase64Prefix(existingBase64);
+    if (fromB64?.mimeType === 'application/pdf') {
+      return { isPdf: true, mimeType: 'application/pdf' };
+    }
+    if (options?.fileName && detectFormatFromUriOrName(options.fileName).mimeType === 'application/pdf') {
+      return { isPdf: true, mimeType: 'application/pdf' };
+    }
+    const byUri = detectFormatFromUriOrName(imageUri);
+    if (byUri.mimeType === 'application/pdf' || imageUri.toLowerCase().includes('.pdf')) {
+      return { isPdf: true, mimeType: 'application/pdf' };
+    }
+    if (imageUri) {
+      const sniffed = await sniffLocalFileFormat(imageUri);
+      if (sniffed?.mimeType === 'application/pdf') {
+        return { isPdf: true, mimeType: 'application/pdf' };
+      }
+      if (sniffed) {
+        return { isPdf: false, mimeType: sniffed.mimeType };
+      }
+    }
+    if (optMime.startsWith('image/')) {
+      return { isPdf: false, mimeType: optMime };
+    }
+    return {
+      isPdf: false,
+      mimeType: fromB64?.mimeType || byUri.mimeType || 'image/jpeg',
+    };
+  };
 
-    // 1. If document is a PDF, bypass image downsampling completely
-    if (detected.mimeType === 'application/pdf' || imageUri.toLowerCase().includes('.pdf')) {
+  try {
+    const resolved = await resolveLikelyPdf();
+
+    // 1. If document is a PDF (by MIME, filename, URI, or %PDF- magic bytes), bypass image downsampling completely
+    if (resolved.isPdf) {
       if (existingBase64) {
         const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
         return { base64: clean, mimeType: 'application/pdf' };
@@ -761,23 +919,28 @@ export async function prepareImageForAnalysis(
 
     if (!imageUri && existingBase64) {
       const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
-      return { base64: clean, mimeType: detected.mimeType || 'image/jpeg' };
+      const magicMime = detectFormatFromBase64Prefix(clean)?.mimeType;
+      return { base64: clean, mimeType: magicMime || resolved.mimeType || 'image/jpeg' };
     }
 
     if (imageUri.startsWith('data:')) {
       const parts = imageUri.split(',');
       const meta = parts[0];
       const data = parts[1] || '';
-      const mime = meta.includes('image/png')
-        ? 'image/png'
-        : meta.includes('image/webp')
-        ? 'image/webp'
-        : meta.includes('application/pdf')
-        ? 'application/pdf'
-        : 'image/jpeg';
+      const magicMime = detectFormatFromBase64Prefix(data)?.mimeType;
+      const mime =
+        magicMime ||
+        (meta.includes('image/png')
+          ? 'image/png'
+          : meta.includes('image/webp')
+          ? 'image/webp'
+          : meta.includes('application/pdf')
+          ? 'application/pdf'
+          : 'image/jpeg');
       return { base64: data, mimeType: mime };
     }
 
+    // Read base64 directly if we need a final magic-byte check on extensionless cache files
     // Inspect image size to determine downsampling
     const dims = await new Promise<{ width: number; height: number }>((resolve) => {
       Image.getSize(
@@ -786,6 +949,18 @@ export async function prepareImageForAnalysis(
         () => resolve({ width: 0, height: 0 })
       );
     });
+
+    if (dims.width === 0 && dims.height === 0 && imageUri) {
+      // Double check raw bytes before calling manipulateAsync on something non-image
+      const directRaw = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const magic = detectFormatFromBase64Prefix(directRaw);
+      if (magic?.mimeType === 'application/pdf') {
+        return { base64: directRaw, mimeType: 'application/pdf' };
+      }
+      return { base64: directRaw, mimeType: magic?.mimeType || resolved.mimeType || 'image/jpeg' };
+    }
 
     const maxDim = Math.max(dims.width, dims.height);
     const actions: any[] = [];
@@ -819,18 +994,23 @@ export async function prepareImageForAnalysis(
     return { base64: directBase64, mimeType: 'image/jpeg' };
   } catch (err) {
     console.warn('[ReceiptFileService] prepareImageForAnalysis fallback:', err);
-    const detected = detectFormatFromUriOrName(imageUri);
-    const isPdf = detected.mimeType === 'application/pdf' || imageUri.toLowerCase().includes('.pdf');
-    const fallbackMime = isPdf ? 'application/pdf' : (detected.mimeType || 'image/jpeg');
-
+    const resolved = await resolveLikelyPdf();
     if (existingBase64) {
       const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
-      return { base64: clean, mimeType: fallbackMime };
+      const magic = detectFormatFromBase64Prefix(clean);
+      return {
+        base64: clean,
+        mimeType: magic?.mimeType || resolved.mimeType || 'image/jpeg',
+      };
     }
     const raw = await FileSystem.readAsStringAsync(imageUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    return { base64: raw, mimeType: fallbackMime };
+    const magic = detectFormatFromBase64Prefix(raw);
+    return {
+      base64: raw,
+      mimeType: magic?.mimeType || resolved.mimeType || 'image/jpeg',
+    };
   }
 }
 

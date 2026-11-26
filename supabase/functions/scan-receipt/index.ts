@@ -18,11 +18,10 @@ const corsHeaders = {
 };
 
 const candidateModels = [
-  "gemini-3.1-flash-lite",
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-3.6-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-flash-latest",
+  "gemini-2.0-flash",
 ];
 
 const systemPrompt = `
@@ -198,20 +197,30 @@ Return a single strictly valid JSON object matching this schema:
     "destination": "item_review" | "document_review" | "service_review" | "review_type" | "invalid"
   },
   "purchase": {
+    "invoiceDate": string | null,
     "purchaseDate": string | null,
     "merchantName": string | null,
     "merchantAddress": string | null,
     "merchantPhone": string | null,
+    "merchantGstin": string | null,
     "invoiceNumber": string | null,
     "currency": string | null,
+    "paymentMethod": string | null,
     "subtotal": number | null,
     "discount": number | null,
+    "taxableAmount": number | null,
+    "gstPercentage": number | null,
+    "cgst": number | null,
+    "sgst": number | null,
+    "igst": number | null,
     "taxAmount": number | null,
     "taxRate": string | null,
     "grandTotal": number | null,
+    "finalAmountPaid": number | null,
     "products": [
       {
         "name": string,
+        "description": string | null,
         "category": string | null,
         "productType": string | null,
         "brand": string | null,
@@ -267,7 +276,9 @@ Return a single strictly valid JSON object matching this schema:
   "documentType": string | null,
   "documentTitle": string | null,
   "receiptNumber": string | null,
+  "invoiceNumber": string | null,
   "referenceNumber": string | null,
+  "invoiceDate": string | null,
   "purchaseDate": string | null,
   "documentDate": string | null,
   "expiryDate": string | null,
@@ -278,14 +289,24 @@ Return a single strictly valid JSON object matching this schema:
   "merchantPhone": string | null,
   "merchantGstin": string | null,
   "currency": string | null,
+  "paymentMethod": string | null,
+  "itemDescription": string | null,
   "subtotal": number | null,
   "discount": number | null,
+  "taxableAmount": number | null,
+  "gstPercentage": number | null,
+  "cgst": number | null,
+  "sgst": number | null,
+  "igst": number | null,
+  "totalGst": number | null,
   "taxAmount": number | null,
   "taxRate": string | null,
   "grandTotal": number | null,
+  "finalAmountPaid": number | null,
   "items": [
     {
       "name": string | null,
+      "description": string | null,
       "category": string | null,
       "productType": string | null,
       "brand": string | null,
@@ -302,8 +323,76 @@ Return a single strictly valid JSON object matching this schema:
     }
   ]
 }
+
+CRITICAL EXTRACTION ACCURACY & PDF MULTI-PAGE RULES:
+1. NEVER invent, guess, or fabricate values that are not clearly visible in the receipt or PDF text. Use null for missing fields.
+2. Keep "invoiceDate" and "purchaseDate" distinct if both are stated separately (for example order date vs invoice billing date). Use YYYY-MM-DD format.
+3. Separate "taxableAmount" (pre-tax base value), "subtotal", "discount", tax components ("cgst", "sgst", "igst", "totalGst" / "taxAmount", "gstPercentage"), and "finalAmountPaid" / "grandTotal".
+4. When processing multi-page PDF documents:
+   - Consolidate line items across all pages without duplicating repeated headers or carry-forward summary rows.
+   - NEVER add carry-forward subtotals from earlier pages to the final page grand total. Use the true invoice grand total.
 Return ONLY pure JSON. No markdown backticks, no preamble.
 `;
+
+function detectMimeAndValidatePdfBase64(
+  cleanBase64: string,
+  mimeType: string,
+  fileName?: string
+): { resolvedMime: string; valid: boolean; errorCode?: string; errorMessage?: string } {
+  const cleanName = (fileName || "").toLowerCase();
+  let resolvedMime = mimeType || "image/jpeg";
+
+  if (cleanBase64.startsWith("JVBERi0")) resolvedMime = "application/pdf";
+  else if (cleanBase64.startsWith("iVBORw0K")) resolvedMime = "image/png";
+  else if (cleanBase64.startsWith("UklGR")) resolvedMime = "image/webp";
+  else if (cleanBase64.startsWith("/9j/")) resolvedMime = "image/jpeg";
+  else if (cleanName.endsWith(".pdf")) resolvedMime = "application/pdf";
+  else if (cleanName.endsWith(".png")) resolvedMime = "image/png";
+  else if (cleanName.endsWith(".webp")) resolvedMime = "image/webp";
+  else if (cleanName.endsWith(".heic") || cleanName.endsWith(".heif")) resolvedMime = "image/heic";
+
+  if (resolvedMime === "application/pdf" && cleanBase64) {
+    let binarySample = "";
+    try {
+      const sampleB64 = cleanBase64.slice(0, 65536);
+      const padLen = (4 - (sampleB64.length % 4)) % 4;
+      binarySample = atob(sampleB64 + "=".repeat(padLen));
+    } catch {
+      return {
+        resolvedMime,
+        valid: false,
+        errorCode: "CORRUPTED_PDF",
+        errorMessage: "This PDF file appears corrupted or malformed.",
+      };
+    }
+    if (!binarySample.includes("%PDF-")) {
+      return {
+        resolvedMime,
+        valid: false,
+        errorCode: "NOT_A_PDF",
+        errorMessage: "The uploaded file is not a valid PDF document.",
+      };
+    }
+    if (/\/Encrypt\s+(\d+\s+\d+\s+R|<<)/.test(binarySample) || /\/Filter\s*\/Standard\b/.test(binarySample)) {
+      return {
+        resolvedMime,
+        valid: false,
+        errorCode: "PASSWORD_PROTECTED_PDF",
+        errorMessage: "This PDF is password-protected or encrypted. Please unlock it first.",
+      };
+    }
+    if (cleanBase64.length > 28 * 1024 * 1024) {
+      return {
+        resolvedMime,
+        valid: false,
+        errorCode: "PDF_TOO_LARGE",
+        errorMessage: "This PDF exceeds the 20 MB maximum file size limit.",
+      };
+    }
+  }
+
+  return { resolvedMime, valid: true };
+}
 
 Deno.serve(async (req: Request) => {
   // 1. CORS Preflight
@@ -378,11 +467,27 @@ Deno.serve(async (req: Request) => {
     if (body.requestId) {
       requestId = body.requestId;
     }
-    const { imageBase64, mimeType = "image/jpeg", fileName } = body;
+    const {
+      imageBase64,
+      mimeType = "image/jpeg",
+      fileName,
+      extractedText,
+      pdfType,
+      pageCount,
+      pageImages,
+    } = body;
 
-    if (!imageBase64 || typeof imageBase64 !== "string") {
+    const hasBase64 = typeof imageBase64 === "string" && imageBase64.trim().length > 0;
+    const hasExtractedText = typeof extractedText === "string" && extractedText.trim().length > 0;
+    const hasPageImages = Array.isArray(pageImages) && pageImages.length > 0;
+
+    if (!hasBase64 && !hasExtractedText && !hasPageImages) {
       return new Response(
-        JSON.stringify({ error: "Bad Request: Missing imageBase64 payload.", requestId }),
+        JSON.stringify({
+          error: "Bad Request: Missing receipt image or PDF content.",
+          errorCode: "EMPTY_PDF",
+          requestId,
+        }),
         {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -390,41 +495,94 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const cleanBase64 = imageBase64.includes(",")
-      ? imageBase64.split(",")[1]
-      : imageBase64;
+    const cleanBase64 = hasBase64
+      ? (imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64).replace(/\s+/g, "")
+      : "";
 
-    let resolvedMime = mimeType;
-    const cleanName = (fileName || "").toLowerCase();
-    if (cleanName.endsWith(".png")) resolvedMime = "image/png";
-    else if (cleanName.endsWith(".webp")) resolvedMime = "image/webp";
-    else if (cleanName.endsWith(".heic") || cleanName.endsWith(".heif")) resolvedMime = "image/heic";
+    const mimeCheck = detectMimeAndValidatePdfBase64(cleanBase64, mimeType, fileName);
+    if (!mimeCheck.valid) {
+      return new Response(
+        JSON.stringify({
+          error: mimeCheck.errorMessage,
+          errorCode: mimeCheck.errorCode,
+          requestId,
+        }),
+        {
+          status: 422,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const resolvedMime = mimeCheck.resolvedMime;
+    const hashTarget = cleanBase64 || (hasExtractedText ? extractedText : JSON.stringify(pageImages || []));
 
     // Safe diagnostic telemetry: SHA-256 hash prefix
     const encoder = new TextEncoder();
-    const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(cleanBase64));
+    const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(hashTarget.slice(0, 65536)));
     const hashHex = Array.from(new Uint8Array(hashBuffer))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     const hashPrefix = hashHex.slice(0, 16);
 
-    console.log(`[ScanReceipt] requestId=${requestId} mime=${resolvedMime} base64Len=${cleanBase64.length} sha256Prefix=${hashPrefix}`);
+    console.log(
+      `[ScanReceipt] requestId=${requestId} mime=${resolvedMime} pdfType=${pdfType || "none"} pages=${pageCount || 1} hasText=${hasExtractedText} renderedPages=${hasPageImages ? pageImages.length : 0} base64Len=${cleanBase64.length} sha256Prefix=${hashPrefix}`
+    );
+
+    const parts: any[] = [];
+    if (hasPageImages) {
+      parts.push({
+        text: `PDF RECEIPT DOCUMENT (${pageCount || pageImages.length} total pages, type: ${pdfType || "scanned"}).\nBelow are the extracted contents in ascending page order. Consolidate cleanly without double-counting totals.`,
+      });
+      if (hasExtractedText) {
+        parts.push({
+          text: `SEARCHABLE TEXT LAYER:\n${extractedText.slice(0, 80000)}`,
+        });
+      }
+      for (const page of pageImages.slice(0, 6)) {
+        const cleanPageB64 = (page?.base64 || "").replace(/^data:[^;]+;base64,/, "").trim();
+        if (cleanPageB64) {
+          parts.push({ text: `[Rendered Page ${page.pageNumber || ""}]` });
+          parts.push({
+            inlineData: {
+              mimeType: page.mimeType || "image/jpeg",
+              data: cleanPageB64,
+            },
+          });
+        }
+      }
+    } else if (hasExtractedText && resolvedMime === "application/pdf") {
+      parts.push({
+        text: `PDF RECEIPT TEXT CONTENT (${pageCount || 1} pages, file: ${fileName || "receipt.pdf"}):\n\n${extractedText.slice(0, 100000)}`,
+      });
+      if (cleanBase64 && cleanBase64.length <= 4_000_000) {
+        parts.push({
+          inlineData: {
+            mimeType: "application/pdf",
+            data: cleanBase64,
+          },
+        });
+      }
+    } else if (cleanBase64) {
+      parts.push({
+        inlineData: {
+          mimeType: resolvedMime,
+          data: cleanBase64,
+        },
+      });
+    } else if (hasExtractedText) {
+      parts.push({
+        text: `DOCUMENT TEXT CONTENT:\n\n${extractedText.slice(0, 100000)}`,
+      });
+    }
+
+    parts.push({ text: systemPrompt });
 
     const requestPayload = {
       contents: [
         {
           role: "user",
-          parts: [
-            {
-              inlineData: {
-                mimeType: resolvedMime,
-                data: cleanBase64,
-              },
-            },
-            {
-              text: systemPrompt,
-            },
-          ],
+          parts,
         },
       ],
       generationConfig: {
@@ -466,9 +624,16 @@ Deno.serve(async (req: Request) => {
 
         if (candidateResp.status === 400) {
           return new Response(
-            JSON.stringify({ error: "Invalid image format or corrupted image file.", requestId }),
+            JSON.stringify({
+              error:
+                resolvedMime === "application/pdf"
+                  ? "This PDF could not be processed. Please ensure it is unlocked and not corrupted."
+                  : "Invalid image format or corrupted file.",
+              errorCode: resolvedMime === "application/pdf" ? "UNREADABLE_PDF" : "UNREADABLE_RECEIPT",
+              requestId,
+            }),
             {
-              status: 400,
+              status: 422,
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             }
           );

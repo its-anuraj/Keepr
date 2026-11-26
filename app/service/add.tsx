@@ -232,7 +232,7 @@ export default function AddServiceScreen() {
         base64 = res.assets[0].base64;
       } else if (source === 'pdf') {
         const res = await DocumentPicker.getDocumentAsync({
-          type: ['application/pdf', 'image/*'],
+          type: 'application/pdf',
           copyToCacheDirectory: true,
         });
         if (res.canceled || !res.assets?.[0]) return;

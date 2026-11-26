@@ -44,6 +44,7 @@ import {
 } from '../../src/constants/categories';
 import { normalizeDateToIso } from '../../src/services/receiptParser';
 import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
+import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
 import { formatDate } from '../../src/utils/currency';
 import { isNoWarrantyCategory } from '../../src/utils/warranty';
 import { resolveItemImageUri } from '../../src/services/storageService';
@@ -606,6 +607,10 @@ export default function AddOrEditItemScreen() {
     if (params.scannedSubtotal) setSubtotal(params.scannedSubtotal);
     if (params.scannedDiscount) setDiscount(params.scannedDiscount);
     if (params.scannedGstTax) setGstTax(params.scannedGstTax);
+    if (params.scannedGstRate) setGstRate(params.scannedGstRate);
+    if (params.scannedCgst) setCgst(params.scannedCgst);
+    if (params.scannedSgst) setSgst(params.scannedSgst);
+    if (params.scannedIgst) setIgst(params.scannedIgst);
     if (params.scannedInvoiceNumber) setInvoiceNumber(params.scannedInvoiceNumber);
     if (params.scannedCategory) setCategoryId(params.scannedCategory);
     if (params.scannedCategoryConfidence) setCategoryConfidence(params.scannedCategoryConfidence as any);
@@ -920,19 +925,80 @@ export default function AddOrEditItemScreen() {
     }
   };
 
+  const handleUploadPdfEntry = async () => {
+    isPickerActiveRef.current = true;
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+      if (!res.canceled && res.assets && res.assets[0]) {
+        const asset = res.assets[0];
+        if (asset.size === 0) {
+          Alert.alert('Invalid PDF', 'The selected PDF file appears to be empty.');
+          return;
+        }
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const rawName = asset.name || `Receipt_${dateStr}.pdf`;
+        const fileName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
+
+        const stabilized = await stabilizeReceiptImage(asset.uri, null, {
+          mimeType: 'application/pdf',
+          fileName,
+        });
+
+        setActiveReceiptSession({
+          uri: stabilized.uri,
+          source: 'pdf',
+          fileName: stabilized.fileName || fileName,
+          base64: null,
+          mimeType: 'application/pdf',
+          sizeBytes: asset.size,
+        });
+
+        router.push({
+          pathname: '/scan-receipt',
+          params: {
+            mode: 'pdf',
+            autoProcess: 'true',
+            initialUri: stabilized.uri,
+            initialName: encodeURIComponent(stabilized.fileName || fileName),
+          },
+        } as any);
+      }
+    } catch (err) {
+      console.warn('[AddScreen] Upload PDF error:', err);
+      Alert.alert('PDF Notice', 'Could not open PDF document picker on this device.');
+    } finally {
+      setTimeout(() => {
+        isPickerActiveRef.current = false;
+      }, 500);
+    }
+  };
+
   const handlePickReceiptDocument = async () => {
     isPickerActiveRef.current = true;
     try {
       const res = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
+        type: 'application/pdf',
         copyToCacheDirectory: true,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
-        const norm = normalizeImageUri(res.assets[0].uri);
-        const docName = res.assets[0].name || 'Invoice.pdf';
+        const asset = res.assets[0];
+        if (asset.size === 0) {
+          Alert.alert('Invalid PDF', 'The selected PDF file appears to be empty.');
+          return;
+        }
+        const rawName = asset.name || 'Invoice.pdf';
+        const docName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
+        const stabilized = await stabilizeReceiptImage(asset.uri, null, {
+          mimeType: 'application/pdf',
+          fileName: docName,
+        });
+        const norm = normalizeImageUri(stabilized.uri);
         if (!attachedReceiptUri) {
           setAttachedReceiptUri(norm);
-          setAttachedReceiptName(docName);
+          setAttachedReceiptName(stabilized.fileName || docName);
           setReceiptStatus('attached');
           if (fieldErrors.receipt) setFieldErrors((prev) => ({ ...prev, receipt: undefined }));
         } else if (norm) {
@@ -1209,6 +1275,29 @@ export default function AddOrEditItemScreen() {
               </View>
             </View>
             <MaterialIcons name="chevron-right" size={20} color={SereneColors.primary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            className="bg-serene-surface-container-lowest rounded-serene-xl p-3.5 flex-row items-center justify-between border border-serene-subtle-border shadow-sm active:border-red-400"
+            onPress={handleUploadPdfEntry}
+            activeOpacity={0.88}
+            accessibilityLabel="Upload PDF receipt"
+          >
+            <View className="flex-1 flex-row items-center gap-3">
+              <View className="w-10 h-10 rounded-full bg-red-50 items-center justify-center">
+                <MaterialIcons name="picture-as-pdf" size={20} color="#DC2626" />
+              </View>
+              <View className="flex-1">
+                <View className="flex-row items-center gap-1">
+                  <Text className="text-xs font-bold text-[#B91C1C]">UPLOAD PDF</Text>
+                  <Text className="text-[10px] text-serene-outline">· Invoice / Bill PDF</Text>
+                </View>
+                <Text className="text-[11px] text-serene-on-surface-variant mt-0.5">
+                  Select a PDF receipt or tax invoice to auto-extract items and totals.
+                </Text>
+              </View>
+            </View>
+            <MaterialIcons name="chevron-right" size={20} color="#DC2626" />
           </TouchableOpacity>
 
           <View className="gap-2.5">
@@ -2038,7 +2127,8 @@ export default function AddOrEditItemScreen() {
                     setPreviewModalUri(attachedReceiptUri);
                   }}
                 >
-                  {attachedReceiptUri.toLowerCase().endsWith('.pdf') ? (
+                  {(attachedReceiptUri.toLowerCase().includes('.pdf') ||
+                    Boolean(attachedReceiptName && attachedReceiptName.toLowerCase().endsWith('.pdf'))) ? (
                     <View className="items-center justify-center p-3">
                       <MaterialIcons name="picture-as-pdf" size={38} color={SereneColors.error} />
                       <Text className="text-[10px] text-serene-on-surface font-mono mt-1.5" numberOfLines={1}>
@@ -2068,13 +2158,20 @@ export default function AddOrEditItemScreen() {
                     {additionalReceiptPhotos.map((pageUri, idx) => (
                       <View key={`rec-page-${idx}`} className="relative">
                         <TouchableOpacity
-                          className="w-16 h-16 rounded-serene-md overflow-hidden border border-serene-subtle-border bg-black/5"
+                          className="w-16 h-16 rounded-serene-md overflow-hidden border border-serene-subtle-border bg-black/5 items-center justify-center"
                           onPress={() => {
                             setPreviewModalTitle(`Receipt Page ${idx + 2}`);
                             setPreviewModalUri(pageUri);
                           }}
                         >
-                          <Image source={{ uri: pageUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                          {pageUri.toLowerCase().includes('.pdf') ? (
+                            <View className="items-center justify-center">
+                              <MaterialIcons name="picture-as-pdf" size={22} color="#DC2626" />
+                              <Text className="text-[8px] font-bold text-red-700 mt-0.5">PDF</Text>
+                            </View>
+                          ) : (
+                            <Image source={{ uri: pageUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                          )}
                         </TouchableOpacity>
                         <TouchableOpacity
                           className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/75 items-center justify-center"
@@ -2337,20 +2434,34 @@ export default function AddOrEditItemScreen() {
         </TouchableOpacity>
       </ScrollView>
 
-      <HighResImageViewer
-        visible={Boolean(previewModalUri)}
-        images={
-          previewModalUri
-            ? [
-                {
-                  uri: previewModalUri,
-                  title: previewModalTitle,
-                },
-              ]
-            : []
-        }
-        onClose={() => setPreviewModalUri(null)}
-      />
+      {Boolean(
+        previewModalUri &&
+          (previewModalUri.toLowerCase().includes('.pdf') ||
+            previewModalTitle.toLowerCase().endsWith('.pdf') ||
+            attachedReceiptName?.toLowerCase().endsWith('.pdf'))
+      ) ? (
+        <UniversalPdfViewer
+          visible={Boolean(previewModalUri)}
+          pdfUri={previewModalUri || ''}
+          title={previewModalTitle}
+          onClose={() => setPreviewModalUri(null)}
+        />
+      ) : (
+        <HighResImageViewer
+          visible={Boolean(previewModalUri)}
+          images={
+            previewModalUri
+              ? [
+                  {
+                    uri: previewModalUri,
+                    title: previewModalTitle,
+                  },
+                ]
+              : []
+          }
+          onClose={() => setPreviewModalUri(null)}
+        />
+      )}
     </KeyboardAvoidingView>
   );
 }

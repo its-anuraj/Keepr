@@ -14,6 +14,7 @@ export interface AddReceiptModalProps {
   visible: boolean;
   onClose: () => void;
   onChooseFromGallery: () => void;
+  onUploadPdf?: () => void;
   onScanWithCamera?: () => void;
 }
 
@@ -21,6 +22,7 @@ export const AddReceiptModal: React.FC<AddReceiptModalProps> = ({
   visible,
   onClose,
   onChooseFromGallery,
+  onUploadPdf,
   onScanWithCamera,
 }) => {
   return (
@@ -98,11 +100,33 @@ export const AddReceiptModal: React.FC<AddReceiptModalProps> = ({
                       Choose from Gallery
                     </Text>
                     <Text className="text-[12px] text-[#64748B] leading-4">
-                      Select an existing receipt photo
+                      Upload Image · Select an existing receipt photo
                     </Text>
                   </View>
                   <MaterialIcons name="chevron-right" size={22} color="#94A3B8" />
                 </TouchableOpacity>
+
+                {onUploadPdf && (
+                  <TouchableOpacity
+                    className="flex-row items-center bg-white rounded-serene-xl p-4 border border-[#E2E8F0] shadow-sm"
+                    onPress={onUploadPdf}
+                    activeOpacity={0.85}
+                    accessibilityLabel="Upload PDF"
+                  >
+                    <View className="w-[50px] h-[50px] rounded-full items-center justify-center mr-[14px] bg-red-50">
+                      <MaterialIcons name="picture-as-pdf" size={26} color="#DC2626" />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-[15px] font-bold text-[#0F172A] mb-[3px]">
+                        Upload PDF
+                      </Text>
+                      <Text className="text-[12px] text-[#64748B] leading-4">
+                        Select a PDF invoice or bill from Files
+                      </Text>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={22} color="#94A3B8" />
+                  </TouchableOpacity>
+                )}
               </View>
 
               <TouchableOpacity

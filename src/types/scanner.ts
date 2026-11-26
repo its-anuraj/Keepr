@@ -87,18 +87,21 @@ export interface FieldValue<T = string | null> {
 
 export interface CommonReceiptInfo {
   productName: FieldValue<string | null>;
+  itemDescription?: FieldValue<string | null>;
   category: FieldValue<ScannerCategory>;
   brand: FieldValue<string | null>;
   merchant: FieldValue<string | null>;
   merchantAddress?: FieldValue<string | null>;
   merchantPhone?: FieldValue<string | null>;
   gstin?: FieldValue<string | null>;
+  invoiceDate?: FieldValue<string | null>; // YYYY-MM-DD (distinct from purchaseDate when separate)
   purchaseDate: FieldValue<string | null>; // YYYY-MM-DD
   invoiceNumber: FieldValue<string | null>;
   quantity: FieldValue<number | null>;
   unitPrice: FieldValue<number | null>;
   subtotal?: FieldValue<number | null>;
   discount: FieldValue<number | null>;
+  taxableAmount?: FieldValue<number | null>;
   taxGst: FieldValue<number | null>;
   finalAmount: FieldValue<number | null>;
   currency?: FieldValue<string | null>;
@@ -298,7 +301,17 @@ export interface OcrPreprocessedOutput {
 export interface GeminiMultimodalInput {
   imageUri: string;
   base64?: string;
+  mimeType?: string;
   ocrText?: string;
+  extractedText?: string;
+  pdfType?: 'text' | 'scanned' | 'mixed' | 'empty';
+  pageCount?: number;
+  pageImages?: Array<{
+    pageNumber: number;
+    base64: string;
+    mimeType: string;
+    extractedText?: string;
+  }>;
   ocrBlocks?: OcrBlock[];
   fileName?: string;
 }
@@ -496,17 +509,25 @@ export interface ExtractedReceiptData {
   };
   items?: ReceiptMultiItem[];
   purchase?: {
+    invoiceDate?: string | null;
     purchaseDate?: string | null;
     merchantName?: string | null;
     merchantAddress?: string | null;
     invoiceNumber?: string | null;
     subtotal?: number | null;
     discount?: number | null;
+    taxableAmount?: number | null;
+    gstRate?: string | null;
+    cgst?: number | null;
+    sgst?: number | null;
+    igst?: number | null;
     taxAmount?: number | null;
     grandTotal?: number | null;
+    paymentMethod?: string | null;
     products: Array<{
       id?: string;
       name: string;
+      description?: string | null;
       category?: string;
       brand?: string;
       model?: string;
@@ -559,13 +580,18 @@ export interface GeminiReceiptResponse {
   invoiceDate?: ExtractedField<string> | string | null;
   currency?: ExtractedField<string> | string | null;
   subtotal?: ExtractedField<number> | number | null;
+  taxableAmount?: ExtractedField<number> | number | null;
   tax?: ExtractedField<number> | number | null;
-  gstRate?: ExtractedField<string> | string | null;
+  gstRate?: ExtractedField<string> | string | number | null;
+  gstPercentage?: ExtractedField<number> | number | null;
+  totalGst?: ExtractedField<number> | number | null;
   cgst?: ExtractedField<number> | number | null;
   sgst?: ExtractedField<number> | number | null;
   igst?: ExtractedField<number> | number | null;
   discount?: ExtractedField<number> | number | null;
   total?: ExtractedField<number> | number | null;
+  finalAmountPaid?: ExtractedField<number> | number | null;
+  itemDescription?: ExtractedField<string> | string | null;
   paymentMethod?: ExtractedField<string> | string | null;
   items?: Array<ExtractedLineItem | {
     name?: string | null;

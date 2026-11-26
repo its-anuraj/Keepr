@@ -4,6 +4,7 @@ import {
   GeminiReceiptResponse,
 } from '../types/scanner';
 import { parseGeminiResponseToExtractedData } from './receiptParser';
+import { detectFormatFromUriOrName } from '../utils/imageIntegrity';
 
 import { Platform } from 'react-native';
 import { isSupabaseConfigured } from '../lib/supabase';
@@ -163,6 +164,7 @@ export class GeminiReceiptScannerProvider implements IReceiptScannerProvider {
       imageUri,
       base64: base64Data,
       mimeType,
+      fileName: imageUri.split('/').pop(),
     });
 
     onStep?.(4, 'Extracting purchase details');
@@ -193,13 +195,14 @@ export class ReceiptScannerService {
       throw new Error('Receipt scanning is currently unavailable.');
     }
 
-    onStep?.(1, 'Reading receipt image');
-    const geminiResp = await this.geminiProvider.scanReceipt(imageUri, 'image/jpeg', onStep);
+    const detected = detectFormatFromUriOrName(imageName || imageUri);
+    onStep?.(1, detected.mimeType === 'application/pdf' ? 'Reading receipt PDF' : 'Reading receipt image');
+    const geminiResp = await this.geminiProvider.scanReceipt(imageUri, detected.mimeType, onStep);
 
     return this.transformGeminiResponseToExtractedData(
       geminiResp,
       imageUri,
-      imageName || 'Receipt.jpg',
+      imageName || `Receipt${detected.extension}`,
       'gemini'
     );
   }
