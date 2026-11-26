@@ -34,6 +34,11 @@ import {
   BUCKET_VAULT_DOCUMENTS,
   BUCKET_ITEM_DOCUMENTS,
 } from '../../src/services/storageService';
+import { HighResImageViewer, ImageViewerImage } from '../../src/components/ui/HighResImageViewer';
+import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
+import { DocumentOcrModal } from '../../src/components/documents/DocumentOcrModal';
+import { scanVaultDocument, DocumentScanResult } from '../../src/services/documentScannerService';
+import * as Sharing from 'expo-sharing';
 import { isStoragePath } from '../../src/utils/storageUtils';
 import * as FileSystem from 'expo-file-system/legacy';
 
@@ -61,6 +66,11 @@ export default function DocumentDetailsScreen() {
   const [photo1Url, setPhoto1Url] = useState<string | null>(null);
   const [photo2Url, setPhoto2Url] = useState<string | null>(null);
   const [activePhotoTab, setActivePhotoTab] = useState<'front' | 'back'>('front');
+
+  const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
+  const [ocrModalVisible, setOcrModalVisible] = useState(false);
+  const [isScanningOcr, setIsScanningOcr] = useState(false);
+  const [ocrResult, setOcrResult] = useState<DocumentScanResult | null>(null);
 
   // Load photos (local or private Supabase signed URL)
   useEffect(() => {
@@ -301,6 +311,59 @@ export default function DocumentDetailsScreen() {
     doc.mimeType?.includes('pdf') ||
     photo1Url?.toLowerCase().endsWith('.pdf') ||
     doc.filePath?.toLowerCase().endsWith('.pdf');
+
+  const handleOpenDoc = () => {
+    if (isPdf && activePhotoTab === 'front') {
+      setPdfViewerVisible(true);
+    } else {
+      setPreviewModalVisible(true);
+    }
+  };
+
+  const handleRunOcr = async () => {
+    if (!doc) return;
+    setIsScanningOcr(true);
+    setOcrModalVisible(true);
+    try {
+      const activeFile = activePhotoTab === 'back' ? (photo2Url || doc.filePathBack || undefined) : (photo1Url || doc.filePath || undefined);
+      const res = await scanVaultDocument(doc, activeFile);
+      setOcrResult(res);
+    } catch (err: any) {
+      setOcrResult({
+        success: false,
+        docId: doc.id,
+        sourceType: isPdf ? 'pdf' : 'image',
+        extractedText: '',
+        pageCount: 1,
+        confidence: 0,
+        metadata: {},
+        pageTexts: [],
+        error: err?.message || 'Scanning failed.',
+      });
+    } finally {
+      setIsScanningOcr(false);
+    }
+  };
+
+  const handleDownloadOriginal = async () => {
+    try {
+      const targetUri = activePhotoTab === 'back' ? photo2Url : photo1Url;
+      if (!targetUri) {
+        Alert.alert('Notice', 'No file available to download.');
+        return;
+      }
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(targetUri, {
+          mimeType: doc.mimeType || (isPdf ? 'application/pdf' : 'image/jpeg'),
+          dialogTitle: `Download / Save ${doc.title}`,
+        });
+      } else {
+        Alert.alert('Downloaded', 'Document is saved in your local vault storage.');
+      }
+    } catch (err: any) {
+      Alert.alert('Download Notice', err?.message || 'Could not download document.');
+    }
+  };
 
   return (
     <View className="flex-1 bg-serene-background">
@@ -578,7 +641,7 @@ export default function DocumentDetailsScreen() {
             <TouchableOpacity
               className="w-full h-56 rounded-serene-lg overflow-hidden border border-serene-subtle-border relative bg-serene-surface-container-low"
               activeOpacity={0.9}
-              onPress={() => setPreviewModalVisible(true)}
+              onPress={handleOpenDoc}
             >
               {isPdf && activePhotoTab === 'front' ? (
                 <View className="w-full h-full items-center justify-center bg-serene-surface-container-low p-4">
@@ -587,7 +650,7 @@ export default function DocumentDetailsScreen() {
                     {doc.title}.pdf
                   </Text>
                   <Text className="text-[11px] text-serene-on-surface-variant mt-1">
-                    Tap to view document
+                    Tap to view PDF document
                   </Text>
                 </View>
               ) : (
@@ -599,8 +662,8 @@ export default function DocumentDetailsScreen() {
                 />
               )}
               <View className="absolute bottom-2 right-2 bg-black/75 px-3 py-1 rounded-full flex-row items-center gap-1">
-                <MaterialIcons name="zoom-in" size={14} color="#FFFFFF" />
-                <Text className="text-[11px] font-medium text-white">Full Screen</Text>
+                <MaterialIcons name={isPdf && activePhotoTab === 'front' ? 'picture-as-pdf' : 'zoom-in'} size={14} color="#FFFFFF" />
+                <Text className="text-[11px] font-medium text-white">{isPdf && activePhotoTab === 'front' ? 'View PDF' : 'Full Screen'}</Text>
               </View>
             </TouchableOpacity>
           ) : (
@@ -621,10 +684,10 @@ export default function DocumentDetailsScreen() {
             {(activePhotoTab === 'back' ? photo2Url : photo1Url) && (
               <TouchableOpacity
                 className="bg-serene-surface-container-high px-3.5 py-1.5 rounded-serene-md flex-row items-center gap-1"
-                onPress={() => setPreviewModalVisible(true)}
+                onPress={handleOpenDoc}
               >
-                <MaterialIcons name="fullscreen" size={16} color={SereneColors.primary} />
-                <Text className="text-[12px] font-semibold text-serene-primary">Open Full Doc</Text>
+                <MaterialIcons name={isPdf && activePhotoTab === 'front' ? 'picture-as-pdf' : 'fullscreen'} size={16} color={SereneColors.primary} />
+                <Text className="text-[12px] font-semibold text-serene-primary">{isPdf && activePhotoTab === 'front' ? 'Open PDF Reader' : 'Open Full Doc'}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -768,37 +831,79 @@ export default function DocumentDetailsScreen() {
             <Text className="text-[14px] font-bold text-serene-on-surface">Document Actions</Text>
           </View>
 
-          <View className="flex-row items-center gap-2.5">
+          <View className="flex-row items-center gap-2">
             <TouchableOpacity
               className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
               activeOpacity={0.8}
               onPress={() => router.push(`/document/add?editId=${doc.id}` as any)}
             >
               <MaterialIcons name="edit" size={16} color={SereneColors.primary} />
-              <Text className="text-[13px] font-semibold text-serene-primary">Edit Details</Text>
+              <Text className="text-[12px] font-semibold text-serene-primary">Edit</Text>
             </TouchableOpacity>
 
-            {linkedItem ? (
-              <TouchableOpacity
-                className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
-                activeOpacity={0.8}
-                onPress={() => router.push(`/service/add?itemId=${linkedItem.id}` as any)}
-              >
-                <MaterialIcons name="build" size={16} color={SereneColors.primary} />
-                <Text className="text-[13px] font-semibold text-serene-primary">Add Service</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
-                activeOpacity={0.8}
-                onPress={() => setShowLinkModal(true)}
-              >
-                <MaterialIcons name="link" size={16} color={SereneColors.primary} />
-                <Text className="text-[13px] font-semibold text-serene-primary">Link to Item</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              className="flex-1 h-11 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
+              activeOpacity={0.8}
+              onPress={handleDownloadOriginal}
+            >
+              <MaterialIcons name="file-download" size={16} color={SereneColors.primary} />
+              <Text className="text-[12px] font-semibold text-serene-primary">Download</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              className="flex-1 h-11 rounded-serene-lg bg-serene-primary/10 border border-serene-primary/30 flex-row items-center justify-center gap-1.5"
+              activeOpacity={0.8}
+              onPress={handleRunOcr}
+            >
+              <MaterialIcons name="document-scanner" size={16} color={SereneColors.primary} />
+              <Text className="text-[12px] font-bold text-serene-primary">Scan OCR</Text>
+            </TouchableOpacity>
           </View>
+
+          {linkedItem ? (
+            <TouchableOpacity
+              className="w-full h-10 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
+              activeOpacity={0.8}
+              onPress={() => router.push(`/service/add?itemId=${linkedItem.id}` as any)}
+            >
+              <MaterialIcons name="build" size={15} color={SereneColors.primary} />
+              <Text className="text-[12px] font-semibold text-serene-primary">Add Service / Maintenance Record</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              className="w-full h-10 rounded-serene-lg bg-serene-surface-container-low border border-serene-subtle-border flex-row items-center justify-center gap-1.5"
+              activeOpacity={0.8}
+              onPress={() => setShowLinkModal(true)}
+            >
+              <MaterialIcons name="link" size={15} color={SereneColors.primary} />
+              <Text className="text-[12px] font-semibold text-serene-primary">Link to Purchased Item</Text>
+            </TouchableOpacity>
+          )}
         </View>
+
+        {/* Extracted Text Card */}
+        {doc.extractedText ? (
+          <View className="bg-serene-surface-container-lowest rounded-serene-xl p-4 border border-serene-subtle-border shadow-sm gap-2.5">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-row items-center gap-2">
+                <MaterialIcons name="text-snippet" size={18} color="#047857" />
+                <Text className="text-[14px] font-bold text-serene-on-surface">Extracted Document Text</Text>
+              </View>
+              <TouchableOpacity
+                className="bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200"
+                onPress={() => setOcrModalVisible(true)}
+              >
+                <Text className="text-[11px] font-bold text-emerald-700">View & Edit</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View className="bg-serene-surface-container-low p-3 rounded-serene-lg border border-serene-hairline-border">
+              <Text className="text-[12px] text-serene-on-surface font-mono leading-5" numberOfLines={4}>
+                {doc.extractedText}
+              </Text>
+            </View>
+          </View>
+        ) : null}
 
         <View className="bg-serene-surface-container-lowest rounded-serene-xl p-4 border border-serene-subtle-border shadow-sm gap-2">
           <View className="flex-row items-center gap-1.5">
@@ -837,68 +942,35 @@ export default function DocumentDetailsScreen() {
         ) : null}
       </ScrollView>
 
-      <Modal
+      <HighResImageViewer
         visible={previewModalVisible}
-        transparent={false}
-        animationType="fade"
-        onRequestClose={() => setPreviewModalVisible(false)}
-      >
-        <View className="flex-1 bg-black justify-between">
-          <View className="pt-12 px-4 flex-row items-center justify-between">
-            <Text className="text-white text-[15px] font-semibold flex-1 mr-3" numberOfLines={1}>
-              {doc.title}
-            </Text>
-            <TouchableOpacity
-              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center"
-              onPress={() => setPreviewModalVisible(false)}
-            >
-              <MaterialIcons name="close" size={24} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
+        images={[
+          ...(photo1Url ? [{ uri: photo1Url, title: `${doc.title} · Front`, subtitle: 'Photo 1' }] : []),
+          ...(photo2Url ? [{ uri: photo2Url, title: `${doc.title} · Back`, subtitle: 'Photo 2' }] : []),
+        ]}
+        initialIndex={activePhotoTab === 'back' && photo2Url ? 1 : 0}
+        onClose={() => setPreviewModalVisible(false)}
+      />
 
-          <View className="flex-1 items-center justify-center p-4">
-            {(activePhotoTab === 'back' ? photo2Url : photo1Url) ? (
-              <Image
-                source={{ uri: (activePhotoTab === 'back' ? photo2Url : photo1Url)! }}
-                className="w-full h-full"
-                resizeMode="contain"
-              />
-            ) : (
-              <Text className="text-white">Document preview unavailable</Text>
-            )}
-          </View>
+      {isPdf && photo1Url ? (
+        <UniversalPdfViewer
+          visible={pdfViewerVisible}
+          pdfUri={photo1Url}
+          title={doc.title}
+          onClose={() => setPdfViewerVisible(false)}
+          onScanOcr={handleRunOcr}
+        />
+      ) : null}
 
-          {photo2Url && (
-            <View className="flex-row justify-center gap-3 pb-4">
-              <TouchableOpacity
-                className={`px-4 py-1.5 rounded-full ${
-                  activePhotoTab === 'front' ? 'bg-serene-primary' : 'bg-white/20'
-                }`}
-                onPress={() => setActivePhotoTab('front')}
-              >
-                <Text className="text-white text-xs font-semibold">Photo 1 (Front)</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                className={`px-4 py-1.5 rounded-full ${
-                  activePhotoTab === 'back' ? 'bg-serene-primary' : 'bg-white/20'
-                }`}
-                onPress={() => setActivePhotoTab('back')}
-              >
-                <Text className="text-white text-xs font-semibold">Photo 2 (Back)</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          <View className="pb-10 px-4 items-center">
-            <TouchableOpacity
-              className="bg-white/20 px-6 py-2.5 rounded-full"
-              onPress={() => setPreviewModalVisible(false)}
-            >
-              <Text className="text-white font-semibold text-[13px]">Close Viewer</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <DocumentOcrModal
+        visible={ocrModalVisible}
+        docId={doc.id}
+        docTitle={doc.title}
+        isScanning={isScanningOcr}
+        scanResult={ocrResult}
+        onRetry={handleRunOcr}
+        onClose={() => setOcrModalVisible(false)}
+      />
 
       <Modal
         visible={showLinkModal}

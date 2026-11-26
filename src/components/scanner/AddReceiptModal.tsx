@@ -14,12 +14,14 @@ export interface AddReceiptModalProps {
   visible: boolean;
   onClose: () => void;
   onChooseFromGallery: () => void;
+  onScanWithCamera?: () => void;
 }
 
 export const AddReceiptModal: React.FC<AddReceiptModalProps> = ({
   visible,
   onClose,
   onChooseFromGallery,
+  onScanWithCamera,
 }) => {
   return (
     <Modal
@@ -62,13 +64,34 @@ export const AddReceiptModal: React.FC<AddReceiptModalProps> = ({
               </View>
 
               <View className="gap-3 mb-[18px]">
+                {onScanWithCamera && (
+                  <TouchableOpacity
+                    className="flex-row items-center bg-white rounded-serene-xl p-4 border border-[#E2E8F0] shadow-sm"
+                    onPress={onScanWithCamera}
+                    activeOpacity={0.85}
+                  >
+                    <View className="w-[50px] h-[50px] rounded-full items-center justify-center mr-[14px] bg-[#E0F2FE]">
+                      <MaterialIcons name="camera-alt" size={26} color="#115086" />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-[15px] font-bold text-[#0F172A] mb-[3px]">
+                        Scan with Camera
+                      </Text>
+                      <Text className="text-[12px] text-[#64748B] leading-4">
+                        Direct live camera receipt scanner
+                      </Text>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={22} color="#94A3B8" />
+                  </TouchableOpacity>
+                )}
+
                 <TouchableOpacity
                   className="flex-row items-center bg-white rounded-serene-xl p-4 border border-[#E2E8F0] shadow-sm"
                   onPress={onChooseFromGallery}
                   activeOpacity={0.85}
                 >
-                  <View className="w-[50px] h-[50px] rounded-full items-center justify-center mr-[14px] bg-[#E0F2FE]">
-                    <MaterialIcons name="photo-library" size={26} color="#115086" />
+                  <View className="w-[50px] h-[50px] rounded-full items-center justify-center mr-[14px] bg-serene-surface-container-high">
+                    <MaterialIcons name="photo-library" size={26} color="#64748B" />
                   </View>
                   <View className="flex-1">
                     <Text className="text-[15px] font-bold text-[#0F172A] mb-[3px]">

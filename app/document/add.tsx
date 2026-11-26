@@ -34,6 +34,7 @@ import {
   safeNormalizeRouteUri,
   verifyDocumentFileExists,
 } from '../../src/services/receiptFileService';
+import { detectFormatFromUriOrName } from '../../src/utils/imageIntegrity';
 import { scheduleDocumentReminder } from '../../src/services/notifications';
 import { checkForDuplicateDocument } from '../../src/services/duplicateDocumentService';
 
@@ -186,10 +187,12 @@ export default function AddDocumentScreen() {
 
   useEffect(() => {
     if (params.fileUri) {
-      handleAttachUri(params.fileUri, 'ScannedDocument.jpg', 'image/jpeg', null, false);
+      const detected = detectFormatFromUriOrName(params.fileUri);
+      handleAttachUri(params.fileUri, `ScannedDocument${detected.extension}`, detected.mimeType, null, false);
     }
     if (params.fileUriBack) {
-      handleAttachUri(params.fileUriBack, 'ScannedDocument_Back.jpg', 'image/jpeg', null, true);
+      const detectedBack = detectFormatFromUriOrName(params.fileUriBack);
+      handleAttachUri(params.fileUriBack, `ScannedDocument_Back${detectedBack.extension}`, detectedBack.mimeType, null, true);
     }
   }, [params.fileUri, params.fileUriBack]);
 
@@ -202,14 +205,15 @@ export default function AddDocumentScreen() {
       }
       const res = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
-        quality: 0.85,
+        quality: 1.0,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
         const asset = res.assets[0];
         const dateStr = new Date().toISOString().slice(0, 10);
-        const fileName = `Doc_${category}_${isBackSide ? 'Back' : 'Front'}_${dateStr}.jpg`;
-        await handleAttachUri(asset.uri, fileName, asset.mimeType || 'image/jpeg', asset.base64, isBackSide);
+        const detected = detectFormatFromUriOrName(asset.fileName || asset.uri);
+        const fileName = `Doc_${category}_${isBackSide ? 'Back' : 'Front'}_${dateStr}${detected.extension}`;
+        await handleAttachUri(asset.uri, fileName, asset.mimeType || detected.mimeType, asset.base64, isBackSide);
       }
     } catch (err) {
       console.warn('Document camera error:', err);
@@ -226,14 +230,15 @@ export default function AddDocumentScreen() {
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
-        quality: 0.85,
+        quality: 1.0,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
         const asset = res.assets[0];
         const dateStr = new Date().toISOString().slice(0, 10);
-        const fileName = asset.fileName || `Doc_${category}_${isBackSide ? 'Back' : 'Front'}_${dateStr}.jpg`;
-        await handleAttachUri(asset.uri, fileName, asset.mimeType || 'image/jpeg', asset.base64, isBackSide);
+        const detected = detectFormatFromUriOrName(asset.fileName || asset.uri);
+        const fileName = asset.fileName || `Doc_${category}_${isBackSide ? 'Back' : 'Front'}_${dateStr}${detected.extension}`;
+        await handleAttachUri(asset.uri, fileName, asset.mimeType || detected.mimeType, asset.base64, isBackSide);
       }
     } catch (err) {
       console.warn('Document gallery error:', err);
@@ -248,7 +253,8 @@ export default function AddDocumentScreen() {
       });
       if (!res.canceled && res.assets && res.assets[0]) {
         const asset = res.assets[0];
-        await handleAttachUri(asset.uri, asset.name, asset.mimeType || 'application/pdf', null, false);
+        const detected = detectFormatFromUriOrName(asset.name || asset.uri);
+        await handleAttachUri(asset.uri, asset.name, asset.mimeType || detected.mimeType, null, false);
       }
     } catch (err) {
       console.warn('Document file pick error:', err);

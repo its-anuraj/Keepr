@@ -43,6 +43,7 @@ import {
   getProductTypesForCategory,
 } from '../../src/constants/categories';
 import { normalizeDateToIso } from '../../src/services/receiptParser';
+import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
 import { formatDate } from '../../src/utils/currency';
 import { isNoWarrantyCategory } from '../../src/utils/warranty';
 import { resolveItemImageUri } from '../../src/services/storageService';
@@ -716,7 +717,7 @@ export default function AddOrEditItemScreen() {
       }
       const res = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
-        quality: 0.85,
+        quality: 1.0,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
         const uri = res.assets[0].uri;
@@ -745,7 +746,7 @@ export default function AddOrEditItemScreen() {
         mediaTypes: ['images'],
         allowsEditing: false,
         allowsMultipleSelection: true,
-        quality: 0.85,
+        quality: 1.0,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
         for (const asset of res.assets) {
@@ -777,7 +778,7 @@ export default function AddOrEditItemScreen() {
       }
       const res = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
-        quality: 0.85,
+        quality: 1.0,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
@@ -827,7 +828,7 @@ export default function AddOrEditItemScreen() {
         mediaTypes: ['images'],
         allowsEditing: false,
         allowsMultipleSelection: true,
-        quality: 0.9,
+        quality: 1.0,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
@@ -879,7 +880,7 @@ export default function AddOrEditItemScreen() {
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
-        quality: 0.9,
+        quality: 1.0,
         base64: true,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
@@ -2336,41 +2337,20 @@ export default function AddOrEditItemScreen() {
         </TouchableOpacity>
       </ScrollView>
 
-      <Modal
+      <HighResImageViewer
         visible={Boolean(previewModalUri)}
-        transparent={false}
-        animationType="fade"
-        onRequestClose={() => setPreviewModalUri(null)}
-      >
-        <View className="flex-1 bg-black justify-between">
-          <View className="pt-12 px-4 flex-row items-center justify-between">
-            <Text className="text-white text-[15px] font-semibold" numberOfLines={1}>
-              {previewModalTitle}
-            </Text>
-            <TouchableOpacity
-              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center"
-              onPress={() => setPreviewModalUri(null)}
-            >
-              <MaterialIcons name="close" size={24} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
-
-          <View className="flex-1 items-center justify-center p-4">
-            {previewModalUri ? (
-              <Image source={{ uri: previewModalUri }} className="w-full h-full" resizeMode="contain" />
-            ) : null}
-          </View>
-
-          <View className="pb-10 px-4 items-center">
-            <TouchableOpacity
-              className="bg-white/20 px-6 py-2.5 rounded-full"
-              onPress={() => setPreviewModalUri(null)}
-            >
-              <Text className="text-white font-semibold text-[13px]">Close Preview</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        images={
+          previewModalUri
+            ? [
+                {
+                  uri: previewModalUri,
+                  title: previewModalTitle,
+                },
+              ]
+            : []
+        }
+        onClose={() => setPreviewModalUri(null)}
+      />
     </KeyboardAvoidingView>
   );
 }

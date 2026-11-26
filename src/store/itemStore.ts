@@ -2144,6 +2144,26 @@ export const useItemStore = create<ItemState>()(
           }
         }
 
+        let durableStoragePathBack = docData.storagePathBack && isStoragePath(docData.storagePathBack) ? docData.storagePathBack : undefined;
+        const filePathBack = docData.filePathBack || docData.fileUrlBack;
+        if (filePathBack && !durableStoragePathBack && !isStoragePath(filePathBack) && isSupabaseConfigured && userId) {
+          try {
+            const uploadBackRes = await uploadVaultDocument(
+              userId,
+              docId,
+              filePathBack,
+              validItemId,
+              `${docData.name || docData.title || 'document'}_back`,
+              '_back'
+            );
+            if (uploadBackRes.storagePath) {
+              durableStoragePathBack = uploadBackRes.storagePath;
+            }
+          } catch (uBackErr) {
+            console.warn('[itemStore] addDocument back-side storage upload note:', uBackErr);
+          }
+        }
+
         const newDoc: VaultDocument = {
           ...docData,
           id: docId,
@@ -2152,6 +2172,12 @@ export const useItemStore = create<ItemState>()(
           filePath: durableStoragePath || filePath,
           fileUrl: durableStoragePath || docData.fileUrl || filePath,
           storagePath: durableStoragePath,
+          filePathBack: durableStoragePathBack || filePathBack || undefined,
+          fileUrlBack: durableStoragePathBack || docData.fileUrlBack || filePathBack || undefined,
+          storagePathBack: durableStoragePathBack,
+          extractedText: docData.extractedText || null,
+          ocrStatus: docData.ocrStatus || 'not_scanned',
+          pageCount: docData.pageCount || 1,
           fileType,
           mimeType,
           fileSizeBytes,
@@ -2233,7 +2259,33 @@ export const useItemStore = create<ItemState>()(
           }
         }
 
+        let durableStoragePathBack = updates.storagePathBack && isStoragePath(updates.storagePathBack)
+          ? updates.storagePathBack
+          : current.storagePathBack && isStoragePath(current.storagePathBack)
+          ? current.storagePathBack
+          : undefined;
+
+        const candidateFilePathBack = updates.filePathBack || updates.fileUrlBack;
+        if (candidateFilePathBack && !isStoragePath(candidateFilePathBack) && isSupabaseConfigured && current.userId) {
+          try {
+            const uploadBackRes = await uploadVaultDocument(
+              current.userId,
+              documentId,
+              candidateFilePathBack,
+              updates.itemId !== undefined ? updates.itemId : current.itemId,
+              `${updates.title || current.title}_back`,
+              '_back'
+            );
+            if (uploadBackRes.storagePath) {
+              durableStoragePathBack = uploadBackRes.storagePath;
+            }
+          } catch (uBackErr) {
+            console.warn('[itemStore] updateDocument back-side storage upload note:', uBackErr);
+          }
+        }
+
         const effectiveFilePath = durableStoragePath || updates.filePath || current.filePath || '';
+        const effectiveFilePathBack = durableStoragePathBack || updates.filePathBack || current.filePathBack || undefined;
         const cleanCandidate = (effectiveFilePath || updates.fileUrl || current.fileUrl || '').trim().split(/[?#]/)[0].toLowerCase();
         const isPdf = cleanCandidate.endsWith('.pdf') || (updates.mimeType || current.mimeType)?.toLowerCase().includes('pdf');
         const fileType = updates.fileType || (isPdf ? 'pdf' : 'image');
@@ -2243,8 +2295,14 @@ export const useItemStore = create<ItemState>()(
           ...current,
           ...updates,
           storagePath: durableStoragePath,
+          storagePathBack: durableStoragePathBack,
           filePath: effectiveFilePath,
+          filePathBack: effectiveFilePathBack,
           fileUrl: durableStoragePath || updates.fileUrl || current.fileUrl,
+          fileUrlBack: durableStoragePathBack || updates.fileUrlBack || current.fileUrlBack || undefined,
+          extractedText: updates.extractedText !== undefined ? updates.extractedText : current.extractedText,
+          ocrStatus: updates.ocrStatus !== undefined ? updates.ocrStatus : current.ocrStatus,
+          pageCount: updates.pageCount !== undefined ? updates.pageCount : current.pageCount,
           fileType,
           mimeType,
           title: updates.title || updates.name || current.title,

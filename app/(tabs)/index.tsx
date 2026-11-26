@@ -193,6 +193,15 @@ export default function VaultDashboardScreen() {
     setShowAddReceiptModal(true);
   };
 
+  const handleScanWithCamera = () => {
+    setShowAddReceiptModal(false);
+    clearActiveReceiptSession();
+    router.push({
+      pathname: '/scan-receipt',
+      params: { mode: 'camera' },
+    } as any);
+  };
+
   const handleModalChooseGallery = async () => {
     setShowAddReceiptModal(false);
     try {
@@ -209,7 +218,7 @@ export default function VaultDashboardScreen() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
-        quality: 0.9,
+        quality: 1.0,
         base64: true,
       });
 
@@ -628,6 +637,7 @@ export default function VaultDashboardScreen() {
       <AddReceiptModal
         visible={showAddReceiptModal}
         onClose={() => setShowAddReceiptModal(false)}
+        onScanWithCamera={handleScanWithCamera}
         onChooseFromGallery={handleModalChooseGallery}
       />
     </View>

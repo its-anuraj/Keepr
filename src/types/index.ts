@@ -209,6 +209,9 @@ export interface VaultDocument {
   thumbnailPath?: string | null;
   storagePath?: string | null; // Canonical cloud storage object path ({userId}/vault/{docId}/photo_1.jpg)
   storagePathBack?: string | null; // Canonical cloud storage object path for second photo ({userId}/vault/{docId}/photo_2.jpg)
+  pageCount?: number;
+  extractedText?: string | null;
+  ocrStatus?: 'pending' | 'completed' | 'failed' | 'not_scanned';
   createdAt: string;
   updatedAt?: string;
 }

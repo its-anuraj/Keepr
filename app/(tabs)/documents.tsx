@@ -473,6 +473,7 @@ export default function DocumentsVaultScreen() {
           const fields = [
             doc.title, doc.name, doc.documentType, doc.category,
             doc.issuerName, doc.referenceNumber, doc.notes,
+            doc.extractedText, doc.fileType,
             linkedData?.name, linkedData?.registrationNumber, linkedData?.brand, linkedData?.model,
           ].filter(Boolean).join(' ').toLowerCase();
           return fields.includes(query);
@@ -483,6 +484,13 @@ export default function DocumentsVaultScreen() {
       if (filters.category !== 'all' && doc.category !== filters.category) return false;
 
       if (filters.documentType && filters.documentType !== 'all' && doc.documentType !== filters.documentType) return false;
+
+      // File format filter: All vs PDF vs Image
+      if (filters.fileFormat && filters.fileFormat !== 'all') {
+        const isDocPdf = doc.fileType === 'pdf' || doc.mimeType?.toLowerCase().includes('pdf') || (doc.filePath || doc.fileUrl || '').toLowerCase().includes('.pdf');
+        if (filters.fileFormat === 'pdf' && !isDocPdf) return false;
+        if (filters.fileFormat === 'image' && isDocPdf) return false;
+      }
 
       // Expiry status — uses expiryDate ONLY, never confuses with dueDate or documentDate
       if (filters.expiryStatus !== 'all') {
@@ -859,6 +867,7 @@ export default function DocumentsVaultScreen() {
               {searchQuery ? '"' + searchQuery + '"' : ''}
               {filters.category !== 'all' ? (searchQuery ? ' · ' : '') + filters.category : ''}
               {filters.documentType && filters.documentType !== 'all' ? ' · ' + filters.documentType : ''}
+              {filters.fileFormat && filters.fileFormat !== 'all' ? ' · ' + (filters.fileFormat === 'pdf' ? 'PDFs' : 'Images') : ''}
               {filters.expiryStatus !== 'all' ? ' · Expiry: ' + filters.expiryStatus : ''}
               {filters.docDateRange !== 'all' ? ' · Date range: ' + filters.docDateRange : ''}
               {' (' + filteredDocuments.length + ' matching)'}

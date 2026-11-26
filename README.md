@@ -137,7 +137,12 @@ The home screen displays summary metrics (total items, total documents, active w
 
 ## Screenshots
 
-> *Screenshots are not currently committed to this repository. To preview the application, build a development client with `npx expo run:android` and connect a physical device or emulator.*
+<p align="center">
+  <img src="./assets/phone-screenshot-1.png" width="22%" alt="Vault Overview" />
+  <img src="./assets/phone-screenshot-2.png" width="22%" alt="Category Record" />
+  <img src="./assets/phone-screenshot-3.png" width="22%" alt="Receipt Scanner" />
+  <img src="./assets/phone-screenshot-4.png" width="22%" alt="Warranty & Return Alerts" />
+</p>
 
 ---
 

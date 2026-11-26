@@ -32,6 +32,7 @@ import {
 } from '../../src/services/receiptFileService';
 import { isStoragePath, canonicalizeProductPhotos } from '../../src/utils/storageUtils';
 import { getItemReceiptSignedUrl } from '../../src/services/storageService';
+import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
 
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -1360,47 +1361,20 @@ export default function ItemDetailScreen() {
         </View>
       </ScrollView>
 
-      <Modal
+      <HighResImageViewer
         visible={Boolean(previewModal)}
-        transparent={false}
-        animationType="fade"
-        onRequestClose={() => setPreviewModal(null)}
-      >
-        <View className="flex-1 bg-black justify-between">
-          <View className="pt-12 px-4 flex-row items-center justify-between">
-            <Text className="text-white text-[15px] font-semibold" numberOfLines={1}>
-              {previewModal?.title || 'Preview'}
-            </Text>
-            <TouchableOpacity
-              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center"
-              onPress={() => setPreviewModal(null)}
-            >
-              <MaterialIcons name="close" size={24} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
-
-          <View className="flex-1 items-center justify-center p-4">
-            {previewModal?.uri ? (
-              <Image
-                source={{ uri: previewModal.uri }}
-                className="w-full h-full"
-                resizeMode="contain"
-              />
-            ) : (
-              <Text className="text-white">Image preview unavailable</Text>
-            )}
-          </View>
-
-          <View className="pb-10 px-4 items-center">
-            <TouchableOpacity
-              className="bg-white/20 px-6 py-2.5 rounded-full"
-              onPress={() => setPreviewModal(null)}
-            >
-              <Text className="text-white font-semibold text-[13px]">Close Preview</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        images={
+          previewModal
+            ? [
+                {
+                  uri: previewModal.uri,
+                  title: previewModal.title,
+                },
+              ]
+            : []
+        }
+        onClose={() => setPreviewModal(null)}
+      />
     </View>
   );
 }

@@ -206,7 +206,7 @@ export default function AddServiceScreen() {
           return;
         }
         const res = await ImagePicker.launchCameraAsync({
-          quality: 0.85,
+          quality: 1.0,
           base64: true,
         });
         if (res.canceled || !res.assets?.[0]) return;
@@ -222,7 +222,7 @@ export default function AddServiceScreen() {
         }
         const res = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ['images'],
-          quality: 0.85,
+          quality: 1.0,
           base64: true,
         });
         if (res.canceled || !res.assets?.[0]) return;

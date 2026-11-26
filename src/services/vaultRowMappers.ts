@@ -413,6 +413,18 @@ export function mapDbRowToDocument(row: Record<string, unknown>): VaultDocument 
       if (fu && isStoragePath(fu)) return fu;
       return null;
     })(),
+    storagePathBack: (() => {
+      const spb = row.storage_path_back as string | undefined;
+      const fpb = row.file_path_back as string | undefined;
+      if (spb && isStoragePath(spb)) return spb;
+      if (fpb && isStoragePath(fpb)) return fpb;
+      return null;
+    })(),
+    filePathBack: (row.file_path_back as string) || null,
+    fileUrlBack: (row.file_path_back as string) || null,
+    extractedText: (row.extracted_text as string) || null,
+    ocrStatus: (row.ocr_status as VaultDocument['ocrStatus']) || 'not_scanned',
+    pageCount: Number(row.page_count) || 1,
     createdAt: (row.created_at as string) || new Date().toISOString(),
     updatedAt: (row.updated_at as string) || new Date().toISOString(),
   };
@@ -702,6 +714,13 @@ export function mapDocumentToDbRow(doc: VaultDocument, userId: string): Record<s
     })(),
     thumbnail_path: doc.thumbnailPath && isStoragePath(doc.thumbnailPath) ? doc.thumbnailPath : null,
     storage_path: storagePath,
+    storage_path_back: doc.storagePathBack && isStoragePath(doc.storagePathBack) ? doc.storagePathBack : null,
+    file_path_back: doc.storagePathBack && isStoragePath(doc.storagePathBack)
+      ? doc.storagePathBack
+      : (doc.fileUrlBack && (doc.fileUrlBack.startsWith('http://') || doc.fileUrlBack.startsWith('https://')) ? doc.fileUrlBack : null),
+    extracted_text: doc.extractedText || null,
+    ocr_status: doc.ocrStatus || 'not_scanned',
+    page_count: doc.pageCount || 1,
   };
 }
 

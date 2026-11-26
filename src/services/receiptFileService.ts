@@ -7,6 +7,7 @@
 import { Platform, Image } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { detectFormatFromUriOrName } from '../utils/imageIntegrity';
 
 export interface StabilizedReceiptResult {
   uri: string;
@@ -386,12 +387,8 @@ export async function persistFileToVault(
       await FileSystem.makeDirectoryAsync(targetDir, { intermediates: true }).catch(() => {});
     }
 
-    const lowerClean = cleanSource.toLowerCase();
-    const lowerName = (preferredFileName || '').toLowerCase();
-    let ext = '.jpg';
-    if (lowerClean.endsWith('.pdf') || lowerName.endsWith('.pdf')) ext = '.pdf';
-    else if (lowerClean.endsWith('.png') || lowerName.endsWith('.png')) ext = '.png';
-    else if (lowerClean.endsWith('.webp') || lowerName.endsWith('.webp')) ext = '.webp';
+    const detected = detectFormatFromUriOrName(preferredFileName || cleanSource);
+    let ext = detected.extension;
 
     const defaultBase = folder === 'vault_documents' ? 'document' : 'receipt';
     const rawBaseName = (preferredFileName || defaultBase).replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -533,7 +530,8 @@ export async function persistProductPhotoToVault(
   preferredFileName?: string,
   base64Fallback?: string | null
 ): Promise<PersistedReceiptResult> {
-  return persistFileToVault(sourceUri, 'vault_receipts', preferredFileName || 'product_photo.jpg', base64Fallback);
+  const detected = detectFormatFromUriOrName(preferredFileName || sourceUri);
+  return persistFileToVault(sourceUri, 'vault_receipts', preferredFileName || `product_photo${detected.extension}`, base64Fallback);
 }
 
 /**
@@ -747,16 +745,36 @@ export async function prepareImageForAnalysis(
   existingBase64?: string | null
 ): Promise<{ base64: string; mimeType: string }> {
   try {
+    const detected = detectFormatFromUriOrName(imageUri);
+
+    // 1. If document is a PDF, bypass image downsampling completely
+    if (detected.mimeType === 'application/pdf' || imageUri.toLowerCase().includes('.pdf')) {
+      if (existingBase64) {
+        const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
+        return { base64: clean, mimeType: 'application/pdf' };
+      }
+      const rawPdfBase64 = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      return { base64: rawPdfBase64, mimeType: 'application/pdf' };
+    }
+
     if (!imageUri && existingBase64) {
       const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
-      return { base64: clean, mimeType: 'image/jpeg' };
+      return { base64: clean, mimeType: detected.mimeType || 'image/jpeg' };
     }
 
     if (imageUri.startsWith('data:')) {
       const parts = imageUri.split(',');
       const meta = parts[0];
       const data = parts[1] || '';
-      const mime = meta.includes('image/png') ? 'image/png' : 'image/jpeg';
+      const mime = meta.includes('image/png')
+        ? 'image/png'
+        : meta.includes('image/webp')
+        ? 'image/webp'
+        : meta.includes('application/pdf')
+        ? 'application/pdf'
+        : 'image/jpeg';
       return { base64: data, mimeType: mime };
     }
 
@@ -772,11 +790,11 @@ export async function prepareImageForAnalysis(
     const maxDim = Math.max(dims.width, dims.height);
     const actions: any[] = [];
 
-    if (maxDim > 1600) {
+    if (maxDim > 2048) {
       if (dims.width >= dims.height) {
-        actions.push({ resize: { width: 1600 } });
+        actions.push({ resize: { width: 2048 } });
       } else {
-        actions.push({ resize: { height: 1600 } });
+        actions.push({ resize: { height: 2048 } });
       }
     }
 
@@ -784,7 +802,7 @@ export async function prepareImageForAnalysis(
       imageUri,
       actions,
       {
-        compress: 0.82,
+        compress: 0.92,
         format: SaveFormat.JPEG,
         base64: true,
       }
@@ -801,14 +819,18 @@ export async function prepareImageForAnalysis(
     return { base64: directBase64, mimeType: 'image/jpeg' };
   } catch (err) {
     console.warn('[ReceiptFileService] prepareImageForAnalysis fallback:', err);
+    const detected = detectFormatFromUriOrName(imageUri);
+    const isPdf = detected.mimeType === 'application/pdf' || imageUri.toLowerCase().includes('.pdf');
+    const fallbackMime = isPdf ? 'application/pdf' : (detected.mimeType || 'image/jpeg');
+
     if (existingBase64) {
       const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
-      return { base64: clean, mimeType: 'image/jpeg' };
+      return { base64: clean, mimeType: fallbackMime };
     }
     const raw = await FileSystem.readAsStringAsync(imageUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    return { base64: raw, mimeType: 'image/jpeg' };
+    return { base64: raw, mimeType: fallbackMime };
   }
 }
 

@@ -8,6 +8,7 @@ import { CANONICAL_DOCUMENT_CATEGORIES, getDocumentTypesForCategory } from '../.
 export interface DocFilterState {
   category: string;
   documentType: string;
+  fileFormat: 'all' | 'pdf' | 'image';
   expiryStatus: 'all' | 'expiring_soon' | 'expired' | 'has_expiry' | 'no_expiry';
   docDateRange: 'all' | '30d' | '3m' | '6m' | '12m' | 'older_1y';
   hasAmount: 'all' | 'yes' | 'no';
@@ -16,6 +17,7 @@ export interface DocFilterState {
 export const DEFAULT_DOC_FILTERS: DocFilterState = {
   category: 'all',
   documentType: 'all',
+  fileFormat: 'all',
   expiryStatus: 'all',
   docDateRange: 'all',
   hasAmount: 'all',
@@ -25,6 +27,7 @@ export function countActiveDocFilters(f: DocFilterState): number {
   let n = 0;
   if (f.category !== 'all') n++;
   if (f.documentType && f.documentType !== 'all') n++;
+  if (f.fileFormat && f.fileFormat !== 'all') n++;
   if (f.expiryStatus !== 'all') n++;
   if (f.docDateRange !== 'all') n++;
   if (f.hasAmount !== 'all') n++;
@@ -100,6 +103,11 @@ export const DocFilterModal: React.FC<DocFilterModalProps> = ({ visible, filters
   }, [draft.category]);
 
   const catOptions = [{ id: 'all', label: 'All Categories' }, ...CANONICAL_DOCUMENT_CATEGORIES.map((c) => ({ id: c.name, label: c.name }))];
+  const formatOptions: Array<{ id: DocFilterState['fileFormat']; label: string }> = [
+    { id: 'all', label: 'All Formats' },
+    { id: 'pdf', label: 'PDF Documents' },
+    { id: 'image', label: 'Photos / Images' },
+  ];
   const expiryOptions: Array<{ id: DocFilterState['expiryStatus']; label: string }> = [
     { id: 'all', label: 'All' },
     { id: 'expiring_soon', label: 'Expiring in 60d' },
@@ -151,6 +159,8 @@ export const DocFilterModal: React.FC<DocFilterModalProps> = ({ visible, filters
                 })}
               </View>
             </View>
+
+            <PillRow label="Document Format" options={formatOptions} selected={draft.fileFormat} onSelect={(v) => setDraft((p) => ({ ...p, fileFormat: v }))} />
 
             {docTypeOptions.length > 1 && (
               <PillRow label="Document Type" options={docTypeOptions} selected={draft.documentType} onSelect={(v) => setDraft((p) => ({ ...p, documentType: v }))} />

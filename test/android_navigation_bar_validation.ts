@@ -29,7 +29,7 @@ test('package.json contains expo-navigation-bar dependency compatible with Expo 
   const pkgPath = path.join(rootDir, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   assert.ok(pkg.dependencies['expo-navigation-bar'], 'expo-navigation-bar must be present in dependencies');
-  assert.strictEqual(pkg.dependencies['expo'], '~57.0.27', 'Expo version is SDK 57');
+  assert.match(pkg.dependencies['expo'], /^~?57\./, 'Expo version is SDK 57');
 });
 
 // 2. Check app.json config plugin

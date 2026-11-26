@@ -13,6 +13,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../lib/supabase';
 import { getCanonicalReceiptUri, getCanonicalDocumentUri } from './receiptFileService';
+import { detectFormatFromBytes } from '../utils/imageIntegrity';
 
 import {
   BUCKET_ITEM_IMAGES,
@@ -430,23 +431,6 @@ export async function readFileBytesAndMeta(
 
     if (!fileUriToRead) return null;
 
-    const lower = (fileUriToRead || preferredFileName || '').toLowerCase().split('?')[0];
-    let ext = '.jpg';
-    let contentType = 'image/jpeg';
-    if (lower.endsWith('.pdf')) {
-      ext = '.pdf';
-      contentType = 'application/pdf';
-    } else if (lower.endsWith('.png')) {
-      ext = '.png';
-      contentType = 'image/png';
-    } else if (lower.endsWith('.webp')) {
-      ext = '.webp';
-      contentType = 'image/webp';
-    } else if (lower.endsWith('.heic')) {
-      ext = '.heic';
-      contentType = 'image/heic';
-    }
-
     const base64 = await FileSystem.readAsStringAsync(fileUriToRead, {
       encoding: FileSystem.EncodingType.Base64,
     });
@@ -455,6 +439,11 @@ export async function readFileBytesAndMeta(
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
+
+    // Inspect magic bytes for 100% accurate format & MIME detection
+    const detected = detectFormatFromBytes(bytes);
+    const contentType = detected.mimeType;
+    const ext = detected.extension;
 
     return { bytes, contentType, ext };
   } catch (err) {

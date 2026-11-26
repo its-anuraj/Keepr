@@ -90,6 +90,8 @@ import { OcrInspectorModal } from '../../src/components/scanner/OcrInspectorModa
 import { ConfidenceBadge } from '../../src/components/scanner/ConfidenceBadge';
 import { evaluateRoutingDecision } from '../../src/services/documentClassifier';
 import { matchDocumentToItem } from '../../src/services/itemMatcherService';
+import { DirectCameraScanner } from '../../src/components/scanner/DirectCameraScanner';
+import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
 
 export default function AIReceiptScannerScreen() {
   const insets = useSafeAreaInsets();
@@ -281,6 +283,38 @@ export default function AIReceiptScannerScreen() {
     }
   }, [screenState, scanLineAnim]);
 
+  const handleDirectCameraCapture = async (photo: { uri: string; width?: number; height?: number }) => {
+    try {
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const fileName = `Receipt_${dateStr}.jpg`;
+
+      // Stabilize file location and verify readability
+      const stabilized = await stabilizeReceiptImage(photo.uri);
+      console.log('[ReceiptPreview] Direct camera capture URI:', stabilized.uri);
+
+      setActiveReceiptSession({
+        uri: stabilized.uri,
+        source: 'camera',
+        fileName,
+        base64: stabilized.base64 || null,
+        width: photo.width,
+        height: photo.height,
+        mimeType: 'image/jpeg',
+      });
+
+      setImageSource('camera');
+      setImageLoadError(false);
+      setCapturedImageUri(stabilized.uri);
+      setCapturedBase64(stabilized.base64 || null);
+      setCapturedImageName(fileName);
+      setSelectedPresetId(undefined);
+      setScreenState('preview');
+    } catch (err) {
+      console.warn('[ReceiptCapture] Direct camera capture handling error:', err);
+      Alert.alert('Capture Error', 'Could not process the captured photo. Please try again.');
+    }
+  };
+
   const handleTakePhoto = async () => {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -298,7 +332,7 @@ export default function AIReceiptScannerScreen() {
 
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
-        quality: 0.9,
+        quality: 1.0,
         base64: true,
       });
 
@@ -342,7 +376,7 @@ export default function AIReceiptScannerScreen() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
-        quality: 0.9,
+        quality: 1.0,
         base64: true,
       });
 
@@ -1113,7 +1147,7 @@ export default function AIReceiptScannerScreen() {
 
         const result = await ImagePicker.launchCameraAsync({
           allowsEditing: false,
-          quality: 0.85,
+          quality: 1.0,
         });
 
         if (!result.canceled && result.assets && result.assets[0]) {
@@ -1136,7 +1170,7 @@ export default function AIReceiptScannerScreen() {
         const result = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ['images'],
           allowsEditing: false,
-          quality: 0.85,
+          quality: 1.0,
           allowsMultipleSelection: true,
         });
 
@@ -1564,127 +1598,30 @@ export default function AIReceiptScannerScreen() {
   };
 
   if (screenState === 'scan') {
-    const scanLineTranslate = scanLineAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0, 320],
-    });
-
     return (
-      <View className="flex-1 bg-serene-surface" style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}>
-        <View className="flex-row items-center justify-between px-4 py-2">
-          <TouchableOpacity
-            className="w-11 h-11 rounded-full bg-white/90 items-center justify-center shadow-sm"
-            onPress={() => {
-              clearActiveReceiptSession();
-              router.back();
-            }}
-            activeOpacity={0.8}
-            accessibilityLabel="Back"
-          >
-            <MaterialIcons name="arrow-back" size={22} color="#1C1C17" />
-          </TouchableOpacity>
+      <View className="flex-1 bg-black">
+        <DirectCameraScanner
+          onCapture={handleDirectCameraCapture}
+          onClose={() => {
+            clearActiveReceiptSession();
+            router.back();
+          }}
+          onOpenGallery={handleChooseGallery}
+          initialFacing={cameraFacing}
+          initialFlash={flashMode}
+        />
 
-          <View className="flex-1 items-center px-2">
-            <Text className="text-lg font-bold text-serene-on-surface">Scan Receipt</Text>
-            <Text className="text-[11px] text-serene-on-surface-variant text-center mt-0.5">
-              Capture your receipt and we'll organize the details for you.
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            className={`w-11 h-11 rounded-full items-center justify-center shadow-sm ${
-              flashMode !== 'off' ? 'bg-[#D2E4FF]' : 'bg-white/90'
-            }`}
-            onPress={() => {
-              if (flashMode === 'auto') setFlashMode('on');
-              else if (flashMode === 'on') setFlashMode('off');
-              else setFlashMode('auto');
-            }}
-            activeOpacity={0.8}
-          >
-            <MaterialIcons
-              name={
-                flashMode === 'on'
-                  ? 'flash-on'
-                  : flashMode === 'auto'
-                  ? 'flash-auto'
-                  : 'flash-off'
-              }
-              size={20}
-              color={flashMode !== 'off' ? SereneColors.primary : '#1C1C17'}
-            />
-          </TouchableOpacity>
-        </View>
-
-        <View className="flex-row items-center justify-center gap-2 mt-1.5 mb-2">
-          <View className="flex-row items-center bg-amber-100/95 px-3 py-1 rounded-full border border-amber-500/25">
-            <MaterialIcons name="wb-sunny" size={14} color="#D97706" />
-            <Text className="text-[11px] font-semibold text-amber-800 ml-1.5">
-              Good lighting detected · Hold steady
-            </Text>
-          </View>
-
-          <View
-            className="flex-row items-center bg-white px-2.5 py-1 rounded-full border border-serene-hairline-border"
-          >
-            <MaterialIcons
-              name="check-circle"
-              size={13}
-              color="#047857"
-            />
-            <Text className="text-[11px] font-semibold ml-1.5 text-serene-primary">
-              Scanner Ready
-            </Text>
-          </View>
-        </View>
-
-        <View className="flex-1 px-4 items-center justify-center max-h-[400px]">
-          <View className="w-full h-[340px] rounded-serene-xl overflow-hidden relative bg-black">
-            <Image
-              source={{
-                uri: 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?w=700&auto=format&fit=crop',
-              }}
-              className="w-full h-full"
-              resizeMode="cover"
-            />
-            <View className="absolute inset-0 bg-slate-900/35" />
-
-            <View className="absolute w-7 h-7 border-white top-5 left-5 border-t-[3.5px] border-l-[3.5px] rounded-tl-[6px]" />
-            <View className="absolute w-7 h-7 border-white top-5 right-5 border-t-[3.5px] border-r-[3.5px] rounded-tr-[6px]" />
-            <View className="absolute w-7 h-7 border-white bottom-5 left-5 border-b-[3.5px] border-l-[3.5px] rounded-bl-[6px]" />
-            <View className="absolute w-7 h-7 border-white bottom-5 right-5 border-b-[3.5px] border-r-[3.5px] rounded-br-[6px]" />
-
-            <Animated.View
-              className="absolute top-2.5 left-5 right-5 h-[2.5px] bg-[#38BDF8] shadow-lg shadow-[#38BDF8]"
-              style={{ transform: [{ translateY: scanLineTranslate }] }}
-            />
-
-            <View className="absolute top-9 left-9 right-9 bottom-9 border-[1.5px] border-dashed border-[#38BDF8]/65 rounded-lg items-center justify-start pt-2.5">
-              <View className="flex-row items-center bg-slate-900/75 px-2.5 py-1 rounded-[14px]">
-                <View className="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5" />
-                <Text className="text-[11px] font-semibold text-white">Receipt edges detected</Text>
-              </View>
-            </View>
-
-            <View className="absolute bottom-4 left-0 right-0 items-center">
-              <Text className="text-xs font-semibold text-white/90 bg-black/50 px-3 py-1 rounded-full">
-                Place the receipt inside the frame
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        <View className="px-4 mt-2 mb-1">
-          <Text className="text-[10px] font-bold text-serene-outline tracking-wider mb-1.5">OR TEST WITH SAMPLE RECEIPT</Text>
+        {/* Demo Presets Drawer for Test/Evaluation convenience */}
+        <View className="absolute bottom-28 left-0 right-0 px-4">
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerClassName="gap-2 py-0.5"
+            contentContainerClassName="gap-2 py-1"
           >
             {DEMO_RECEIPT_PRESETS.map((preset) => (
               <TouchableOpacity
                 key={preset.id}
-                className="flex-row items-center bg-white px-3 py-2 rounded-full border border-serene-hairline-border"
+                className="flex-row items-center bg-black/60 px-3 py-1.5 rounded-full border border-white/20 shadow-sm"
                 onPress={() => handleSelectPreset(preset)}
                 activeOpacity={0.85}
               >
@@ -1702,46 +1639,13 @@ export default function AIReceiptScannerScreen() {
                       ? 'checkroom'
                       : 'inventory-2'
                   }
-                  size={15}
-                  color={SereneColors.primary}
+                  size={14}
+                  color="#FFFFFF"
                 />
-                <Text className="text-xs font-semibold text-serene-primary ml-1.5">{preset.name.split(' (')[0]}</Text>
+                <Text className="text-[11px] font-semibold text-white ml-1.5">{preset.name.split(' (')[0]}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
-        </View>
-
-        <View className="flex-row items-center justify-around px-8 pt-2">
-          <TouchableOpacity
-            className="w-12 h-12 rounded-full bg-serene-surface-container-lowest items-center justify-center border border-serene-hairline-border"
-            onPress={() => setCameraFacing((f) => (f === 'back' ? 'front' : 'back'))}
-            activeOpacity={0.8}
-          >
-            <MaterialIcons name="flip-camera-ios" size={22} color={SereneColors.onSurface} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            className="w-[76px] h-[76px] rounded-full border-4 border-serene-primary items-center justify-center bg-white shadow-lg"
-            onPress={handleTakePhoto}
-            activeOpacity={0.85}
-          >
-            <View className="w-[60px] h-[60px] rounded-full bg-serene-primary items-center justify-center">
-              <MaterialIcons name="camera-alt" size={28} color="#FFFFFF" />
-            </View>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            className="w-[58px] h-[58px] rounded-2xl bg-serene-surface-container-lowest items-center justify-center border-[1.5px] border-[#3368A0] shadow-sm"
-            onPress={handleChooseGallery}
-            activeOpacity={0.85}
-          >
-            <MaterialIcons name="photo-library" size={22} color={SereneColors.primary} />
-            <Text className="text-[10px] font-bold text-serene-primary mt-0.5">Gallery</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View className="items-center mt-1 mb-2.5">
-          <Text className="text-[13px] font-bold text-serene-primary">Take Photo</Text>
         </View>
       </View>
     );
@@ -1939,23 +1843,11 @@ export default function AIReceiptScannerScreen() {
           </TouchableOpacity>
         </View>
 
-        <Modal visible={showImageModal} transparent animationType="fade">
-          <View className="flex-1 bg-black/95 items-center justify-center">
-            <TouchableOpacity
-              className="absolute top-12 right-5 w-11 h-11 rounded-full bg-white/20 items-center justify-center z-10"
-              onPress={() => setShowImageModal(false)}
-            >
-              <MaterialIcons name="close" size={26} color="#FFFFFF" />
-            </TouchableOpacity>
-            {capturedImageUri && (
-              <Image
-                source={{ uri: capturedImageUri }}
-                style={{ width: '100%', height: '85%' }}
-                resizeMode="contain"
-              />
-            )}
-          </View>
-        </Modal>
+        <HighResImageViewer
+          visible={showImageModal}
+          images={capturedImageUri ? [{ uri: capturedImageUri, title: capturedImageName || 'Receipt Preview' }] : []}
+          onClose={() => setShowImageModal(false)}
+        />
 
         <Modal visible={showCropModal} transparent animationType="slide">
           <View className="flex-1 bg-black/80 justify-end">
@@ -3670,23 +3562,20 @@ export default function AIReceiptScannerScreen() {
         </View>
       </Modal>
 
-      <Modal visible={showImageModal} transparent animationType="fade">
-        <View className="flex-1 bg-black/95 items-center justify-center">
-          <TouchableOpacity
-            className="absolute top-12 right-5 w-11 h-11 rounded-full bg-white/20 items-center justify-center z-10"
-            onPress={() => setShowImageModal(false)}
-          >
-            <MaterialIcons name="close" size={26} color="#FFFFFF" />
-          </TouchableOpacity>
-          {(capturedImageUri || extractedData?.receiptUri) ? (
-            <Image
-              source={{ uri: capturedImageUri || extractedData?.receiptUri || '' }}
-              style={{ width: '100%', height: '85%' }}
-              resizeMode="contain"
-            />
-          ) : null}
-        </View>
-      </Modal>
+      <HighResImageViewer
+        visible={showImageModal}
+        images={
+          (capturedImageUri || extractedData?.receiptUri)
+            ? [
+                {
+                  uri: (capturedImageUri || extractedData?.receiptUri)!,
+                  title: extractedData?.receiptImageName || capturedImageName || 'Receipt Image',
+                },
+              ]
+            : []
+        }
+        onClose={() => setShowImageModal(false)}
+      />
 
       <OcrInspectorModal
         visible={showOcrInspector}
