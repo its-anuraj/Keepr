@@ -19,6 +19,8 @@ import { VaultDocument } from '../types';
 import { detectFormatFromUriOrName, detectFormatFromBytes } from '../utils/imageIntegrity';
 import { extractNativePdfText } from '../utils/pdfUtils';
 import { GeminiMultimodalReceiptService } from './geminiReceiptService';
+import { readUriBytesAndBase64Safely } from './pdfFileAccessService';
+import { extractSearchablePdfTextFromBytes } from './pdfReceiptProcessor';
 import { useItemStore } from '../store/itemStore';
 
 export { extractNativePdfText };
@@ -113,39 +115,45 @@ export async function scanVaultDocument(
       doc.fileType === 'pdf';
     const sourceType: 'pdf' | 'image' = isPdf ? 'pdf' : 'image';
 
-    // 3. For PDFs: Check native text layer first
+    // 3. Safely read document bytes using Expo SDK 57 scoped access service
+    const safeRead = await readUriBytesAndBase64Safely(localUri, {
+      fileName: `${doc.title || 'document'}.${isPdf ? 'pdf' : 'jpg'}`,
+      mimeType: isPdf ? 'application/pdf' : doc.mimeType,
+      validateAsPdf: isPdf,
+    });
+    if (!safeRead.success || !safeRead.base64) {
+      throw new Error(safeRead.errorMessage || 'Could not read document bytes from storage.');
+    }
+
     if (isPdf) {
       try {
-        const rawContent = await FileSystem.readAsStringAsync(localUri, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        const nativeResult = extractNativePdfText(rawContent);
-
+        const nativeText = extractSearchablePdfTextFromBytes(safeRead.bytes);
         // If high-density searchable text exists (> 80 characters), use native text layer
-        if (nativeResult.text && nativeResult.text.length > 80) {
-          console.log(`[DocumentScannerService] Native searchable PDF text extracted (${nativeResult.text.length} chars)`);
+        if (nativeText && nativeText.length > 80) {
+          console.log(`[DocumentScannerService] Native searchable PDF text extracted (${nativeText.length} chars)`);
+          const pageCount = safeRead.validation?.estimatedPageCount || 1;
 
           const result: DocumentScanResult = {
             success: true,
             docId,
             sourceType: 'pdf',
-            extractedText: nativeResult.text,
-            pageCount: nativeResult.pageCount,
+            extractedText: nativeText,
+            pageCount,
             confidence: 0.98,
             metadata: {
               title: doc.title,
               category: doc.category,
               documentType: doc.documentType,
             },
-            pageTexts: [{ page: 1, text: nativeResult.text }],
+            pageTexts: [{ page: 1, text: nativeText }],
             isNativePdfExtraction: true,
           };
 
           // Persist to document record
           useItemStore.getState().updateDocument(docId, {
-            extractedText: nativeResult.text,
+            extractedText: nativeText,
             ocrStatus: 'completed',
-            pageCount: nativeResult.pageCount,
+            pageCount,
           });
 
           if (isTemporaryDownload) {
@@ -161,13 +169,12 @@ export async function scanVaultDocument(
 
     // 4. Multimodal OCR via Gemini Backend (for Images & Scanned/Image-based PDFs)
     const geminiService = new GeminiMultimodalReceiptService();
-    const pdfOrImageBase64 = await FileSystem.readAsStringAsync(localUri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    const pdfOrImageBase64 = safeRead.base64;
 
     const aiResponse = await geminiService.analyzeReceiptWithOcr({
-      imageUri: localUri,
+      imageUri: safeRead.uri || localUri,
       base64: pdfOrImageBase64,
+      mimeType: isPdf ? 'application/pdf' : safeRead.mimeType,
       fileName: `${doc.title || 'document'}.${isPdf ? 'pdf' : 'jpg'}`,
     });
 

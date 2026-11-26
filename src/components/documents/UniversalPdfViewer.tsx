@@ -17,6 +17,7 @@ import * as Sharing from 'expo-sharing';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SereneColors } from '../../constants/theme';
+import { readUriBytesAndBase64Safely } from '../../services/pdfFileAccessService';
 
 export interface UniversalPdfViewerProps {
   visible: boolean;
@@ -75,14 +76,25 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
           if (downloadRes.status !== 200) {
             throw new Error(`Failed to load PDF (HTTP ${downloadRes.status})`);
           }
-          b64 = await FileSystem.readAsStringAsync(tempFile, {
-            encoding: FileSystem.EncodingType.Base64,
+          const safeRemote = await readUriBytesAndBase64Safely(tempFile, {
+            mimeType: 'application/pdf',
+            validateAsPdf: true,
           });
           FileSystem.deleteAsync(tempFile, { idempotent: true }).catch(() => {});
+          if (!safeRemote.success || !safeRemote.base64) {
+            throw new Error(safeRemote.errorMessage || 'Downloaded PDF could not be read.');
+          }
+          b64 = safeRemote.base64;
         } else {
-          b64 = await FileSystem.readAsStringAsync(pdfUri, {
-            encoding: FileSystem.EncodingType.Base64,
+          const safeLocal = await readUriBytesAndBase64Safely(pdfUri, {
+            fileName: title,
+            mimeType: 'application/pdf',
+            validateAsPdf: true,
           });
+          if (!safeLocal.success || !safeLocal.base64) {
+            throw new Error(safeLocal.errorMessage || 'PDF file could not be read from device storage.');
+          }
+          b64 = safeLocal.base64;
         }
 
         if (isMounted) {

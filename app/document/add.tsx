@@ -34,6 +34,7 @@ import {
   safeNormalizeRouteUri,
   verifyDocumentFileExists,
 } from '../../src/services/receiptFileService';
+import { preparePdfForScanning } from '../../src/services/pdfFileAccessService';
 import { detectFormatFromUriOrName } from '../../src/utils/imageIntegrity';
 import { scheduleDocumentReminder } from '../../src/services/notifications';
 import { checkForDuplicateDocument } from '../../src/services/duplicateDocumentService';
@@ -249,12 +250,22 @@ export default function AddDocumentScreen() {
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: Platform.OS !== 'android',
       });
       if (!res.canceled && res.assets && res.assets[0]) {
         const asset = res.assets[0];
-        const detected = detectFormatFromUriOrName(asset.name || asset.uri);
-        await handleAttachUri(asset.uri, asset.name, asset.mimeType || detected.mimeType, null, false);
+        const prepared = await preparePdfForScanning({
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType || 'application/pdf',
+          size: asset.size,
+        });
+        if (!prepared.success) {
+          Alert.alert('PDF Cannot Be Read', prepared.errorMessage || 'Could not access the selected PDF file.');
+          return;
+        }
+        const docName = prepared.fileName || asset.name || 'Document.pdf';
+        await handleAttachUri(prepared.uri, docName, 'application/pdf', null, false);
       }
     } catch (err) {
       console.warn('Document file pick error:', err);

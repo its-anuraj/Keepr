@@ -17,6 +17,8 @@ import {
   isPdfDocument,
 } from '../utils/storageUtils';
 import { getCanonicalReceiptUri } from './receiptFileService';
+import { readUriBytesAndBase64Safely } from './pdfFileAccessService';
+import { detectFormatFromBytes } from '../utils/imageIntegrity';
 import type {
   Item,
   PurchasedProduct,
@@ -1174,28 +1176,28 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
     const durablePhotos: string[] = [];
 
     // 1. Background upload local receipt media if local
-    const localUri = item.receiptUri?.startsWith('file:') ? item.receiptUri : null;
-    if (localUri && (!effectiveReceiptPath || effectiveReceiptPath.startsWith('file:') || effectiveReceiptPath.startsWith('vault_receipts/'))) {
+    const localUri = item.receiptUri?.startsWith('file:') || item.receiptUri?.startsWith('content:')
+      ? item.receiptUri
+      : null;
+    if (localUri && (!effectiveReceiptPath || effectiveReceiptPath.startsWith('file:') || effectiveReceiptPath.startsWith('content:') || effectiveReceiptPath.startsWith('vault_receipts/'))) {
       try {
-        const fileInfo = await FileSystem.getInfoAsync(localUri).catch(() => null);
-        if (fileInfo?.exists && !fileInfo.isDirectory) {
-          const ext = localUri.toLowerCase().endsWith('.png') ? '.png' : '.jpg';
+        const safeRead = await readUriBytesAndBase64Safely(localUri, {
+          fileName: item.receiptName,
+          mimeType: localUri.toLowerCase().includes('.pdf') || item.receiptName?.toLowerCase().endsWith('.pdf')
+            ? 'application/pdf'
+            : undefined,
+        });
+        if (safeRead.success && safeRead.bytes.length > 0) {
+          const detected = detectFormatFromBytes(safeRead.bytes);
+          const ext = detected.extension;
           const userScopedPath = `${userId}/items/${validItemId}/receipt${ext}`;
-          const base64 = await FileSystem.readAsStringAsync(localUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const binaryString = atob(base64);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
           const { error: uploadError } = await supabase.storage
             .from(BUCKET_ITEM_DOCUMENTS)
-            .upload(userScopedPath, bytes, { contentType: 'image/jpeg', upsert: true });
+            .upload(userScopedPath, safeRead.bytes, { contentType: detected.mimeType, upsert: true });
 
           if (!uploadError) {
             effectiveReceiptPath = userScopedPath;
-            console.log(`[CloudSync] Item receipt uploaded to ${BUCKET_ITEM_DOCUMENTS}/${userScopedPath}`);
+            console.log(`[CloudSync] Item receipt uploaded to ${BUCKET_ITEM_DOCUMENTS}/${userScopedPath} (${detected.mimeType})`);
           }
         }
       } catch (uploadErr) {

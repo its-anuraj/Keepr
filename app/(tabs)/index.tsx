@@ -11,6 +11,7 @@ import {
   NativeScrollEvent,
   Image,
   RefreshControl,
+  Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -30,6 +31,7 @@ import {
   clearActiveReceiptSession,
 } from '../../src/store/receiptSessionStore';
 import { stabilizeReceiptImage } from '../../src/services/receiptFileService';
+import { preparePdfForScanning } from '../../src/services/pdfFileAccessService';
 import { ItemWithOwnerContext, RecentlyAddedEntry } from '../../src/types';
 import { hideSplashScreen } from '../../src/utils/splashCoordinator';
 import { RecentlyAddedThumbnail } from '../../src/components/ui/RecentlyAddedThumbnail';
@@ -260,31 +262,33 @@ export default function VaultDashboardScreen() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: Platform.OS !== 'android',
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
         const asset = result.assets[0];
-        if (asset.size === 0) {
-          Alert.alert('Invalid PDF', 'The selected PDF file appears to be empty.');
+        const prepared = await preparePdfForScanning({
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType || 'application/pdf',
+          size: asset.size,
+        });
+        if (!prepared.success) {
+          Alert.alert('PDF Cannot Be Read', prepared.errorMessage || 'Could not access the selected PDF.');
           return;
         }
+
         const dateStr = new Date().toISOString().slice(0, 10);
-        const rawName = asset.name || `Receipt_${dateStr}.pdf`;
+        const rawName = prepared.fileName || asset.name || `Receipt_${dateStr}.pdf`;
         const fileName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
 
-        const stabilized = await stabilizeReceiptImage(asset.uri, null, {
-          mimeType: 'application/pdf',
-          fileName,
-        });
-
         setActiveReceiptSession({
-          uri: stabilized.uri,
+          uri: prepared.uri,
           source: 'pdf',
-          fileName: stabilized.fileName || fileName,
+          fileName,
           base64: null,
           mimeType: 'application/pdf',
-          sizeBytes: asset.size,
+          sizeBytes: prepared.sizeBytes || asset.size,
         });
 
         router.push({
@@ -292,8 +296,8 @@ export default function VaultDashboardScreen() {
           params: {
             mode: 'pdf',
             autoProcess: 'true',
-            initialUri: stabilized.uri,
-            initialName: encodeURIComponent(stabilized.fileName || fileName),
+            initialUri: prepared.uri,
+            initialName: encodeURIComponent(fileName),
           },
         } as any);
       }

@@ -64,6 +64,16 @@ export async function uriToBase64(uri: string): Promise<string> {
 
   if (Platform.OS !== 'web') {
     try {
+      const { readUriBytesAndBase64Safely } = require('./pdfFileAccessService');
+      const safeRes = await readUriBytesAndBase64Safely(uri);
+      if (safeRes?.success && safeRes.base64) {
+        return safeRes.base64;
+      }
+    } catch {
+      // Fall through to direct modern/legacy APIs below
+    }
+
+    try {
       const { File } = require('expo-file-system');
       if (File) {
         const file = new File(uri);

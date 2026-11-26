@@ -13,6 +13,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../lib/supabase';
 import { getCanonicalReceiptUri, getCanonicalDocumentUri } from './receiptFileService';
+import { readUriBytesAndBase64Safely } from './pdfFileAccessService';
 import { detectFormatFromBytes } from '../utils/imageIntegrity';
 
 import {
@@ -427,6 +428,17 @@ export async function readFileBytesAndMeta(
           fileUriToRead = cleanUri;
         }
       } catch {}
+    }
+
+    const targetReadUri = fileUriToRead || canonical || cleanUri;
+    const safeRead = await readUriBytesAndBase64Safely(targetReadUri);
+    if (safeRead.success && safeRead.bytes.length > 0) {
+      const detected = detectFormatFromBytes(safeRead.bytes);
+      return {
+        bytes: safeRead.bytes,
+        contentType: detected.mimeType,
+        ext: detected.extension,
+      };
     }
 
     if (!fileUriToRead) return null;

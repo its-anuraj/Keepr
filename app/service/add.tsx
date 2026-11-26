@@ -24,6 +24,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import { preparePdfForScanning } from '../../src/services/pdfFileAccessService';
 import { Header } from '../../src/components/ui/Header';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
@@ -233,12 +234,23 @@ export default function AddServiceScreen() {
       } else if (source === 'pdf') {
         const res = await DocumentPicker.getDocumentAsync({
           type: 'application/pdf',
-          copyToCacheDirectory: true,
+          copyToCacheDirectory: Platform.OS !== 'android',
         });
         if (res.canceled || !res.assets?.[0]) return;
-        fileUri = res.assets[0].uri;
-        fileName = res.assets[0].name || `Service_Doc_${Date.now()}.pdf`;
-        mimeType = res.assets[0].mimeType || 'application/pdf';
+        const asset = res.assets[0];
+        const prepared = await preparePdfForScanning({
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType || 'application/pdf',
+          size: asset.size,
+        });
+        if (!prepared.success) {
+          Alert.alert('PDF Cannot Be Read', prepared.errorMessage || 'Could not access the selected PDF.');
+          return;
+        }
+        fileUri = prepared.uri;
+        fileName = prepared.fileName || asset.name || `Service_Doc_${Date.now()}.pdf`;
+        mimeType = 'application/pdf';
       }
 
       if (!fileUri) return;

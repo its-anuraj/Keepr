@@ -106,6 +106,11 @@ import {
   validatePdfBytes,
 } from '../../src/services/pdfReceiptProcessor';
 import {
+  preparePdfForScanning,
+  readUriBytesAndBase64Safely,
+} from '../../src/services/pdfFileAccessService';
+import { logScannerStage } from '../../src/services/pdfAccessDiagnostics';
+import {
   detectFormatFromBase64Prefix,
   detectFormatFromUriOrName,
 } from '../../src/utils/imageIntegrity';
@@ -459,39 +464,40 @@ export default function AIReceiptScannerScreen() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: Platform.OS !== 'android',
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
         const asset = result.assets[0];
-        if (asset.size === 0) {
-          Alert.alert('Invalid PDF', 'The selected PDF file appears to be empty.');
+        const prepared = await preparePdfForScanning({
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType || 'application/pdf',
+          size: asset.size,
+        });
+        if (!prepared.success) {
+          Alert.alert('PDF Cannot Be Read', prepared.errorMessage || 'Could not access the selected PDF.');
           return;
         }
         const dateStr = new Date().toISOString().slice(0, 10);
-        const rawName = asset.name || `Receipt_${dateStr}.pdf`;
+        const rawName = prepared.fileName || asset.name || `Receipt_${dateStr}.pdf`;
         const fileName = rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`;
 
-        const stabilized = await stabilizeReceiptImage(asset.uri, null, {
-          mimeType: 'application/pdf',
-          fileName,
-        });
-
         setActiveReceiptSession({
-          uri: stabilized.uri,
+          uri: prepared.uri,
           source: 'pdf',
-          fileName: stabilized.fileName || fileName,
+          fileName,
           base64: null,
           mimeType: 'application/pdf',
-          sizeBytes: asset.size ?? stabilized.size,
+          sizeBytes: prepared.sizeBytes || asset.size,
         });
 
-        setPdfMeta({ sizeBytes: asset.size ?? stabilized.size });
+        setPdfMeta({ sizeBytes: prepared.sizeBytes || asset.size });
         setImageSource('pdf');
         setImageLoadError(false);
-        setCapturedImageUri(stabilized.uri);
+        setCapturedImageUri(prepared.uri);
         setCapturedBase64(null);
-        setCapturedImageName(stabilized.fileName || fileName);
+        setCapturedImageName(fileName);
         setSelectedPresetId(undefined);
         setScreenState('preview');
       }
@@ -936,6 +942,7 @@ export default function AIReceiptScannerScreen() {
     ).start();
 
     let tempPdfRenderUris: string[] = [];
+    let verifiedActiveUri = activeUri;
 
     try {
       setProcessingSteps((prev) => prev.map((s) => (s.id <= 1 ? { ...s, completed: true } : s)));
@@ -944,16 +951,30 @@ export default function AIReceiptScannerScreen() {
       let geminiResponse;
       if (isPdfDoc) {
         setProcessingTitle('Validating PDF & extracting text');
-        let pdfBase64 = (effectiveBase64 || '').replace(/^data:[^;]+;base64,/, '');
-        if (!pdfBase64 && effectiveUri && !effectiveUri.startsWith('data:')) {
-          pdfBase64 = await FileSystem.readAsStringAsync(effectiveUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          setCapturedBase64(pdfBase64);
+        const safeRead = await readUriBytesAndBase64Safely(activeUri, {
+          fileName: effectiveName,
+          mimeType: 'application/pdf',
+          base64Fallback: effectiveBase64 || null,
+          validateAsPdf: true,
+        });
+
+        if (!safeRead.success || !safeRead.base64) {
+          throw new Error(
+            safeRead.errorMessage || 'Could not read the selected PDF file. Please choose the PDF again.'
+          );
         }
 
-        const pdfBytes = base64ToUint8Array(pdfBase64);
-        const validation = validatePdfBytes(pdfBytes);
+        const pdfBase64 = safeRead.base64;
+        const readablePdfUri = safeRead.uri || activeUri;
+        verifiedActiveUri = readablePdfUri;
+        if (readablePdfUri !== capturedImageUri) {
+          setCapturedImageUri(readablePdfUri);
+        }
+        setCapturedBase64(pdfBase64);
+        setPdfMeta((prev) => ({ ...prev, sizeBytes: safeRead.sizeBytes }));
+
+        const pdfBytes = safeRead.bytes;
+        const validation = safeRead.validation || validatePdfBytes(pdfBytes);
         if (!validation.valid) {
           throw new Error(
             validation.errorMessage || 'This PDF file is invalid, encrypted, or corrupted.'
@@ -972,6 +993,7 @@ export default function AIReceiptScannerScreen() {
         }> = [];
 
         if (pdfProcessorRef.current) {
+          const pdfStageStart = Date.now();
           const webRes = await pdfProcessorRef.current.processPdf(pdfBase64, {
             maxPages: 10,
             onProgress: (prog) => {
@@ -982,6 +1004,10 @@ export default function AIReceiptScannerScreen() {
           });
 
           if (!webRes.success && (webRes.errorCode === 'PASSWORD_PROTECTED_PDF' || webRes.errorCode === 'CORRUPTED_PDF' || webRes.errorCode === 'EMPTY_PDF')) {
+            logScannerStage('PDF_TEXT_EXTRACTION', 'fail', {
+              note: webRes.errorCode,
+              durationMs: Date.now() - pdfStageStart,
+            });
             throw new Error(webRes.errorMessage || 'Could not process this PDF file.');
           }
 
@@ -1005,6 +1031,17 @@ export default function AIReceiptScannerScreen() {
                 extractedText: p.text || undefined,
               }));
 
+            logScannerStage('PDF_TEXT_EXTRACTION', 'ok', {
+              method: pdfType,
+              note: `pages=${webRes.totalPages} textChars=${extractedText.length}`,
+              durationMs: Date.now() - pdfStageStart,
+            });
+            if (pageImagesPayload.length > 0) {
+              logScannerStage('PDF_PAGE_RENDERING', 'ok', {
+                note: `renderedPages=${pageImagesPayload.length}`,
+              });
+            }
+
             if (webRes.truncatedByPageLimit) {
               setProcessingSubtitle(
                 `Processed first ${webRes.processedPages} of ${webRes.totalPages} pages.`
@@ -1016,13 +1053,21 @@ export default function AIReceiptScannerScreen() {
         // Pure-TS offline fallback if PDF.js engine could not load (e.g. CDN unreachable)
         if (!extractedText && pageImagesPayload.length === 0) {
           extractedText = extractSearchablePdfTextFromBytes(pdfBytes);
+          logScannerStage('PDF_TEXT_EXTRACTION', 'fallback', {
+            method: 'native-ts-stream',
+            note: `textChars=${extractedText.length}`,
+          });
         }
 
         setProcessingSteps((prev) => prev.map((s) => (s.id <= 2 ? { ...s, completed: true } : s)));
         setProcessingTitle('Processing receipt details');
+        logScannerStage(pageImagesPayload.length > 0 ? 'OCR_PROCESSING' : 'AI_EXTRACTION', 'ok', {
+          method: pdfType,
+          sizeBytes: safeRead.sizeBytes,
+        });
 
         geminiResponse = await executeGeminiReceiptAnalysis({
-          imageUri: activeUri,
+          imageUri: readablePdfUri,
           base64: pdfBase64 || undefined,
           mimeType: 'application/pdf',
           fileName: effectiveName,
@@ -1030,6 +1075,9 @@ export default function AIReceiptScannerScreen() {
           pdfType,
           pageCount,
           pageImages: pageImagesPayload.length > 0 ? pageImagesPayload : undefined,
+        });
+        logScannerStage('RESULT_VALIDATION', 'ok', {
+          method: geminiResponse?.source?.model || 'backend',
         });
       } else {
         setProcessingTitle('Identifying what this is');
@@ -1049,7 +1097,7 @@ export default function AIReceiptScannerScreen() {
 
       const parsedData = parseGeminiResponseToExtractedData(
         geminiResponse,
-        activeUri,
+        verifiedActiveUri,
         effectiveName
       );
 
@@ -1188,7 +1236,7 @@ export default function AIReceiptScannerScreen() {
         console.log(`[ScannerDiagnostics] review required (${classification.topLevelClassification}, conf=${classification.confidence}), opening Review Document Type`);
         setPendingRoutingData({
           parsedData,
-          activeUri,
+          activeUri: verifiedActiveUri,
           imageName: effectiveName || 'Document.jpg',
         });
         setSelectedReviewCategory(docCat || 'Other Important Documents');
@@ -1203,7 +1251,7 @@ export default function AIReceiptScannerScreen() {
       // 2. High-Confidence SERVICE_REPAIR (confidence >= 0.85):
       if (isServiceRepair) {
         console.log(`[ScannerDiagnostics] high-confidence SERVICE_REPAIR, routing to /service/add`);
-        await navigateToServiceAdd(parsedData, activeUri, effectiveName || 'Service_Record.jpg');
+        await navigateToServiceAdd(parsedData, verifiedActiveUri, effectiveName || 'Service_Record.jpg');
         return;
       }
 
@@ -1211,7 +1259,7 @@ export default function AIReceiptScannerScreen() {
       // College fee, utility bill, vehicle RC, insurance, PUC, warranty, service slip -> Document Vault!
       if (classification.topLevelClassification === 'GENERAL_DOCUMENT') {
         console.log(`[ScannerDiagnostics] high-confidence GENERAL_DOCUMENT (${classification.documentSubtype}), routing to /document/add`);
-        await navigateToDocumentAdd(docCat || 'Other Important Documents', docType || 'Document', parsedData, activeUri, effectiveName || 'Document.jpg');
+        await navigateToDocumentAdd(docCat || 'Other Important Documents', docType || 'Document', parsedData, verifiedActiveUri, effectiveName || 'Document.jpg');
         return;
       }
 
@@ -1227,13 +1275,13 @@ export default function AIReceiptScannerScreen() {
         }
 
         console.log(`[ScannerDiagnostics] single physical item purchase detected, routing to /(tabs)/add`);
-        await navigateToItemAdd(parsedData, activeUri, effectiveName || 'Receipt.jpg');
+        await navigateToItemAdd(parsedData, verifiedActiveUri, effectiveName || 'Receipt.jpg');
         return;
       }
 
       setPendingRoutingData({
         parsedData,
-        activeUri,
+        activeUri: verifiedActiveUri,
         imageName: effectiveName || 'Document.jpg',
       });
       setSelectedReviewCategory(docCat || 'Other Important Documents');

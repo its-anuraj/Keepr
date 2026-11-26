@@ -20,6 +20,12 @@ import {
   detectFormatFromBytes,
   detectFormatFromUriOrName,
 } from '../src/utils/imageIntegrity';
+import {
+  classifyFileAccessError,
+  isUriInsideScopedDirectories,
+  logScannerStage,
+  normalizeComparableFileUri,
+} from '../src/services/pdfAccessDiagnostics';
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -369,6 +375,109 @@ runTest('Supabase Edge Function and Dev Proxy support PDF MIME/magic bytes, extr
     Buffer.from(base64ToUint8Array(Buffer.from('%PDF-1.7').toString('base64'))).toString('latin1') === '%PDF-1.7',
     'base64ToUint8Array roundtrip check'
   );
+});
+
+console.log('\n6. Android DocumentPicker Scoped Cache, IOException Root Cause & Diagnostics');
+
+runTest('Rejects unscoped Expo Go DocumentPicker cache path and accepts scoped Experience cache/files paths', () => {
+  const scopedRoots = [
+    'file:///data/user/0/host.exp.exponent/cache/ExperienceData/%2540dev%252Fkeepr/',
+    'file:///data/user/0/host.exp.exponent/files/ExperienceData/%2540dev%252Fkeepr/',
+  ];
+
+  // Exact path reported in production IOException:
+  const exactFailingPath =
+    'file:///data/user/0/host.exp.exponent/cache/DocumentPicker/95e62485-9d57-4271-b5ce-c3ce41066f07.pdf';
+  assert.strictEqual(
+    isUriInsideScopedDirectories(exactFailingPath, scopedRoots),
+    false,
+    'Unscoped Expo Go DocumentPicker cache path MUST be flagged for copy into scoped cache'
+  );
+
+  // Even if someone passes a standalone app cache root containing /cache/DocumentPicker/, force copy into receipt_pdfs/:
+  assert.strictEqual(
+    isUriInsideScopedDirectories(exactFailingPath, ['file:///data/user/0/host.exp.exponent/cache/']),
+    false,
+    '/cache/DocumentPicker/ must always trigger app-controlled cache stabilization'
+  );
+
+  assert.strictEqual(
+    isUriInsideScopedDirectories(
+      'file:///data/user/0/host.exp.exponent/cache/ExperienceData/%2540dev%252Fkeepr/receipt_pdfs/1795_inv.pdf',
+      scopedRoots
+    ),
+    true
+  );
+
+  assert.strictEqual(
+    isUriInsideScopedDirectories('content://com.android.providers.downloads.documents/document/msf%3A101', scopedRoots),
+    false
+  );
+
+  assert.strictEqual(
+    normalizeComparableFileUri('file:/data/user/0/test.pdf'),
+    'file:///data/user/0/test.pdf'
+  );
+});
+
+runTest('Diagnostic classifier identifies exact Expo IOException and redacts credentials in logs', () => {
+  const category = classifyFileAccessError(
+    new Error(
+      "Location 'file:///data/user/0/host.exp.exponent/cache/DocumentPicker/95e62485-9d57-4271-b5ce-c3ce41066f07.pdf' isn't readable."
+    )
+  );
+  assert.strictEqual(category, 'UNSCOPED_CACHE_URI');
+  assert.strictEqual(classifyFileAccessError(new Error('ENOENT: no such file')), 'FILE_NOT_FOUND');
+
+  const entry = logScannerStage('AI_EXTRACTION', 'fail', {
+    errorCategory: 'PERMISSION_DENIED',
+    note: 'Failed with Bearer eyJhbGciOiJIUzI1NiJ9.secret and key=AIzaSySecretKey123',
+  });
+  assert(!entry.details.includes('eyJhbGciOiJIUzI1NiJ9'), 'Logs must never expose JWT tokens');
+  assert(!entry.details.includes('AIzaSySecretKey123'), 'Logs must never expose API keys');
+  assert(entry.details.includes('stage=AI_EXTRACTION'), 'Logs must identify exact pipeline stage');
+});
+
+runTest('All PDF picker screens avoid Android copyToCacheDirectory=true trap and prepare files into scoped storage', () => {
+  const pickerFiles = [
+    'app/(tabs)/index.tsx',
+    'app/(tabs)/add.tsx',
+    'app/scan-receipt/index.tsx',
+    'app/document/add.tsx',
+    'app/service/add.tsx',
+  ];
+
+  for (const relPath of pickerFiles) {
+    const src = readProjectFile(relPath);
+    assert(
+      src.includes("copyToCacheDirectory: Platform.OS !== 'android'"),
+      `${relPath} must use Platform.OS !== 'android' for copyToCacheDirectory`
+    );
+    assert(
+      src.includes('preparePdfForScanning'),
+      `${relPath} must stabilize and validate picked PDFs via preparePdfForScanning`
+    );
+  }
+});
+
+runTest('All PDF readers route through readUriBytesAndBase64Safely instead of raw readAsStringAsync on unscoped URIs', () => {
+  const protectedReaders = [
+    'app/scan-receipt/index.tsx',
+    'src/components/documents/UniversalPdfViewer.tsx',
+    'src/services/receiptFileService.ts',
+    'src/services/receiptScanner.ts',
+    'src/services/documentScannerService.ts',
+    'src/services/storageService.ts',
+    'src/services/cloudSyncService.ts',
+  ];
+
+  for (const relPath of protectedReaders) {
+    const src = readProjectFile(relPath);
+    assert(
+      src.includes('readUriBytesAndBase64Safely'),
+      `${relPath} must use readUriBytesAndBase64Safely for Android-safe PDF byte reading`
+    );
+  }
 });
 
 console.log('\nAll checks completed.\n');

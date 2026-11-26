@@ -11,6 +11,12 @@ import {
   detectFormatFromBase64Prefix,
   detectFormatFromUriOrName,
 } from '../utils/imageIntegrity';
+import {
+  isUriInsideScopedDirectories,
+  logScannerStage,
+  getUriSchemeForLog,
+} from './pdfAccessDiagnostics';
+import { readUriBytesAndBase64Safely } from './pdfFileAccessService';
 
 export interface StabilizedReceiptResult {
   uri: string;
@@ -247,8 +253,13 @@ export async function stabilizeReceiptImage(
   }
 
   try {
-    // 1. Android content:// URIs - copy to app cache preserving authentic format & extension
-    if (rawUri.startsWith('content://')) {
+    const scopedRoots = [FileSystem.cacheDirectory, FileSystem.documentDirectory];
+    const needsCopyToScopedCache =
+      rawUri.startsWith('content://') || !isUriInsideScopedDirectories(rawUri, scopedRoots);
+
+    // 1. Copy Android content:// URIs AND unscoped file:// URIs (e.g. Expo Go host cache/DocumentPicker)
+    // into our Experience-scoped persistent cache directory so Expo FileSystem always has READ permission.
+    if (needsCopyToScopedCache) {
       const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
       if (cacheDir) {
         const receiptsDir = `${cacheDir}receipts/`;
@@ -259,16 +270,44 @@ export async function stabilizeReceiptImage(
 
         const token = `receipt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         let stableTarget = `${receiptsDir}${token}${resolvedFormat.extension}`;
-        console.log('[ReceiptFileService] Copying content:// URI to stable path:', stableTarget);
+        let copiedOk = false;
 
-        await FileSystem.copyAsync({
-          from: rawUri,
-          to: stableTarget,
-        });
+        try {
+          console.log('[ReceiptFileService] Copying external/unscoped URI to scoped cache:', stableTarget);
+          await FileSystem.copyAsync({
+            from: rawUri,
+            to: stableTarget,
+          });
+          const checkInfo = await FileSystem.getInfoAsync(stableTarget).catch(() => null);
+          copiedOk = Boolean(checkInfo?.exists && (!('size' in checkInfo) || !checkInfo.size || checkInfo.size > 0));
+        } catch (copyErr: any) {
+          logScannerStage('FILE_COPIED_TO_CACHE', 'fallback', {
+            scheme: getUriSchemeForLog(rawUri),
+            method: 'stabilize-copyAsync',
+            note: copyErr?.message || 'copyAsync rejected, invoking safe stream copy',
+          });
+        }
 
-        let targetInfo = await FileSystem.getInfoAsync(stableTarget);
-        if (targetInfo.exists) {
-          // Verify actual magic bytes of the copied file so content:// PDFs NEVER keep a wrong extension
+        if (!copiedOk) {
+          const safeRead = await readUriBytesAndBase64Safely(rawUri, {
+            fileName: options?.fileName,
+            mimeType: options?.mimeType || resolvedFormat.mimeType,
+            base64Fallback: base64,
+          });
+          if (safeRead.success && safeRead.base64) {
+            const safeExt =
+              detectFormatFromBase64Prefix(safeRead.base64)?.extension || resolvedFormat.extension;
+            stableTarget = `${receiptsDir}${token}${safeExt}`;
+            await FileSystem.writeAsStringAsync(stableTarget, safeRead.base64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            const checkInfo = await FileSystem.getInfoAsync(stableTarget).catch(() => null);
+            copiedOk = Boolean(checkInfo?.exists);
+          }
+        }
+
+        let targetInfo = copiedOk ? await FileSystem.getInfoAsync(stableTarget).catch(() => null) : null;
+        if (targetInfo && targetInfo.exists) {
           const sniffed = await sniffLocalFileFormat(stableTarget);
           let finalMime = resolvedFormat.mimeType;
           let finalExt = resolvedFormat.extension;
@@ -293,7 +332,7 @@ export async function stabilizeReceiptImage(
               : `${token}${finalExt}`;
 
           console.log(
-            '[ReceiptFileService] Successfully stabilized content:// to file://',
+            '[ReceiptFileService] Successfully stabilized URI to scoped cache:',
             stableTarget,
             'mime:',
             finalMime,
@@ -569,7 +608,32 @@ export async function persistFileToVault(
           }
         }
       } catch (copyErr) {
-        console.warn(`[ReceiptFileService] ${folder} copyAsync failed, checking base64 fallback:`, copyErr);
+        console.warn(`[ReceiptFileService] ${folder} copyAsync failed, checking safe stream fallback:`, copyErr);
+      }
+
+      // 2. Fallback: Use Android-safe stream copy / modern FileSystem reader for content:// or unscoped DocumentPicker URIs
+      if (!base64Fallback) {
+        try {
+          const safeRead = await readUriBytesAndBase64Safely(cleanSource, {
+            fileName: preferredFileName,
+            mimeType: detected.mimeType,
+          });
+          if (safeRead.success && safeRead.base64) {
+            await FileSystem.writeAsStringAsync(destinationUri, safeRead.base64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            const destInfo = await FileSystem.getInfoAsync(destinationUri).catch(() => null);
+            if (destInfo?.exists && (destInfo.size === undefined || destInfo.size > 0)) {
+              return {
+                uri: destinationUri,
+                storagePath,
+                fileName: safeName,
+                persisted: true,
+                fileSize: destInfo.size,
+              };
+            }
+          }
+        } catch {}
       }
     }
 
@@ -916,10 +980,15 @@ export async function prepareImageForAnalysis(
         const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
         return { base64: clean, mimeType: 'application/pdf' };
       }
-      const rawPdfBase64 = await FileSystem.readAsStringAsync(imageUri, {
-        encoding: FileSystem.EncodingType.Base64,
+      const safePdfRead = await readUriBytesAndBase64Safely(imageUri, {
+        fileName: options?.fileName,
+        mimeType: 'application/pdf',
+        validateAsPdf: true,
       });
-      return { base64: rawPdfBase64, mimeType: 'application/pdf' };
+      if (!safePdfRead.success || !safePdfRead.base64) {
+        throw new Error(safePdfRead.errorMessage || 'Selected PDF file could not be read.');
+      }
+      return { base64: safePdfRead.base64, mimeType: 'application/pdf' };
     }
 
     if (!imageUri && existingBase64) {
