@@ -78,6 +78,9 @@ export interface Item {
   photoUri?: string; // Product / Item photo (visual representation)
   imageUrl?: string; // Compatible alias for photoUri / durable storage reference
   imageStoragePath?: string; // Durable Supabase Storage path in 'item-images' (e.g. userId/items/itemId/photo_0.jpg)
+  thumbnailPath?: string | null; // Optional lightweight list thumbnail (never replaces original)
+  enhancedPhotoUri?: string | null; // Optional non-destructive enhanced product photo stored separately
+  enhancedReceiptUri?: string | null; // Optional non-destructive enhanced receipt copy stored separately
   productPhotos?: string[]; // Multiple product photos (camera/gallery or storage paths)
   notes?: string;
   status: ItemStatus;
@@ -207,6 +210,9 @@ export interface VaultDocument {
   fileSizeBytes: number;
   mimeType: string;
   thumbnailPath?: string | null;
+  enhancedPath?: string | null; // Optional separate enhanced image copy (original untouched)
+  enhancedBackPath?: string | null; // Optional separate enhanced back-side image copy
+  originalSha256?: string | null;
   storagePath?: string | null; // Canonical cloud storage object path ({userId}/vault/{docId}/photo_1.jpg)
   storagePathBack?: string | null; // Canonical cloud storage object path for second photo ({userId}/vault/{docId}/photo_2.jpg)
   pageCount?: number;

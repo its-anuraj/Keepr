@@ -25,7 +25,7 @@ export interface TopPurchasesListProps {
 }
 
 const PurchaseRow: React.FC<{ item: Item; rank?: number }> = ({ item, rank }) => {
-  const { resolvedUri } = useResolvedItemImage(item);
+  const { resolvedUri } = useResolvedItemImage(item, undefined, { preferThumbnail: true });
   const rawCat = item.categoryId || (typeof item.category === 'string' ? item.category : item.category?.id);
   const catId = normalizeToDbCategoryId(rawCat) || 'other';
   const catName = getCategoryNameFromId(catId) || 'Other';

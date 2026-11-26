@@ -22,7 +22,7 @@ export const RecentlyAddedThumbnail: React.FC<RecentlyAddedThumbnailProps> = ({ 
 
   // Always invoke resolution with entry. extractDocumentImageCandidates handles
   // prioritizing thumbnailPath and returning null for PDFs without thumbnails.
-  const { resolvedUri, retry } = useResolvedEntryImage(entry);
+  const { resolvedUri, retry } = useResolvedEntryImage(entry, { preferThumbnail: true });
 
   useEffect(() => {
     setImageError(false);

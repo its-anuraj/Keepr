@@ -31,15 +31,22 @@ import {
   logReceiptDiagnostics,
 } from '../../src/services/receiptFileService';
 import { isStoragePath, canonicalizeProductPhotos } from '../../src/utils/storageUtils';
-import { getItemReceiptSignedUrl } from '../../src/services/storageService';
-import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
+import {
+  BUCKET_ITEM_DOCUMENTS,
+  BUCKET_ITEM_IMAGES,
+  getItemReceiptSignedUrl,
+  StorageBucket,
+} from '../../src/services/storageService';
+import { HighResImageViewer, ImageViewerImage } from '../../src/components/ui/HighResImageViewer';
 import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
+import { downloadOriginalFile } from '../../src/services/originalDownloadService';
 
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
 
   const getItemById = useItemStore((s) => s.getItemById);
+  const updateItem = useItemStore((s) => s.updateItem);
   const deleteItem = useItemStore((s) => s.deleteItem);
   const convertItemToDocument = useItemStore((s) => s.convertItemToDocument);
   const getDocumentsByItemId = useItemStore((s) => s.getDocumentsByItemId);
@@ -58,7 +65,18 @@ export default function ItemDetailScreen() {
     });
   }, [maintenanceRecords, maintenanceSortOrder]);
 
-  const [previewModal, setPreviewModal] = useState<{ uri: string; title: string } | null>(null);
+  const [previewModal, setPreviewModal] = useState<{
+    images: ImageViewerImage[];
+    initialIndex?: number;
+    kind: 'product' | 'receipt';
+    title: string;
+    isPdf?: boolean;
+    pdfUri?: string;
+    storagePath?: string | null;
+    bucket?: StorageBucket | null;
+    fileName?: string;
+  } | null>(null);
+  const [isDownloadingReceipt, setIsDownloadingReceipt] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
@@ -401,7 +419,22 @@ export default function ItemDetailScreen() {
               activeOpacity={0.88}
               onPress={() => {
                 if (resolvedMainPhoto) {
-                  setPreviewModal({ uri: resolvedMainPhoto, title: `${item.name} · Product Photo` });
+                  const galleryImages: ImageViewerImage[] = (
+                    allProductPhotos.length > 0 ? allProductPhotos : [resolvedMainPhoto]
+                  ).map((u, idx) => ({
+                    uri: u,
+                    title: `${item.name} · Photo ${idx + 1}`,
+                    fileName: `${item.name}_photo_${idx + 1}`,
+                    storagePath: rawPhotoCandidateList[idx] && isStoragePath(rawPhotoCandidateList[idx]) ? rawPhotoCandidateList[idx] : item.imageStoragePath,
+                    bucket: BUCKET_ITEM_IMAGES,
+                    enhancedUri: idx === 0 ? item.enhancedPhotoUri : undefined,
+                  }));
+                  setPreviewModal({
+                    images: galleryImages,
+                    initialIndex: 0,
+                    kind: 'product',
+                    title: `${item.name} · Product Photo`,
+                  });
                 }
               }}
               disabled={!resolvedMainPhoto}
@@ -466,12 +499,27 @@ export default function ItemDetailScreen() {
                   key={`detail-photo-${idx}`}
                   className="w-28 h-28 rounded-serene-lg overflow-hidden border border-serene-subtle-border relative bg-serene-surface-container-low"
                   activeOpacity={0.88}
-                  onPress={() =>
+                  onPress={() => {
+                    const galleryImages: ImageViewerImage[] = allProductPhotos.map((u, gIdx) => ({
+                      uri: u,
+                      title: `${item.name} · Photo ${gIdx + 1} of ${allProductPhotos.length}`,
+                      fileName: `${item.name}_photo_${gIdx + 1}`,
+                      storagePath:
+                        rawPhotoCandidateList[gIdx] && isStoragePath(rawPhotoCandidateList[gIdx])
+                          ? rawPhotoCandidateList[gIdx]
+                          : gIdx === 0
+                          ? item.imageStoragePath
+                          : null,
+                      bucket: BUCKET_ITEM_IMAGES,
+                      enhancedUri: gIdx === 0 ? item.enhancedPhotoUri : undefined,
+                    }));
                     setPreviewModal({
-                      uri: pUri,
+                      images: galleryImages,
+                      initialIndex: idx,
+                      kind: 'product',
                       title: `${item.name} · Photo ${idx + 1} of ${allProductPhotos.length}`,
-                    })
-                  }
+                    });
+                  }}
                 >
                   <Image source={{ uri: pUri }} className="w-full h-full" resizeMode="cover" />
                   <View className="absolute bottom-1 right-1 bg-black/65 px-1.5 py-0.5 rounded-full flex-row items-center gap-0.5">
@@ -604,7 +652,20 @@ export default function ItemDetailScreen() {
                       {prodPhoto ? (
                         <TouchableOpacity
                           activeOpacity={0.85}
-                          onPress={() => setPreviewModal({ uri: prodPhoto, title: `${prod.name} · Product Photo` })}
+                          onPress={() =>
+                            setPreviewModal({
+                              images: (prod.productPhotos || [prodPhoto]).map((u, idx) => ({
+                                uri: u,
+                                title: `${prod.name} · Product Photo${(prod.productPhotos?.length || 0) > 1 ? ` ${idx + 1}` : ''}`,
+                                fileName: `${prod.name}_photo_${idx + 1}`,
+                                storagePath: isStoragePath(u) ? u : null,
+                                bucket: BUCKET_ITEM_IMAGES,
+                              })),
+                              initialIndex: 0,
+                              kind: 'product',
+                              title: `${prod.name} · Product Photo`,
+                            })
+                          }
                         >
                           <Image
                             source={{ uri: prodPhoto }}
@@ -929,7 +990,33 @@ export default function ItemDetailScreen() {
                 <TouchableOpacity
                   className="w-full h-48 rounded-serene-lg overflow-hidden border border-serene-subtle-border relative bg-serene-surface-container-low"
                   activeOpacity={0.9}
-                  onPress={() => setPreviewModal({ uri: displayReceiptUri, title: `${item.name} · ${documentLabel}` })}
+                  onPress={() => {
+                    const receiptIsPdf = Boolean(
+                      displayReceiptUri.toLowerCase().includes('.pdf') ||
+                        (item.receiptName && item.receiptName.toLowerCase().endsWith('.pdf'))
+                    );
+                    setPreviewModal({
+                      images: receiptIsPdf
+                        ? []
+                        : [
+                            {
+                              uri: displayReceiptUri,
+                              title: `${item.name} · ${documentLabel}`,
+                              fileName: item.receiptName || `${item.name}_${documentLabel}`,
+                              storagePath: candidateStoragePath,
+                              bucket: BUCKET_ITEM_DOCUMENTS,
+                              enhancedUri: item.enhancedReceiptUri,
+                            },
+                          ],
+                      kind: 'receipt',
+                      title: `${item.name} · ${documentLabel}`,
+                      isPdf: receiptIsPdf,
+                      pdfUri: displayReceiptUri,
+                      storagePath: candidateStoragePath,
+                      bucket: BUCKET_ITEM_DOCUMENTS,
+                      fileName: item.receiptName || `${item.name}_${documentLabel}`,
+                    });
+                  }}
                 >
                   {(displayReceiptUri.toLowerCase().includes('.pdf') || (item.receiptName && item.receiptName.toLowerCase().endsWith('.pdf'))) ? (
                     <View className="w-full h-full items-center justify-center bg-serene-surface-container-low">
@@ -952,14 +1039,80 @@ export default function ItemDetailScreen() {
                   </View>
                 </TouchableOpacity>
 
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-[11px] text-serene-on-surface-variant font-mono flex-1 mr-2" numberOfLines={1}>
+                <View className="flex-row items-center justify-between gap-2">
+                  <Text className="text-[11px] text-serene-on-surface-variant font-mono flex-1 mr-1" numberOfLines={1}>
                     {item.receiptName || `Attached ${documentLabel.toLowerCase()} document`}
                     {receiptState.fileSize ? ` · ${(receiptState.fileSize / 1024).toFixed(0)} KB` : ''}
                   </Text>
                   <TouchableOpacity
+                    className="bg-serene-surface-container px-2.5 py-1.5 rounded-serene-md flex-row items-center gap-1 border border-serene-subtle-border"
+                    disabled={isDownloadingReceipt}
+                    onPress={async () => {
+                      if (isDownloadingReceipt) return;
+                      setIsDownloadingReceipt(true);
+                      try {
+                        const receiptIsPdf = Boolean(
+                          displayReceiptUri.toLowerCase().includes('.pdf') ||
+                            (item.receiptName && item.receiptName.toLowerCase().endsWith('.pdf'))
+                        );
+                        const dl = await downloadOriginalFile({
+                          uri: displayReceiptUri,
+                          storagePath: candidateStoragePath,
+                          bucket: BUCKET_ITEM_DOCUMENTS,
+                          fileName: item.receiptName || `${item.name}_${documentLabel}`,
+                          title: `${item.name} ${documentLabel}`,
+                          mimeType: receiptIsPdf ? 'application/pdf' : undefined,
+                          isPdf: receiptIsPdf,
+                        });
+                        if (!dl.cancelled && dl.success) {
+                          Alert.alert(
+                            'Original Downloaded',
+                            `Saved "${dl.fileName}"${dl.byteSize ? ` (${(dl.byteSize / 1024).toFixed(1)} KB)` : ''}.`
+                          );
+                        } else if (!dl.cancelled && !dl.success) {
+                          Alert.alert('Download Failed', dl.error || 'Could not download original file.');
+                        }
+                      } finally {
+                        setIsDownloadingReceipt(false);
+                      }
+                    }}
+                  >
+                    {isDownloadingReceipt ? (
+                      <ActivityIndicator size="small" color={SereneColors.primary} />
+                    ) : (
+                      <MaterialIcons name="download" size={15} color={SereneColors.primary} />
+                    )}
+                    <Text className="text-[12px] font-semibold text-serene-primary">Download</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     className="bg-serene-surface-container-high px-3 py-1.5 rounded-serene-md flex-row items-center gap-1"
-                    onPress={() => setPreviewModal({ uri: displayReceiptUri, title: `${item.name} · ${documentLabel}` })}
+                    onPress={() => {
+                      const receiptIsPdf = Boolean(
+                        displayReceiptUri.toLowerCase().includes('.pdf') ||
+                          (item.receiptName && item.receiptName.toLowerCase().endsWith('.pdf'))
+                      );
+                      setPreviewModal({
+                        images: receiptIsPdf
+                          ? []
+                          : [
+                              {
+                                uri: displayReceiptUri,
+                                title: `${item.name} · ${documentLabel}`,
+                                fileName: item.receiptName || `${item.name}_${documentLabel}`,
+                                storagePath: candidateStoragePath,
+                                bucket: BUCKET_ITEM_DOCUMENTS,
+                                enhancedUri: item.enhancedReceiptUri,
+                              },
+                            ],
+                        kind: 'receipt',
+                        title: `${item.name} · ${documentLabel}`,
+                        isPdf: receiptIsPdf,
+                        pdfUri: displayReceiptUri,
+                        storagePath: candidateStoragePath,
+                        bucket: BUCKET_ITEM_DOCUMENTS,
+                        fileName: item.receiptName || `${item.name}_${documentLabel}`,
+                      });
+                    }}
                   >
                     <MaterialIcons name="fullscreen" size={16} color={SereneColors.primary} />
                     <Text className="text-[12px] font-semibold text-serene-primary">View {documentLabel}</Text>
@@ -1362,32 +1515,30 @@ export default function ItemDetailScreen() {
         </View>
       </ScrollView>
 
-      {Boolean(
-        previewModal &&
-          (previewModal.uri.toLowerCase().includes('.pdf') ||
-            previewModal.title.toLowerCase().endsWith('.pdf') ||
-            item.receiptName?.toLowerCase().endsWith('.pdf'))
-      ) ? (
+      {Boolean(previewModal && previewModal.isPdf && previewModal.pdfUri) ? (
         <UniversalPdfViewer
           visible={Boolean(previewModal)}
-          pdfUri={previewModal?.uri || ''}
+          pdfUri={previewModal?.pdfUri || ''}
+          storagePath={previewModal?.storagePath}
+          bucket={previewModal?.bucket}
+          fileName={previewModal?.fileName}
           title={previewModal?.title || `${item.name} · ${documentLabel}`}
           onClose={() => setPreviewModal(null)}
         />
       ) : (
         <HighResImageViewer
           visible={Boolean(previewModal)}
-          images={
-            previewModal
-              ? [
-                  {
-                    uri: previewModal.uri,
-                    title: previewModal.title,
-                  },
-                ]
-              : []
-          }
+          images={previewModal?.images || []}
+          initialIndex={previewModal?.initialIndex || 0}
           onClose={() => setPreviewModal(null)}
+          onEnhanceSaved={(res) => {
+            if (!previewModal) return;
+            if (previewModal.kind === 'receipt') {
+              updateItem(item.id, { enhancedReceiptUri: res.enhancedUri });
+            } else {
+              updateItem(item.id, { enhancedPhotoUri: res.enhancedUri });
+            }
+          }}
         />
       )}
     </View>

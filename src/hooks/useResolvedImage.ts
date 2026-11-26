@@ -23,10 +23,17 @@ import {
 import {
   extractItemImageCandidates,
   extractDocumentImageCandidates,
+  extractOriginalDocumentCandidates,
   cleanStoragePath,
 } from '../utils/storageUtils';
 import { getCanonicalReceiptUri, getCanonicalDocumentUri } from '../services/receiptFileService';
+import { getOrCreateLocalThumbnail } from '../services/imagePipelineService';
 import type { Item, VaultDocument, RecentlyAddedEntry } from '../types';
+
+export interface ResolvedImageOptions {
+  /** Use lightweight thumbnail cache when rendering small list cards; false in full viewers. */
+  preferThumbnail?: boolean;
+}
 
 export interface ResolvedImageResult {
   resolvedUri: string | null;
@@ -50,8 +57,10 @@ export interface ResolvedImageResult {
  */
 export function useResolvedItemImage(
   itemOrStoragePath?: Partial<Item> | string | null,
-  localFallbackUri?: string | null
+  localFallbackUri?: string | null,
+  options?: ResolvedImageOptions
 ): ResolvedImageResult {
+  const preferThumbnail = options?.preferThumbnail === true;
   const candidates = useMemo(() => {
     return extractItemImageCandidates(itemOrStoragePath, localFallbackUri);
   }, [
@@ -87,7 +96,15 @@ export function useResolvedItemImage(
       try {
         const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
         if (info?.exists && !info.isDirectory) {
-          setResolvedUri(canonicalLocal);
+          if (preferThumbnail) {
+            const thumb = await getOrCreateLocalThumbnail(
+              canonicalLocal,
+              typeof itemOrStoragePath === 'object' ? itemOrStoragePath?.id : null
+            ).catch(() => null);
+            setResolvedUri(thumb || canonicalLocal);
+          } else {
+            setResolvedUri(canonicalLocal);
+          }
           setIsLoading(false);
           setIsUnavailable(false);
           setIsLocal(true);
@@ -138,7 +155,7 @@ export function useResolvedItemImage(
     setIsLoading(false);
     setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
     setIsLocal(false);
-  }, [localUri, storagePath, remoteUrl]);
+  }, [localUri, storagePath, remoteUrl, preferThumbnail, itemOrStoragePath]);
 
   useEffect(() => {
     retryCountRef.current = 0;
@@ -159,8 +176,10 @@ export function useResolvedItemImage(
  */
 export function useResolvedDocumentImage(
   docOrStoragePath?: Partial<VaultDocument> | string | null,
-  localFallbackUri?: string | null
+  localFallbackUri?: string | null,
+  options?: ResolvedImageOptions
 ): ResolvedImageResult {
+  const preferThumbnail = options?.preferThumbnail === true;
   const preferredBucket = useMemo(() => {
     return getCanonicalDocumentBucket(docOrStoragePath);
   }, [
@@ -170,12 +189,15 @@ export function useResolvedDocumentImage(
   ]);
 
   const candidates = useMemo(() => {
-    return extractDocumentImageCandidates(docOrStoragePath, localFallbackUri);
+    return preferThumbnail
+      ? extractDocumentImageCandidates(docOrStoragePath, localFallbackUri)
+      : extractOriginalDocumentCandidates(docOrStoragePath, localFallbackUri);
   }, [
     typeof docOrStoragePath === 'object' && docOrStoragePath !== null
       ? `${docOrStoragePath.id || ''}:${docOrStoragePath.storagePath || ''}:${docOrStoragePath.filePath || ''}:${docOrStoragePath.fileUrl || ''}:${docOrStoragePath.thumbnailPath || ''}`
       : docOrStoragePath,
     localFallbackUri,
+    preferThumbnail,
   ]);
 
   const { storagePath, remoteUrl, localUri } = candidates;
@@ -204,7 +226,15 @@ export function useResolvedDocumentImage(
       try {
         const info = await FileSystem.getInfoAsync(canonicalLocal).catch(() => null);
         if (info?.exists && !info.isDirectory) {
-          setResolvedUri(canonicalLocal);
+          if (preferThumbnail) {
+            const thumb = await getOrCreateLocalThumbnail(
+              canonicalLocal,
+              typeof docOrStoragePath === 'object' ? docOrStoragePath?.id : null
+            ).catch(() => null);
+            setResolvedUri(thumb || canonicalLocal);
+          } else {
+            setResolvedUri(canonicalLocal);
+          }
           setIsLoading(false);
           setIsUnavailable(false);
           setIsLocal(true);
@@ -253,7 +283,7 @@ export function useResolvedDocumentImage(
     setIsLoading(false);
     setIsUnavailable(Boolean(storagePath || remoteUrl || localUri));
     setIsLocal(false);
-  }, [localUri, storagePath, remoteUrl, preferredBucket]);
+  }, [localUri, storagePath, remoteUrl, preferredBucket, preferThumbnail, docOrStoragePath]);
 
   useEffect(() => {
     retryCountRef.current = 0;
@@ -273,14 +303,15 @@ export function useResolvedDocumentImage(
  * Resolves an entry from Recently Added list, automatically delegating to item or document resolver.
  */
 export function useResolvedEntryImage(
-  entry?: RecentlyAddedEntry | null
+  entry?: RecentlyAddedEntry | null,
+  options?: ResolvedImageOptions
 ): ResolvedImageResult {
   const isItem = entry?.entityType === 'PURCHASED_ITEM';
   const itemCandidate = isItem ? entry?.item || entry?.thumbnail : null;
   const docCandidate = !isItem ? entry?.document || entry?.thumbnail : null;
 
-  const itemResult = useResolvedItemImage(itemCandidate);
-  const docResult = useResolvedDocumentImage(docCandidate);
+  const itemResult = useResolvedItemImage(itemCandidate, undefined, options);
+  const docResult = useResolvedDocumentImage(docCandidate, undefined, options);
 
   return isItem ? itemResult : docResult;
 }

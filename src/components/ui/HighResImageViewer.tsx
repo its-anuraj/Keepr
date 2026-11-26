@@ -1,37 +1,66 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+/**
+ * KEEPR DIGITAL OWNERSHIP VAULT: HighResImageViewer Component
+ *
+ * Enterprise-grade full-screen image viewer supporting:
+ * - Focal-point-preserving pinch-to-zoom & smooth animated double-tap zoom
+ * - True aspect-ratio-aware panning bounds clamped cleanly inside viewport edges
+ * - Floating Minus (−), Plus (+), Fit/Reset, and adaptive zoom ceiling (4x–8x)
+ * - Swipe pagination with preloading across multi-photo galleries
+ * - Original image integrity preservation + direct Original Download (Android SAF / Share)
+ * - Optional non-destructive Image Enhancement toggle & Original vs Enhanced switcher
+ */
+
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Modal,
   View,
   Text,
-  Image,
   TouchableOpacity,
-  PanResponder,
+  Image,
   Animated,
+  PanResponder,
   Dimensions,
-  StatusBar,
-  BackHandler,
-  Platform,
   ActivityIndicator,
   StyleSheet,
+  Platform,
+  StatusBar,
+  Alert,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  clampPanOffset,
+  computeAdaptiveMaxZoom,
+  computeFocalZoomPan,
+} from '../../utils/imageMetadata';
+import { downloadOriginalFile } from '../../services/originalDownloadService';
+import type { StorageBucket } from '../../services/storageService';
+import type { SeparateEnhancementResult } from '../../services/imagePipelineService';
+import { ImageEnhancementModal } from './ImageEnhancementModal';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export interface ImageViewerImage {
   uri: string;
   title?: string;
   subtitle?: string;
+  fileName?: string;
+  storagePath?: string | null;
+  bucket?: StorageBucket | null;
+  mimeType?: string | null;
+  enhancedUri?: string | null;
 }
 
 export interface HighResImageViewerProps {
   visible: boolean;
-  images: (ImageViewerImage | string)[];
+  images: ImageViewerImage[];
   initialIndex?: number;
   onClose: () => void;
   maxZoom?: number;
+  enableDownload?: boolean;
+  enableEnhance?: boolean;
+  onDownload?: (image: ImageViewerImage, index: number) => Promise<void> | void;
+  onEnhanceSaved?: (result: SeparateEnhancementResult, image: ImageViewerImage, index: number) => void;
 }
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export const HighResImageViewer: React.FC<HighResImageViewerProps> = ({
   visible,
@@ -39,410 +68,867 @@ export const HighResImageViewer: React.FC<HighResImageViewerProps> = ({
   initialIndex = 0,
   onClose,
   maxZoom = 6.0,
+  enableDownload = true,
+  enableEnhance = true,
+  onDownload,
+  onEnhanceSaved,
 }) => {
-  const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
+  const [loadingMap, setLoadingMap] = useState<Record<number, boolean>>({});
+  const [errorMap, setErrorMap] = useState<Record<number, boolean>>({});
+  const [dimensionsMap, setDimensionsMap] = useState<Record<number, { width: number; height: number }>>({});
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.76,
+  });
 
-  // Animated values for zoom & pan
-  const scale = useRef(new Animated.Value(1)).current;
-  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  // Track optional enhanced copy per image index WITHOUT touching original
+  const [enhancedOverrides, setEnhancedOverrides] = useState<Record<number, { uri: string; fileName: string }>>({});
+  const [activeVariant, setActiveVariant] = useState<'original' | 'enhanced'>('original');
+  const [enhanceModalVisible, setEnhanceModalVisible] = useState(false);
 
-  // Track raw values for gesture calculations
-  const scaleValue = useRef(1);
-  const panValue = useRef({ x: 0, y: 0 });
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadStatusMsg, setDownloadStatusMsg] = useState<string | null>(null);
 
-  // Multi-touch tracking
-  const initialDistance = useRef<number | null>(null);
-  const initialScale = useRef(1);
-  const lastTapTime = useRef(0);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const panAnim = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
 
-  // Normalize image inputs
-  const normalizedImages: ImageViewerImage[] = images.map((img) =>
-    typeof img === 'string' ? { uri: img } : img
-  );
+  const stateRef = useRef({
+    scale: 1,
+    panX: 0,
+    panY: 0,
+    lastTapTime: 0,
+    lastTapX: SCREEN_WIDTH / 2,
+    lastTapY: SCREEN_HEIGHT / 2,
+    isPinching: false,
+    pinchStartDistance: 0,
+    pinchStartScale: 1,
+    pinchStartPanX: 0,
+    pinchStartPanY: 0,
+    pinchStartMidX: SCREEN_WIDTH / 2,
+    pinchStartMidY: SCREEN_HEIGHT / 2,
+    dragStartPanX: 0,
+    dragStartPanY: 0,
+    viewportOffsetY: 0,
+  });
 
-  const currentImage = normalizedImages[currentIndex] || null;
+  const currentImage = images[currentIndex] || images[0];
+  const currentEnhancedUri =
+    enhancedOverrides[currentIndex]?.uri || currentImage?.enhancedUri || null;
+  const activeDisplayUri =
+    activeVariant === 'enhanced' && currentEnhancedUri
+      ? currentEnhancedUri
+      : currentImage?.uri || '';
 
-  // Reset transform state
-  const resetTransform = useCallback(() => {
-    scaleValue.current = 1;
-    panValue.current = { x: 0, y: 0 };
-    setZoomPercent(100);
+  const currentDims = dimensionsMap[currentIndex];
+  const effectiveMaxZoom = useMemo(() => {
+    return computeAdaptiveMaxZoom(
+      viewportSize.width,
+      viewportSize.height,
+      currentDims?.width,
+      currentDims?.height,
+      maxZoom
+    );
+  }, [viewportSize.width, viewportSize.height, currentDims?.width, currentDims?.height, maxZoom]);
 
-    Animated.parallel([
-      Animated.spring(scale, {
-        toValue: 1,
-        useNativeDriver: true,
-        bounciness: 0,
-      }),
-      Animated.spring(pan, {
-        toValue: { x: 0, y: 0 },
-        useNativeDriver: true,
-        bounciness: 0,
-      }),
-    ]).start();
-  }, [scale, pan]);
+  const effectiveMaxZoomRef = useRef(effectiveMaxZoom);
+  effectiveMaxZoomRef.current = effectiveMaxZoom;
 
-  // Sync index when initialIndex changes or modal opens
+  const viewportSizeRef = useRef(viewportSize);
+  viewportSizeRef.current = viewportSize;
+
+  const currentDimsRef = useRef(currentDims);
+  currentDimsRef.current = currentDims;
+
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
+
+  const imagesLengthRef = useRef(images.length);
+  imagesLengthRef.current = images.length;
+
+  // Reset state on modal open
   useEffect(() => {
     if (visible) {
-      setCurrentIndex(Math.max(0, Math.min(initialIndex, normalizedImages.length - 1)));
-      resetTransform();
-      setIsLoading(true);
-      setHasError(false);
+      const safeIdx = Math.max(0, Math.min(initialIndex, Math.max(0, images.length - 1)));
+      setCurrentIndex(safeIdx);
+      setActiveVariant('original');
+      setDownloadStatusMsg(null);
+      resetZoom(false);
     }
-  }, [visible, initialIndex, normalizedImages.length, resetTransform]);
+  }, [visible, initialIndex, images.length]);
 
-  // Android hardware back handler
+  // Measure real original image pixel dimensions for aspect-aware panning & adaptive max zoom
   useEffect(() => {
-    if (!visible) return;
-    const backAction = () => {
-      if (scaleValue.current > 1.05) {
-        resetTransform();
-        return true;
-      }
-      onClose();
-      return true;
-    };
+    if (!visible || !activeDisplayUri) return;
+    Image.getSize(
+      activeDisplayUri,
+      (width, height) => {
+        if (width > 0 && height > 0) {
+          setDimensionsMap((prev) => ({
+            ...prev,
+            [currentIndex]: { width, height },
+          }));
+        }
+      },
+      () => {}
+    );
+  }, [visible, activeDisplayUri, currentIndex]);
 
-    const handler = BackHandler.addEventListener('hardwareBackPress', backAction);
-    return () => handler.remove();
-  }, [visible, onClose, resetTransform]);
+  const applyTransformValues = (nextScale: number, nextX: number, nextY: number, animated = true) => {
+    const clampedScale = Math.max(1, Math.min(effectiveMaxZoomRef.current, nextScale));
+    const vp = viewportSizeRef.current;
+    const dims = currentDimsRef.current;
+    const clamped =
+      clampedScale <= 1.001
+        ? { x: 0, y: 0 }
+        : clampPanOffset(nextX, nextY, clampedScale, vp.width, vp.height, dims?.width, dims?.height);
 
-  // Distance helper for pinch gesture
-  const calcDistance = (x1: number, y1: number, x2: number, y2: number) => {
-    const dx = x1 - x2;
-    const dy = y1 - y2;
-    return Math.sqrt(dx * dx + dy * dy);
+    stateRef.current.scale = clampedScale;
+    stateRef.current.panX = clamped.x;
+    stateRef.current.panY = clamped.y;
+    setZoomPercent(Math.round(clampedScale * 100));
+
+    if (animated) {
+      Animated.parallel([
+        Animated.timing(scaleAnim, {
+          toValue: clampedScale,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.timing(panAnim, {
+          toValue: clamped,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      scaleAnim.setValue(clampedScale);
+      panAnim.setValue(clamped);
+    }
   };
 
-  // Clamp pan translations within zoomed viewport bounds
-  const clampPan = (newX: number, newY: number, currentScale: number) => {
-    if (currentScale <= 1) return { x: 0, y: 0 };
+  const resetZoom = useCallback((animated = true) => {
+    applyTransformValues(1, 0, 0, animated);
+  }, []);
 
-    const maxPanX = (SCREEN_WIDTH * (currentScale - 1)) / 2;
-    const maxPanY = (SCREEN_HEIGHT * (currentScale - 1)) / 2;
+  const zoomByStep = useCallback((delta: number) => {
+    const current = stateRef.current.scale;
+    const target = Math.max(1, Math.min(effectiveMaxZoomRef.current, current + delta));
+    const vp = viewportSizeRef.current;
+    const dims = currentDimsRef.current;
+    const nextPan = computeFocalZoomPan({
+      currentScale: current,
+      nextScale: target,
+      currentPanX: stateRef.current.panX,
+      currentPanY: stateRef.current.panY,
+      focalX: vp.width / 2,
+      focalY: vp.height / 2,
+      containerWidth: vp.width,
+      containerHeight: vp.height,
+      imageWidth: dims?.width,
+      imageHeight: dims?.height,
+    });
+    applyTransformValues(target, nextPan.x, nextPan.y, true);
+  }, []);
 
-    return {
-      x: Math.max(-maxPanX, Math.min(maxPanX, newX)),
-      y: Math.max(-maxPanY, Math.min(maxPanY, newY)),
-    };
+  const handleGoToIndex = useCallback((nextIdx: number) => {
+    if (nextIdx < 0 || nextIdx >= imagesLengthRef.current) return;
+    setCurrentIndex(nextIdx);
+    setActiveVariant('original');
+    resetZoom(false);
+  }, [resetZoom]);
+
+  const handleDownloadOriginal = async () => {
+    if (!currentImage || isDownloading) return;
+
+    if (onDownload) {
+      try {
+        setIsDownloading(true);
+        await onDownload(
+          activeVariant === 'enhanced' && currentEnhancedUri
+            ? { ...currentImage, uri: currentEnhancedUri, storagePath: null }
+            : currentImage,
+          currentIndex
+        );
+      } finally {
+        setIsDownloading(false);
+      }
+      return;
+    }
+
+    const downloadingEnhanced = activeVariant === 'enhanced' && Boolean(currentEnhancedUri);
+    const targetUri = downloadingEnhanced ? currentEnhancedUri! : currentImage.uri;
+    const targetStoragePath = downloadingEnhanced ? null : currentImage.storagePath;
+
+    setIsDownloading(true);
+    setDownloadStatusMsg('Preparing file...');
+
+    try {
+      const res = await downloadOriginalFile({
+        uri: targetUri,
+        storagePath: targetStoragePath,
+        bucket: currentImage.bucket,
+        fileName:
+          currentImage.fileName ||
+          (downloadingEnhanced
+            ? `${currentImage.title || 'Keepr_Image'}_enhanced`
+            : currentImage.title),
+        title: currentImage.title,
+        mimeType: currentImage.mimeType,
+        onProgress: (p) => {
+          setDownloadStatusMsg(p.message);
+        },
+      });
+
+      if (res.cancelled) {
+        setDownloadStatusMsg(null);
+        return;
+      }
+
+      if (!res.success) {
+        Alert.alert('Download Failed', res.error || 'Could not download original image.');
+        return;
+      }
+
+      const sizeKb = res.byteSize ? `${(res.byteSize / 1024).toFixed(1)} KB` : '';
+      const shortHash = res.sha256 ? res.sha256.slice(0, 10) : '';
+      Alert.alert(
+        downloadingEnhanced ? 'Enhanced Copy Saved' : 'Original Downloaded',
+        `Saved ${res.fileName}${sizeKb ? ` (${sizeKb})` : ''}${shortHash ? `\nVerified SHA-256: ${shortHash}…` : ''}`
+      );
+    } catch (err: any) {
+      Alert.alert('Download Error', err?.message || 'Unexpected error downloading file.');
+    } finally {
+      setIsDownloading(false);
+      setDownloadStatusMsg(null);
+    }
   };
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        return (
-          gestureState.numberActiveTouches >= 2 ||
-          scaleValue.current > 1.05 ||
-          Math.abs(gestureState.dx) > 10 ||
-          Math.abs(gestureState.dy) > 10
-        );
-      },
+      onMoveShouldSetPanResponder: () => true,
 
       onPanResponderGrant: (evt) => {
-        // Double-tap detection
-        const now = Date.now();
-        if (evt.nativeEvent.touches.length === 1 && now - lastTapTime.current < 300) {
-          // Double-tap triggered
-          if (scaleValue.current > 1.1) {
-            // Reset to 1x
-            resetTransform();
+        const touches = evt.nativeEvent.touches;
+        const s = stateRef.current;
+
+        if (touches.length === 2) {
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          s.isPinching = true;
+          s.pinchStartDistance = Math.max(1, Math.hypot(dx, dy));
+          s.pinchStartScale = s.scale;
+          s.pinchStartPanX = s.panX;
+          s.pinchStartPanY = s.panY;
+          s.pinchStartMidX = (touches[0].pageX + touches[1].pageX) / 2;
+          s.pinchStartMidY = (touches[0].pageY + touches[1].pageY) / 2 - s.viewportOffsetY;
+        } else if (touches.length === 1) {
+          s.isPinching = false;
+          s.dragStartPanX = s.panX;
+          s.dragStartPanY = s.panY;
+
+          // Double-tap focal zoom detection
+          const now = Date.now();
+          const tapX = touches[0].pageX;
+          const tapY = touches[0].pageY;
+          const dist = Math.hypot(tapX - s.lastTapX, tapY - s.lastTapY);
+
+          if (now - s.lastTapTime < 300 && dist < 32) {
+            if (typeof __DEV__ !== 'undefined' && __DEV__) {
+              console.log('[HighResImageViewer] Double-tap triggered');
+            }
+            const vp = viewportSizeRef.current;
+            const dims = currentDimsRef.current;
+            const localY = Math.max(0, Math.min(vp.height, tapY - s.viewportOffsetY));
+
+            if (s.scale > 1.15) {
+              applyTransformValues(1, 0, 0, true);
+            } else {
+              const targetScale = Math.min(effectiveMaxZoomRef.current, 2.5);
+              const focalPan = computeFocalZoomPan({
+                currentScale: 1,
+                nextScale: targetScale,
+                currentPanX: 0,
+                currentPanY: 0,
+                focalX: tapX,
+                focalY: localY,
+                containerWidth: vp.width,
+                containerHeight: vp.height,
+                imageWidth: dims?.width,
+                imageHeight: dims?.height,
+              });
+              applyTransformValues(targetScale, focalPan.x, focalPan.y, true);
+            }
+            s.lastTapTime = 0;
           } else {
-            // Zoom in to 2.5x
-            const targetScale = 2.5;
-            scaleValue.current = targetScale;
-            setZoomPercent(Math.round(targetScale * 100));
-
-            Animated.parallel([
-              Animated.spring(scale, {
-                toValue: targetScale,
-                useNativeDriver: true,
-                friction: 6,
-              }),
-              Animated.spring(pan, {
-                toValue: { x: 0, y: 0 },
-                useNativeDriver: true,
-                friction: 6,
-              }),
-            ]).start();
+            s.lastTapTime = now;
+            s.lastTapX = tapX;
+            s.lastTapY = tapY;
           }
-          lastTapTime.current = 0;
-          return;
-        }
-        lastTapTime.current = now;
-
-        // Multi-touch initialization
-        if (evt.nativeEvent.touches.length >= 2) {
-          const t0 = evt.nativeEvent.touches[0];
-          const t1 = evt.nativeEvent.touches[1];
-          initialDistance.current = calcDistance(t0.pageX, t0.pageY, t1.pageX, t1.pageY);
-          initialScale.current = scaleValue.current;
         }
       },
 
       onPanResponderMove: (evt, gestureState) => {
-        // 1. Pinch to zoom (2 fingers)
-        if (evt.nativeEvent.touches.length >= 2) {
-          const t0 = evt.nativeEvent.touches[0];
-          const t1 = evt.nativeEvent.touches[1];
-          const dist = calcDistance(t0.pageX, t0.pageY, t1.pageX, t1.pageY);
+        const touches = evt.nativeEvent.touches;
+        const s = stateRef.current;
+        const vp = viewportSizeRef.current;
+        const dims = currentDimsRef.current;
 
-          if (initialDistance.current && initialDistance.current > 0) {
-            const rawScale = (dist / initialDistance.current) * initialScale.current;
-            const boundedScale = Math.max(0.85, Math.min(maxZoom * 1.25, rawScale));
-            scaleValue.current = boundedScale;
-            scale.setValue(boundedScale);
-            setZoomPercent(Math.round(Math.min(maxZoom, boundedScale) * 100));
+        if (touches.length === 2) {
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          const distance = Math.max(1, Math.hypot(dx, dy));
+
+          if (!s.isPinching || s.pinchStartDistance === 0) {
+            s.isPinching = true;
+            s.pinchStartDistance = distance;
+            s.pinchStartScale = s.scale;
+            s.pinchStartPanX = s.panX;
+            s.pinchStartPanY = s.panY;
+            s.pinchStartMidX = (touches[0].pageX + touches[1].pageX) / 2;
+            s.pinchStartMidY = (touches[0].pageY + touches[1].pageY) / 2 - s.viewportOffsetY;
+            return;
           }
-          return;
-        }
 
-        // 2. Pan while zoomed (1 finger)
-        if (scaleValue.current > 1.05) {
-          const proposedX = panValue.current.x + gestureState.dx;
-          const proposedY = panValue.current.y + gestureState.dy;
-          const clamped = clampPan(proposedX, proposedY, scaleValue.current);
+          const rawScale = s.pinchStartScale * (distance / s.pinchStartDistance);
+          const nextScale = Math.max(1, Math.min(effectiveMaxZoomRef.current, rawScale));
 
-          pan.setValue(clamped);
-          return;
-        }
+          const focalPan = computeFocalZoomPan({
+            currentScale: s.pinchStartScale,
+            nextScale,
+            currentPanX: s.pinchStartPanX,
+            currentPanY: s.pinchStartPanY,
+            focalX: s.pinchStartMidX,
+            focalY: s.pinchStartMidY,
+            containerWidth: vp.width,
+            containerHeight: vp.height,
+            imageWidth: dims?.width,
+            imageHeight: dims?.height,
+          });
 
-        // 3. Swipe down to dismiss (1 finger, scale === 1)
-        if (gestureState.dy > 20 && Math.abs(gestureState.dx) < Math.abs(gestureState.dy)) {
-          pan.setValue({ x: 0, y: gestureState.dy });
+          const curMidX = (touches[0].pageX + touches[1].pageX) / 2;
+          const curMidY = (touches[0].pageY + touches[1].pageY) / 2 - s.viewportOffsetY;
+          const midShiftX = curMidX - s.pinchStartMidX;
+          const midShiftY = curMidY - s.pinchStartMidY;
+
+          const clamped = clampPanOffset(
+            focalPan.x + midShiftX,
+            focalPan.y + midShiftY,
+            nextScale,
+            vp.width,
+            vp.height,
+            dims?.width,
+            dims?.height
+          );
+
+          s.scale = nextScale;
+          s.panX = clamped.x;
+          s.panY = clamped.y;
+
+          scaleAnim.setValue(nextScale);
+          panAnim.setValue(clamped);
+          setZoomPercent(Math.round(nextScale * 100));
+        } else if (touches.length === 1 && !s.isPinching && s.scale > 1.03) {
+          const clamped = clampPanOffset(
+            s.dragStartPanX + gestureState.dx,
+            s.dragStartPanY + gestureState.dy,
+            s.scale,
+            vp.width,
+            vp.height,
+            dims?.width,
+            dims?.height
+          );
+          s.panX = clamped.x;
+          s.panY = clamped.y;
+          panAnim.setValue(clamped);
         }
       },
 
-      onPanResponderRelease: (_, gestureState) => {
-        initialDistance.current = null;
+      onPanResponderRelease: (_evt, gestureState) => {
+        const s = stateRef.current;
 
-        // Settle scale
-        if (scaleValue.current < 1) {
-          resetTransform();
-          return;
-        }
-        if (scaleValue.current > maxZoom) {
-          scaleValue.current = maxZoom;
-          Animated.spring(scale, {
-            toValue: maxZoom,
-            useNativeDriver: true,
-          }).start();
-        }
-
-        // Settle pan
-        if (scaleValue.current > 1.05) {
-          const settledX = panValue.current.x + gestureState.dx;
-          const settledY = panValue.current.y + gestureState.dy;
-          const clamped = clampPan(settledX, settledY, scaleValue.current);
-          panValue.current = clamped;
-
-          Animated.spring(pan, {
-            toValue: clamped,
-            useNativeDriver: true,
-            friction: 7,
-          }).start();
+        if (s.isPinching) {
+          s.isPinching = false;
+          s.dragStartPanX = s.panX;
+          s.dragStartPanY = s.panY;
+          if (s.scale < 1.05) {
+            applyTransformValues(1, 0, 0, true);
+          }
           return;
         }
 
-        // Swipe-down-to-dismiss trigger
-        if (gestureState.dy > 120 && gestureState.vy > 0.4) {
-          onClose();
-          return;
-        }
-
-        // Horizontal swipe across gallery when at 1.0x zoom
-        if (Math.abs(gestureState.dx) > 60 && Math.abs(gestureState.vx) > 0.3) {
-          if (gestureState.dx < 0 && currentIndex < normalizedImages.length - 1) {
-            // Next image
-            setCurrentIndex((i) => i + 1);
-            resetTransform();
+        // Swipe between photos at 1x zoom
+        if (s.scale <= 1.03 && imagesLengthRef.current > 1) {
+          if (gestureState.dx < -60 && currentIndexRef.current < imagesLengthRef.current - 1) {
+            handleGoToIndex(currentIndexRef.current + 1);
             return;
-          } else if (gestureState.dx > 0 && currentIndex > 0) {
-            // Previous image
-            setCurrentIndex((i) => i - 1);
-            resetTransform();
+          }
+          if (gestureState.dx > 60 && currentIndexRef.current > 0) {
+            handleGoToIndex(currentIndexRef.current - 1);
             return;
           }
         }
-
-        // Spring back if not dismissed
-        Animated.spring(pan, {
-          toValue: { x: 0, y: 0 },
-          useNativeDriver: true,
-        }).start();
       },
     })
   ).current;
 
-  const handleNext = () => {
-    if (currentIndex < normalizedImages.length - 1) {
-      setCurrentIndex((i) => i + 1);
-      resetTransform();
-    }
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex((i) => i - 1);
-      resetTransform();
-    }
-  };
-
   if (!visible || !currentImage) return null;
+
+  const isLoading = loadingMap[currentIndex];
+  const hasError = errorMap[currentIndex];
 
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      statusBarTranslucent
       onRequestClose={onClose}
+      statusBarTranslucent
     >
-      <View className="flex-1 bg-black justify-between">
-        <StatusBar barStyle="light-content" backgroundColor="#000000" />
+      <StatusBar barStyle="light-content" backgroundColor="#05080F" />
+      <View style={styles.container}>
+        {/* Top Bar */}
+        <View style={styles.topBar}>
+          <TouchableOpacity
+            onPress={onClose}
+            style={styles.iconButton}
+            activeOpacity={0.7}
+            accessibilityLabel="Close image viewer"
+          >
+            <MaterialIcons name="close" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
 
-        {/* Top Header Bar */}
-        <View
-          style={{ paddingTop: Math.max(insets.top, 16) }}
-          className="px-4 pb-3 flex-row items-center justify-between z-20 bg-black/70"
-        >
-          <View className="flex-1 mr-3">
-            <Text className="text-white text-base font-semibold" numberOfLines={1}>
-              {currentImage.title || 'Image Preview'}
-            </Text>
-            {normalizedImages.length > 1 && (
-              <Text className="text-white/60 text-xs mt-0.5 font-medium">
-                {currentIndex + 1} of {normalizedImages.length}
-                {currentImage.subtitle ? ` · ${currentImage.subtitle}` : ''}
+          <View style={styles.titleContainer}>
+            {currentImage.title ? (
+              <Text style={styles.titleText} numberOfLines={1}>
+                {currentImage.title}
               </Text>
-            )}
+            ) : null}
+            <Text style={styles.subtitleText} numberOfLines={1}>
+              {images.length > 1 ? `${currentIndex + 1} / ${images.length} · ` : ''}
+              {currentDims ? `${currentDims.width}×${currentDims.height} · ` : ''}
+              {activeVariant === 'enhanced' ? 'Enhanced Copy' : 'Original'} · {zoomPercent}%
+            </Text>
           </View>
 
-          <View className="flex-row items-center gap-2">
-            {/* Zoom percentage pill */}
-            {zoomPercent > 100 && (
+          <View style={styles.headerActions}>
+            {enableEnhance && currentImage.uri && (
               <TouchableOpacity
-                onPress={resetTransform}
-                className="bg-white/20 px-2.5 py-1 rounded-full border border-white/20"
-                activeOpacity={0.7}
+                onPress={() => setEnhanceModalVisible(true)}
+                style={styles.iconButton}
+                activeOpacity={0.75}
+                accessibilityLabel="Enhance image copy"
               >
-                <Text className="text-white text-xs font-semibold">{zoomPercent}%</Text>
+                <MaterialIcons name="auto-fix-high" size={20} color="#93C5FD" />
               </TouchableOpacity>
             )}
 
-            {/* Close Button */}
-            <TouchableOpacity
-              onPress={onClose}
-              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center border border-white/10"
-              activeOpacity={0.7}
-              accessibilityLabel="Close image viewer"
-            >
-              <MaterialIcons name="close" size={22} color="#FFFFFF" />
-            </TouchableOpacity>
+            {enableDownload && (
+              <TouchableOpacity
+                onPress={handleDownloadOriginal}
+                style={[styles.iconButton, styles.downloadIconButton]}
+                activeOpacity={0.75}
+                disabled={isDownloading}
+                accessibilityLabel="Download original image"
+              >
+                {isDownloading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <MaterialIcons name="download" size={21} color="#FFFFFF" />
+                )}
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
-        {/* Interactive Viewport */}
+        {/* Download Status Strip */}
+        {downloadStatusMsg && (
+          <View style={styles.statusStrip}>
+            <ActivityIndicator size="small" color="#93C5FD" />
+            <Text style={styles.statusStripText}>{downloadStatusMsg}</Text>
+          </View>
+        )}
+
+        {/* Non-Destructive Original vs Enhanced Copy Switcher (when available) */}
+        {currentEnhancedUri && (
+          <View style={styles.variantBar}>
+            <TouchableOpacity
+              onPress={() => {
+                setActiveVariant('original');
+                resetZoom(false);
+              }}
+              style={[styles.variantPill, activeVariant === 'original' && styles.variantPillActive]}
+            >
+              <Text
+                style={[
+                  styles.variantText,
+                  activeVariant === 'original' && styles.variantTextActive,
+                ]}
+              >
+                Original (Untouched)
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setActiveVariant('enhanced');
+                resetZoom(false);
+              }}
+              style={[styles.variantPill, activeVariant === 'enhanced' && styles.variantPillActive]}
+            >
+              <Text
+                style={[
+                  styles.variantText,
+                  activeVariant === 'enhanced' && styles.variantTextActive,
+                ]}
+              >
+                Enhanced Copy
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Interactive Image Stage */}
         <View
-          className="flex-1 items-center justify-center overflow-hidden"
+          style={styles.stageContainer}
+          onLayout={(e) => {
+            const { width, height, y } = e.nativeEvent.layout;
+            if (width > 0 && height > 0) {
+              setViewportSize({ width, height });
+              stateRef.current.viewportOffsetY = y;
+            }
+          }}
           {...panResponder.panHandlers}
         >
-          {isLoading && !hasError && (
-            <View className="absolute z-10 items-center justify-center">
+          {isLoading && (
+            <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color="#FFFFFF" />
-              <Text className="text-white/70 text-xs mt-2">Loading high-res image...</Text>
+              <Text style={styles.loadingText}>Loading full-resolution original...</Text>
             </View>
           )}
 
           {hasError ? (
-            <View className="items-center justify-center p-6 bg-white/5 rounded-2xl max-w-[280px]">
-              <MaterialIcons name="broken-image" size={44} color="#EF4444" />
-              <Text className="text-white font-semibold text-sm mt-3 text-center">
-                Could not load image
-              </Text>
-              <Text className="text-white/60 text-xs mt-1 text-center">
-                The file may be unavailable or deleted.
-              </Text>
+            <View style={styles.errorContainer}>
+              <MaterialIcons name="broken-image" size={48} color="#94A3B8" />
+              <Text style={styles.errorText}>Unable to render high-resolution image</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setErrorMap((prev) => ({ ...prev, [currentIndex]: false }));
+                  setLoadingMap((prev) => ({ ...prev, [currentIndex]: true }));
+                }}
+                style={styles.retryBtn}
+              >
+                <Text style={styles.retryBtnText}>Retry</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <Animated.View
-              style={{
-                width: SCREEN_WIDTH,
-                height: SCREEN_HEIGHT * 0.75,
-                transform: [
-                  { scale },
-                  { translateX: pan.x },
-                  { translateY: pan.y },
-                ],
-              }}
-              className="items-center justify-center"
+              style={[
+                styles.animatedWrapper,
+                {
+                  transform: [
+                    { translateX: panAnim.x },
+                    { translateY: panAnim.y },
+                    { scale: scaleAnim },
+                  ],
+                },
+              ]}
             >
               <Image
-                source={{ uri: currentImage.uri }}
-                style={{ width: '100%', height: '100%' }}
+                source={{ uri: activeDisplayUri }}
+                style={{ width: viewportSize.width, height: viewportSize.height }}
                 resizeMode="contain"
-                onLoadStart={() => setIsLoading(true)}
-                onLoadEnd={() => setIsLoading(false)}
+                onLoadStart={() =>
+                  setLoadingMap((prev) => ({ ...prev, [currentIndex]: true }))
+                }
+                onLoadEnd={() =>
+                  setLoadingMap((prev) => ({ ...prev, [currentIndex]: false }))
+                }
                 onError={() => {
-                  setIsLoading(false);
-                  setHasError(true);
+                  setLoadingMap((prev) => ({ ...prev, [currentIndex]: false }));
+                  setErrorMap((prev) => ({ ...prev, [currentIndex]: true }));
                 }}
               />
             </Animated.View>
           )}
-
-          {/* Left / Right Gallery Navigation Chevrons */}
-          {normalizedImages.length > 1 && currentIndex > 0 && (
-            <TouchableOpacity
-              onPress={handlePrev}
-              className="absolute left-3 w-10 h-10 rounded-full bg-black/50 items-center justify-center border border-white/20 z-10"
-              activeOpacity={0.7}
-              accessibilityLabel="Previous image"
-            >
-              <MaterialIcons name="chevron-left" size={28} color="#FFFFFF" />
-            </TouchableOpacity>
-          )}
-
-          {normalizedImages.length > 1 && currentIndex < normalizedImages.length - 1 && (
-            <TouchableOpacity
-              onPress={handleNext}
-              className="absolute right-3 w-10 h-10 rounded-full bg-black/50 items-center justify-center border border-white/20 z-10"
-              activeOpacity={0.7}
-              accessibilityLabel="Next image"
-            >
-              <MaterialIcons name="chevron-right" size={28} color="#FFFFFF" />
-            </TouchableOpacity>
-          )}
         </View>
 
-        {/* Bottom Helper Bar */}
-        <View
-          style={{ paddingBottom: Math.max(insets.bottom, 20) }}
-          className="px-4 pt-3 flex-row items-center justify-between z-20 bg-black/70"
-        >
-          {/* Quick Double-Tap / Pinch Guidance */}
-          <Text className="text-white/50 text-[11px] font-medium">
-            Pinch or double-tap to zoom · Drag to pan
-          </Text>
+        {/* Bottom Floating Zoom & Gallery Controls */}
+        <View style={styles.bottomBar}>
+          <View style={styles.controlsPill}>
+            {images.length > 1 && (
+              <TouchableOpacity
+                onPress={() => handleGoToIndex(currentIndex - 1)}
+                disabled={currentIndex === 0}
+                style={[styles.ctrlBtn, currentIndex === 0 && styles.ctrlBtnDisabled]}
+                accessibilityLabel="Previous image"
+              >
+                <MaterialIcons name="chevron-left" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            )}
 
-          {/* Reset Zoom Button */}
-          {zoomPercent > 100 && (
             <TouchableOpacity
-              onPress={resetTransform}
-              className="flex-row items-center gap-1 bg-white/20 px-3 py-1.5 rounded-full"
-              activeOpacity={0.7}
+              onPress={() => zoomByStep(-0.75)}
+              disabled={zoomPercent <= 101}
+              style={[styles.ctrlBtn, zoomPercent <= 101 && styles.ctrlBtnDisabled]}
+              accessibilityLabel="Zoom out"
             >
-              <MaterialIcons name="zoom-out-map" size={14} color="#FFFFFF" />
-              <Text className="text-white text-xs font-semibold">Reset</Text>
+              <MaterialIcons name="remove" size={20} color="#FFFFFF" />
             </TouchableOpacity>
-          )}
+
+            <TouchableOpacity
+              onPress={() => resetZoom(true)}
+              style={styles.zoomReadoutBtn}
+              accessibilityLabel="Reset zoom to fit screen"
+            >
+              <Text style={styles.zoomReadoutText}>
+                {zoomPercent > 102 ? `${zoomPercent}% · Fit` : '100%'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => zoomByStep(0.75)}
+              disabled={zoomPercent >= Math.round(effectiveMaxZoom * 100) - 2}
+              style={[
+                styles.ctrlBtn,
+                zoomPercent >= Math.round(effectiveMaxZoom * 100) - 2 && styles.ctrlBtnDisabled,
+              ]}
+              accessibilityLabel="Zoom in"
+            >
+              <MaterialIcons name="add" size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            {images.length > 1 && (
+              <TouchableOpacity
+                onPress={() => handleGoToIndex(currentIndex + 1)}
+                disabled={currentIndex >= images.length - 1}
+                style={[
+                  styles.ctrlBtn,
+                  currentIndex >= images.length - 1 && styles.ctrlBtnDisabled,
+                ]}
+                accessibilityLabel="Next image"
+              >
+                <MaterialIcons name="chevron-right" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <Text style={styles.hintText}>
+            Pinch, double-tap, or tap + / − to zoom · Drag to inspect details
+          </Text>
         </View>
       </View>
+
+      {/* Non-destructive Enhancement Studio */}
+      {enableEnhance && currentImage?.uri ? (
+        <ImageEnhancementModal
+          visible={enhanceModalVisible}
+          sourceUri={currentImage.uri}
+          fileName={currentImage.fileName || currentImage.title}
+          onClose={() => setEnhanceModalVisible(false)}
+          onSavedEnhanced={(res) => {
+            setEnhancedOverrides((prev) => ({
+              ...prev,
+              [currentIndex]: {
+                uri: res.enhancedUri,
+                fileName: res.enhancedFileName,
+              },
+            }));
+            setActiveVariant('enhanced');
+            resetZoom(false);
+            onEnhanceSaved?.(res, currentImage, currentIndex);
+            Alert.alert(
+              'Enhanced Copy Saved Separately',
+              'Your original file remains untouched. Switched preview to the separate enhanced copy — toggle anytime at the top.'
+            );
+          }}
+        />
+      ) : null}
     </Modal>
   );
 };
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#05080F',
+    justifyContent: 'space-between',
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: Platform.OS === 'ios' ? 52 : 34,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    backgroundColor: 'rgba(5, 8, 15, 0.85)',
+    zIndex: 10,
+  },
+  iconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  downloadIconButton: {
+    backgroundColor: 'rgba(37, 99, 235, 0.85)',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  titleContainer: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+  titleText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  subtitleText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  statusStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+    paddingVertical: 6,
+  },
+  statusStripText: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  variantBar: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 16,
+    padding: 3,
+    marginBottom: 4,
+    zIndex: 10,
+  },
+  variantPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  variantPillActive: {
+    backgroundColor: '#2563EB',
+  },
+  variantText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  variantTextActive: {
+    color: '#FFFFFF',
+  },
+  stageContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  animatedWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 5,
+    gap: 8,
+  },
+  loadingText: {
+    color: '#CBD5E1',
+    fontSize: 12,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 24,
+  },
+  errorText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  retryBtn: {
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  retryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  bottomBar: {
+    paddingHorizontal: 16,
+    paddingBottom: Platform.OS === 'ios' ? 32 : 20,
+    paddingTop: 10,
+    alignItems: 'center',
+    backgroundColor: 'rgba(5, 8, 15, 0.85)',
+    gap: 8,
+    zIndex: 10,
+  },
+  controlsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(30, 41, 59, 0.92)',
+    borderRadius: 24,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    gap: 4,
+  },
+  ctrlBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  ctrlBtnDisabled: {
+    opacity: 0.35,
+  },
+  zoomReadoutBtn: {
+    paddingHorizontal: 12,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  zoomReadoutText: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  hintText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+});

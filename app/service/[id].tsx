@@ -16,6 +16,7 @@ import {
   Modal,
   TextInput,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -23,6 +24,16 @@ import { Header } from '../../src/components/ui/Header';
 import { SereneColors } from '../../src/constants/theme';
 import { useItemStore } from '../../src/store/itemStore';
 import { formatCurrency, formatDate } from '../../src/utils/currency';
+import { HighResImageViewer } from '../../src/components/ui/HighResImageViewer';
+import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
+import {
+  getCanonicalDocumentBucket,
+  isPdfDocument,
+  isStoragePath,
+  resolveDocumentUri,
+  StorageBucket,
+} from '../../src/services/storageService';
+import { downloadOriginalFile } from '../../src/services/originalDownloadService';
 
 export default function ServiceDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -41,6 +52,17 @@ export default function ServiceDetailsScreen() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showItemPickerModal, setShowItemPickerModal] = useState(false);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [busyDocActionId, setBusyDocActionId] = useState<string | null>(null);
+  const [docPreviewModal, setDocPreviewModal] = useState<{
+    docId: string;
+    uri: string;
+    isPdf: boolean;
+    title: string;
+    storagePath?: string | null;
+    bucket: StorageBucket;
+    fileName?: string;
+    enhancedUri?: string | null;
+  } | null>(null);
 
   const filteredItems = useMemo(() => {
     if (!itemSearchQuery.trim()) return items;
@@ -467,33 +489,147 @@ export default function ServiceDetailsScreen() {
             </View>
 
             <View style={{ gap: 8 }}>
-              {attachedDocs.map((doc: any) => (
-                <TouchableOpacity
-                  key={doc.id}
-                  onPress={() => router.push(`/document/${doc.id}` as any)}
-                  activeOpacity={0.8}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: 10,
-                    borderRadius: 10,
-                    backgroundColor: SereneColors.surfaceContainerLow,
-                    borderWidth: 1,
-                    borderColor: SereneColors.subtleBorder,
-                  }}
-                >
-                  <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: SereneColors.onSurface }} numberOfLines={1}>
-                      {doc.title}
-                    </Text>
-                    <Text style={{ fontSize: 10, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
-                      {doc.documentType} {doc.documentDate ? `· ${formatDate(doc.documentDate)}` : ''}
-                    </Text>
+              {attachedDocs.map((doc: any) => {
+                const docIsPdf = isPdfDocument(doc);
+                const bucket = getCanonicalDocumentBucket(doc);
+                const sp =
+                  doc.storagePath && isStoragePath(doc.storagePath)
+                    ? doc.storagePath
+                    : doc.filePath && isStoragePath(doc.filePath)
+                    ? doc.filePath
+                    : doc.fileUrl && isStoragePath(doc.fileUrl)
+                    ? doc.fileUrl
+                    : null;
+                const isBusy = busyDocActionId === doc.id;
+
+                return (
+                  <View
+                    key={doc.id}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: 10,
+                      borderRadius: 10,
+                      backgroundColor: SereneColors.surfaceContainerLow,
+                      borderWidth: 1,
+                      borderColor: SereneColors.subtleBorder,
+                      gap: 8,
+                    }}
+                  >
+                    <TouchableOpacity
+                      onPress={() => router.push(`/document/${doc.id}` as any)}
+                      activeOpacity={0.8}
+                      style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, gap: 10 }}
+                    >
+                      <View
+                        style={{
+                          width: 34,
+                          height: 34,
+                          borderRadius: 8,
+                          backgroundColor: docIsPdf ? '#FEF2F2' : '#EFF6FF',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <MaterialIcons
+                          name={docIsPdf ? 'picture-as-pdf' : 'image'}
+                          size={18}
+                          color={docIsPdf ? '#DC2626' : SereneColors.primary}
+                        />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '600', color: SereneColors.onSurface }} numberOfLines={1}>
+                          {doc.title}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: SereneColors.onSurfaceVariant }} numberOfLines={1}>
+                          {doc.documentType} {doc.documentDate ? `· ${formatDate(doc.documentDate)}` : ''}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <TouchableOpacity
+                        disabled={isBusy}
+                        onPress={async () => {
+                          setBusyDocActionId(doc.id);
+                          try {
+                            const resolved = await resolveDocumentUri(doc);
+                            if (!resolved) {
+                              Alert.alert('File Unavailable', 'Could not locate original file for preview.');
+                              return;
+                            }
+                            setDocPreviewModal({
+                              docId: doc.id,
+                              uri: resolved,
+                              isPdf: docIsPdf,
+                              title: doc.title,
+                              storagePath: sp,
+                              bucket,
+                              fileName: doc.title,
+                              enhancedUri: doc.enhancedPath,
+                            });
+                          } finally {
+                            setBusyDocActionId(null);
+                          }
+                        }}
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          backgroundColor: 'rgba(17,80,134,0.1)',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        accessibilityLabel="Preview attached document"
+                      >
+                        {isBusy ? (
+                          <ActivityIndicator size="small" color={SereneColors.primary} />
+                        ) : (
+                          <MaterialIcons name="visibility" size={16} color={SereneColors.primary} />
+                        )}
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        disabled={isBusy}
+                        onPress={async () => {
+                          setBusyDocActionId(doc.id);
+                          try {
+                            const resolved = await resolveDocumentUri(doc);
+                            const dl = await downloadOriginalFile({
+                              uri: resolved,
+                              storagePath: sp,
+                              bucket,
+                              fileName: doc.title,
+                              title: doc.title,
+                              mimeType: docIsPdf ? 'application/pdf' : doc.mimeType,
+                              isPdf: docIsPdf,
+                            });
+                            if (!dl.cancelled && dl.success) {
+                              Alert.alert('Original Downloaded', `Saved "${dl.fileName}".`);
+                            } else if (!dl.cancelled && !dl.success) {
+                              Alert.alert('Download Failed', dl.error || 'Could not download file.');
+                            }
+                          } finally {
+                            setBusyDocActionId(null);
+                          }
+                        }}
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          backgroundColor: 'rgba(17,80,134,0.1)',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        accessibilityLabel="Download attached document"
+                      >
+                        <MaterialIcons name="download" size={16} color={SereneColors.primary} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                  <MaterialIcons name="chevron-right" size={18} color={SereneColors.outline} style={{ flexShrink: 0 }} />
-                </TouchableOpacity>
-              ))}
+                );
+              })}
             </View>
           </View>
         )}
@@ -745,6 +881,36 @@ export default function ServiceDetailsScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+      {docPreviewModal && docPreviewModal.isPdf ? (
+        <UniversalPdfViewer
+          visible={Boolean(docPreviewModal)}
+          pdfUri={docPreviewModal.uri}
+          storagePath={docPreviewModal.storagePath}
+          bucket={docPreviewModal.bucket}
+          fileName={docPreviewModal.fileName}
+          title={docPreviewModal.title}
+          onClose={() => setDocPreviewModal(null)}
+        />
+      ) : (
+        <HighResImageViewer
+          visible={Boolean(docPreviewModal)}
+          images={
+            docPreviewModal
+              ? [
+                  {
+                    uri: docPreviewModal.uri,
+                    title: docPreviewModal.title,
+                    storagePath: docPreviewModal.storagePath,
+                    bucket: docPreviewModal.bucket,
+                    fileName: docPreviewModal.fileName,
+                    enhancedUri: docPreviewModal.enhancedUri,
+                  },
+                ]
+              : []
+          }
+          onClose={() => setDocPreviewModal(null)}
+        />
+      )}
     </View>
   );
 }

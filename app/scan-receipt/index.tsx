@@ -2171,6 +2171,7 @@ export default function AIReceiptScannerScreen() {
                     {
                       uri: (capturedImageUri || extractedData?.receiptUri)!,
                       title: extractedData?.receiptImageName || capturedImageName || 'Receipt Image',
+                      fileName: extractedData?.receiptImageName || capturedImageName || 'Receipt_Image',
                     },
                   ]
                 : []
@@ -3936,6 +3937,7 @@ export default function AIReceiptScannerScreen() {
                   {
                     uri: (capturedImageUri || extractedData?.receiptUri)!,
                     title: extractedData?.receiptImageName || capturedImageName || 'Receipt Image',
+                    fileName: extractedData?.receiptImageName || capturedImageName || 'Receipt_Image',
                   },
                 ]
               : []
@@ -3962,6 +3964,7 @@ export default function AIReceiptScannerScreen() {
         <UniversalPdfViewer
           visible={showImageModal}
           pdfUri={capturedImageUri || extractedData?.receiptUri || ''}
+          fileName={extractedData?.receiptImageName || capturedImageName || 'PDF_Receipt'}
           title={extractedData?.receiptImageName || capturedImageName || 'PDF Receipt'}
           onClose={() => setShowImageModal(false)}
         />

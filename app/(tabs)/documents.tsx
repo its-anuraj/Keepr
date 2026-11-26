@@ -88,7 +88,9 @@ const DocumentCardThumbnail = React.memo(function DocumentCardThumbnail({
   // Always invoke resolution with the actual document object.
   // extractDocumentImageCandidates will prioritize thumbnailPath if available,
   // resolve image files, and safely return null candidates for PDFs without image previews.
-  const { resolvedUri, isLoading, retry } = useResolvedDocumentImage(item);
+  const { resolvedUri, isLoading, retry } = useResolvedDocumentImage(item, undefined, {
+    preferThumbnail: true,
+  });
 
   useEffect(() => {
     setImageError(false);

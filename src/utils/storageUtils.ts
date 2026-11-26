@@ -639,6 +639,22 @@ export function extractDocumentImageCandidates(
   return { storagePath, remoteUrl, localUri };
 }
 
+/**
+ * Extracts ONLY full-resolution original asset candidates for a VaultDocument,
+ * deliberately skipping lightweight list `thumbnailPath` entries so viewers
+ * and downloaders never zoom or save a compressed thumbnail.
+ */
+export function extractOriginalDocumentCandidates(
+  docOrPath?: any,
+  fallbackLocalUri?: string | null
+): DocumentImageCandidates {
+  if (!docOrPath || typeof docOrPath === 'string') {
+    return extractDocumentImageCandidates(docOrPath, fallbackLocalUri);
+  }
+  const withoutThumb = { ...docOrPath, thumbnailPath: null };
+  return extractDocumentImageCandidates(withoutThumb, fallbackLocalUri);
+}
+
 export interface CanonicalizeOptions {
   receiptPath?: string | null;
   receiptUri?: string | null;

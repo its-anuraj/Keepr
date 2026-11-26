@@ -16,7 +16,7 @@ import {
   isImageDocument,
   isPdfDocument,
 } from '../utils/storageUtils';
-import { getCanonicalReceiptUri } from './receiptFileService';
+import { getCanonicalDocumentUri, getCanonicalReceiptUri, safeNormalizeRouteUri } from './receiptFileService';
 import { readUriBytesAndBase64Safely } from './pdfFileAccessService';
 import { detectFormatFromBytes } from '../utils/imageIntegrity';
 import type {
@@ -1226,28 +1226,21 @@ export async function cloudUpsertItem(item: Item, userId: string): Promise<strin
         let uploadedPath: string | null = null;
         try {
           const canonical = getCanonicalReceiptUri(candidate) || candidate;
-          const fileInfo = await FileSystem.getInfoAsync(canonical).catch(() => null);
-          if (fileInfo?.exists && !fileInfo.isDirectory) {
-            const ext = canonical.toLowerCase().endsWith('.png') ? '.png' : '.jpg';
+          const safeRead = await readUriBytesAndBase64Safely(canonical);
+          if (safeRead.success && safeRead.bytes.length > 0) {
+            const detected = detectFormatFromBytes(safeRead.bytes);
+            const ext = detected.extension;
             const userScopedPath = `${userId}/items/${validItemId}/photo_${i}${ext}`;
-            const base64 = await FileSystem.readAsStringAsync(canonical, {
-              encoding: FileSystem.EncodingType.Base64,
-            });
-            const binaryString = atob(base64);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let b = 0; b < binaryString.length; b++) {
-              bytes[b] = binaryString.charCodeAt(b);
-            }
             const { error: uploadError } = await supabase.storage
               .from(BUCKET_ITEM_IMAGES)
-              .upload(userScopedPath, bytes, { contentType: ext === '.png' ? 'image/png' : 'image/jpeg', upsert: true });
+              .upload(userScopedPath, safeRead.bytes, { contentType: detected.mimeType, upsert: true });
 
             if (!uploadError) {
               uploadedPath = userScopedPath;
               if (!effectiveImageStoragePath || i === 0) {
                 effectiveImageStoragePath = userScopedPath;
               }
-              console.log(`[CloudSync] Product photo uploaded to ${BUCKET_ITEM_IMAGES}/${userScopedPath}`);
+              console.log(`[CloudSync] Product photo uploaded to ${BUCKET_ITEM_IMAGES}/${userScopedPath} (${detected.mimeType})`);
             }
           }
         } catch (photoUploadErr) {
@@ -1367,40 +1360,39 @@ export async function cloudUpsertDocument(doc: VaultDocument, userId: string): P
     const validDocId = isValidUUID(doc.id) ? doc.id : generateUUID();
     let effectiveStoragePath = doc.storagePath;
 
-    // Check if we should upload local file to Supabase private storage
-    const localUri = doc.filePath?.startsWith('file:')
-      ? doc.filePath
-      : doc.fileUrl?.startsWith('file:')
-      ? doc.fileUrl
-      : null;
+    // Check if we should upload local file (front and back) to Supabase private storage
+    let effectiveStoragePathBack = doc.storagePathBack;
+    const rawLocalFront = doc.filePath || doc.fileUrl || '';
+    const normLocalFront = rawLocalFront ? safeNormalizeRouteUri(rawLocalFront) : '';
+    const isLocalFront = Boolean(
+      normLocalFront &&
+      !isStoragePath(normLocalFront) &&
+      (normLocalFront.startsWith('file:') || normLocalFront.startsWith('content:') || normLocalFront.startsWith('/') || normLocalFront.startsWith('vault_documents/') || normLocalFront.startsWith('vault_receipts/'))
+    );
 
-    if (localUri && (!effectiveStoragePath || effectiveStoragePath.startsWith('file:') || effectiveStoragePath.startsWith('vault_documents/'))) {
+    if (isLocalFront && (!effectiveStoragePath || effectiveStoragePath.startsWith('file:') || effectiveStoragePath.startsWith('vault_documents/'))) {
       try {
-        const fileInfo = await FileSystem.getInfoAsync(localUri).catch(() => null);
-        if (fileInfo?.exists && !fileInfo.isDirectory) {
-          const ext = localUri.toLowerCase().endsWith('.pdf') ? '.pdf' : '.jpg';
+        const canonicalFront = getCanonicalDocumentUri(normLocalFront) || normLocalFront;
+        const safeRead = await readUriBytesAndBase64Safely(canonicalFront, {
+          fileName: doc.title,
+          mimeType: doc.mimeType,
+        });
+        if (safeRead.success && safeRead.bytes.length > 0) {
+          const detected = detectFormatFromBytes(safeRead.bytes);
+          const ext = detected.extension;
           const bucket = doc.itemId ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS;
           const userScopedPath = doc.itemId
             ? `${userId}/items/${doc.itemId}/doc_${validDocId}${ext}`
             : `${userId}/vault/${validDocId}${ext}`;
-
-          const base64 = await FileSystem.readAsStringAsync(localUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const binaryString = atob(base64);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          const mimeType = doc.mimeType || (ext === '.pdf' ? 'application/pdf' : 'image/jpeg');
+          const mimeType = detected.format !== 'unknown' ? detected.mimeType : (doc.mimeType || 'image/jpeg');
 
           const { error: uploadError } = await supabase.storage
             .from(bucket)
-            .upload(userScopedPath, bytes, { contentType: mimeType, upsert: true });
+            .upload(userScopedPath, safeRead.bytes, { contentType: mimeType, upsert: true });
 
           if (!uploadError) {
             effectiveStoragePath = userScopedPath;
-            console.log(`[CloudSync] Document media uploaded to ${bucket}/${userScopedPath}`);
+            console.log(`[CloudSync] Document media uploaded to ${bucket}/${userScopedPath} (${mimeType})`);
           }
         }
       } catch (uploadErr) {
@@ -1408,7 +1400,46 @@ export async function cloudUpsertDocument(doc: VaultDocument, userId: string): P
       }
     }
 
-    const payload = mapDocumentToDbRow({ ...doc, id: validDocId, storagePath: effectiveStoragePath }, userId);
+    // Upload back-side photo if present locally
+    const rawLocalBack = doc.filePathBack || doc.fileUrlBack || '';
+    const normLocalBack = rawLocalBack ? safeNormalizeRouteUri(rawLocalBack) : '';
+    const isLocalBack = Boolean(
+      normLocalBack &&
+      !isStoragePath(normLocalBack) &&
+      (normLocalBack.startsWith('file:') || normLocalBack.startsWith('content:') || normLocalBack.startsWith('/') || normLocalBack.startsWith('vault_documents/') || normLocalBack.startsWith('vault_receipts/'))
+    );
+    if (isLocalBack && (!effectiveStoragePathBack || !isStoragePath(effectiveStoragePathBack))) {
+      try {
+        const canonicalBack = getCanonicalDocumentUri(normLocalBack) || normLocalBack;
+        const safeBack = await readUriBytesAndBase64Safely(canonicalBack);
+        if (safeBack.success && safeBack.bytes.length > 0) {
+          const detectedBack = detectFormatFromBytes(safeBack.bytes);
+          const bucket = doc.itemId ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS;
+          const backPath = doc.itemId
+            ? `${userId}/items/${doc.itemId}/doc_${validDocId}_back${detectedBack.extension}`
+            : `${userId}/vault/${validDocId}_back${detectedBack.extension}`;
+          const { error: backUploadErr } = await supabase.storage
+            .from(bucket)
+            .upload(backPath, safeBack.bytes, { contentType: detectedBack.mimeType, upsert: true });
+          if (!backUploadErr) {
+            effectiveStoragePathBack = backPath;
+            console.log(`[CloudSync] Document back photo uploaded to ${bucket}/${backPath}`);
+          }
+        }
+      } catch (backErr) {
+        console.warn('[CloudSync] Document back photo upload notice:', backErr);
+      }
+    }
+
+    const payload = mapDocumentToDbRow(
+      {
+        ...doc,
+        id: validDocId,
+        storagePath: effectiveStoragePath,
+        storagePathBack: effectiveStoragePathBack,
+      },
+      userId
+    );
     const { error } = await supabase
       .from('documents')
       .upsert(payload, { onConflict: 'id' });
@@ -1417,7 +1448,10 @@ export async function cloudUpsertDocument(doc: VaultDocument, userId: string): P
       return error.message;
     }
 
-    if (effectiveStoragePath && isStoragePath(effectiveStoragePath) && effectiveStoragePath !== doc.storagePath) {
+    if (
+      (effectiveStoragePath && isStoragePath(effectiveStoragePath) && effectiveStoragePath !== doc.storagePath) ||
+      (effectiveStoragePathBack && isStoragePath(effectiveStoragePathBack) && effectiveStoragePathBack !== doc.storagePathBack)
+    ) {
       try {
         const { useItemStore } = require('../store/itemStore');
         const currentDocs = useItemStore.getState().documents;
@@ -1428,9 +1462,12 @@ export async function cloudUpsertDocument(doc: VaultDocument, userId: string): P
               d.id === validDocId
                 ? {
                     ...d,
-                    storagePath: effectiveStoragePath,
-                    filePath: effectiveStoragePath,
-                    fileUrl: effectiveStoragePath,
+                    storagePath: effectiveStoragePath || d.storagePath,
+                    filePath: effectiveStoragePath || d.filePath,
+                    fileUrl: effectiveStoragePath || d.fileUrl,
+                    storagePathBack: effectiveStoragePathBack || d.storagePathBack,
+                    filePathBack: effectiveStoragePathBack || d.filePathBack,
+                    fileUrlBack: effectiveStoragePathBack || d.fileUrlBack,
                   }
                 : d
             ),
@@ -1461,35 +1498,26 @@ export async function cloudUpsertReceipt(receipt: Receipt, userId: string): Prom
     if (localUri && (!effectiveStoragePath || !isStoragePath(effectiveStoragePath))) {
       try {
         const canonical = getCanonicalReceiptUri(localUri) || localUri;
-        const fileInfo = await FileSystem.getInfoAsync(canonical).catch(() => null);
-        if (fileInfo?.exists && !fileInfo.isDirectory) {
-          const ext = canonical.toLowerCase().endsWith('.pdf')
-            ? '.pdf'
-            : canonical.toLowerCase().endsWith('.png')
-            ? '.png'
-            : '.jpg';
+        const safeRead = await readUriBytesAndBase64Safely(canonical, {
+          fileName: receipt.fileName,
+          mimeType: receipt.mimeType,
+        });
+        if (safeRead.success && safeRead.bytes.length > 0) {
+          const detected = detectFormatFromBytes(safeRead.bytes);
+          const ext = detected.extension;
           const primaryItemId = (receipt.itemIds && receipt.itemIds.length > 0) ? receipt.itemIds[0] : null;
           const userScopedPath = primaryItemId
             ? `${userId}/items/${primaryItemId}/receipt_${receipt.id}${ext}`
             : `${userId}/receipts/receipt_${receipt.id}${ext}`;
-
-          const base64 = await FileSystem.readAsStringAsync(canonical, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const binaryString = atob(base64);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          const mimeType = receipt.mimeType || (ext === '.pdf' ? 'application/pdf' : ext === '.png' ? 'image/png' : 'image/jpeg');
+          const mimeType = detected.format !== 'unknown' ? detected.mimeType : (receipt.mimeType || 'image/jpeg');
 
           const { error: uploadError } = await supabase.storage
             .from(BUCKET_ITEM_DOCUMENTS)
-            .upload(userScopedPath, bytes, { contentType: mimeType, upsert: true });
+            .upload(userScopedPath, safeRead.bytes, { contentType: mimeType, upsert: true });
 
           if (!uploadError) {
             effectiveStoragePath = userScopedPath;
-            console.log(`[CloudSync] Receipt media uploaded to ${BUCKET_ITEM_DOCUMENTS}/${userScopedPath}`);
+            console.log(`[CloudSync] Receipt media uploaded to ${BUCKET_ITEM_DOCUMENTS}/${userScopedPath} (${mimeType})`);
           }
         }
       } catch (uploadErr) {

@@ -9,6 +9,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import {
   detectFormatFromBase64Prefix,
+  detectFormatFromBytes,
   detectFormatFromUriOrName,
 } from '../utils/imageIntegrity';
 import {
@@ -544,9 +545,26 @@ export async function persistFileToVault(
     }
 
     const fromBase64 = detectFormatFromBase64Prefix(base64Fallback);
+    let fromSourceBytes = null as ReturnType<typeof detectFormatFromBytes> | null;
+    if (!fromBase64 && cleanSource && !cleanSource.startsWith('http')) {
+      try {
+        const probe = await readUriBytesAndBase64Safely(cleanSource, {
+          fileName: preferredFileName,
+        }).catch(() => null);
+        if (probe?.success && probe.bytes.length >= 12) {
+          const byteDetected = detectFormatFromBytes(probe.bytes);
+          if (byteDetected.format !== 'unknown') {
+            fromSourceBytes = byteDetected;
+          }
+        }
+      } catch {}
+    }
+    const cleanSourceClean = cleanSource.split(/[?#]/)[0].toLowerCase();
+    const hasExplicitSourceExt = /\.(png|webp|heic|pdf|jpg|jpeg)$/i.test(cleanSourceClean);
     const detected =
       fromBase64 ||
-      detectFormatFromUriOrName(preferredFileName || cleanSource);
+      fromSourceBytes ||
+      detectFormatFromUriOrName(hasExplicitSourceExt ? cleanSource : (preferredFileName || cleanSource));
     let ext = detected.extension;
 
     const defaultBase = folder === 'vault_documents' ? 'document' : 'receipt';

@@ -53,7 +53,7 @@ export const ItemCard: React.FC<ItemCardProps> = ({
 }) => {
   const [imageError, setImageError] = React.useState(false);
 
-  const { resolvedUri, retry } = useResolvedItemImage(item);
+  const { resolvedUri, retry } = useResolvedItemImage(item, undefined, { preferThumbnail: true });
 
   React.useEffect(() => {
     setImageError(false);

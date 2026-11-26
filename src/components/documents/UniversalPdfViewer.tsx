@@ -1,465 +1,634 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+/**
+ * KEEPR DIGITAL OWNERSHIP VAULT: UniversalPdfViewer Component
+ *
+ * Enterprise PDF reader supporting:
+ * - Authentic PDF.js canvas rendering WITHOUT CSS max-width clamp (crisp DPR-scaled zooming up to 400%)
+ * - True Fit-to-Width vs Fit-to-Page toggle + floating Zoom Out (-), Zoom In (+), Reset
+ * - Smooth vertical multi-page scroll & zoomed horizontal/vertical panning + two-finger pinch zoom
+ * - Original PDF binary download via originalDownloadService (NEVER exports canvas PNGs!)
+ * - Direct integration with Document OCR extraction & Android BackHandler
+ */
+
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
   Modal,
-  View,
+  Platform,
+  StatusBar,
+  StyleSheet,
   Text,
   TouchableOpacity,
-  ActivityIndicator,
-  StyleSheet,
-  Alert,
-  Platform,
-  BackHandler,
-  Dimensions,
+  View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Sharing from 'expo-sharing';
+import {
+  readUriBytesAndBase64Safely,
+} from '../../services/pdfFileAccessService';
+import {
+  downloadOriginalFile,
+} from '../../services/originalDownloadService';
+import type { StorageBucket } from '../../services/storageService';
 import { SereneColors } from '../../constants/theme';
-import { readUriBytesAndBase64Safely } from '../../services/pdfFileAccessService';
 
 export interface UniversalPdfViewerProps {
   visible: boolean;
   pdfUri: string;
-  title: string;
+  storagePath?: string | null;
+  bucket?: StorageBucket | null;
+  fileName?: string | null;
+  title?: string;
   onClose: () => void;
   onScanOcr?: () => void;
+}
+
+function buildPdfShellHtml(): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background-color: #0b1120;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #scroller {
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x pan-y;
+      padding: 12px 8px 36px 8px;
+    }
+    #pdf-pages {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 100%;
+      gap: 14px;
+    }
+    .page-frame {
+      background: #ffffff;
+      border-radius: 4px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .page-frame canvas {
+      display: block;
+    }
+    #status {
+      color: #cbd5e1;
+      text-align: center;
+      padding: 48px 18px;
+      font-size: 14px;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  </script>
+</head>
+<body>
+  <div id="scroller">
+    <div id="status">Loading document...</div>
+    <div id="pdf-pages"></div>
+  </div>
+  <script>
+    var pdfDoc = null;
+    var base64Buffer = [];
+    var currentZoom = 1.0;
+    var currentFitMode = 'width';
+    var page1BaseWidth = 612;
+    var page1BaseHeight = 792;
+    var renderEpoch = 0;
+
+    function postMsg(obj) {
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+      }
+    }
+
+    window.resetPdfPayload = function() {
+      base64Buffer = [];
+    };
+
+    window.pushPdfBase64Chunk = function(chunk) {
+      if (chunk) base64Buffer.push(chunk);
+    };
+
+    function computeEffectiveScale(zoomFactor, fitMode) {
+      var scroller = document.getElementById('scroller');
+      var vw = Math.max(280, (scroller ? scroller.clientWidth : window.innerWidth) - 20);
+      var vh = Math.max(320, (scroller ? scroller.clientHeight : window.innerHeight) - 36);
+      var widthFit = vw / Math.max(1, page1BaseWidth);
+      var pageFit = Math.min(widthFit, vh / Math.max(1, page1BaseHeight));
+      var baseScale = fitMode === 'page' ? pageFit : widthFit;
+      return Math.max(0.25, Math.min(6.0, baseScale * zoomFactor));
+    }
+
+    async function renderAllPages(zoomFactor, fitMode) {
+      if (!pdfDoc) return;
+      var epoch = ++renderEpoch;
+      var container = document.getElementById('pdf-pages');
+      container.innerHTML = '';
+
+      var effectiveScale = computeEffectiveScale(zoomFactor, fitMode);
+      var dpr = Math.min(2.5, window.devicePixelRatio || 1.5);
+      // Keep zoomed canvas crisp without exceeding Android GPU texture limits
+      var backingScale = Math.min(3.5, Math.max(1.25, dpr * Math.min(1.8, Math.max(1, zoomFactor * 0.85))));
+
+      for (var p = 1; p <= pdfDoc.numPages; p++) {
+        if (epoch !== renderEpoch) return;
+        var page = await pdfDoc.getPage(p);
+        var viewport = page.getViewport({ scale: effectiveScale });
+
+        var frame = document.createElement('div');
+        frame.className = 'page-frame';
+        frame.id = 'pdf-page-' + p;
+        frame.style.width = Math.round(viewport.width) + 'px';
+        frame.style.height = Math.round(viewport.height) + 'px';
+
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width * backingScale);
+        canvas.height = Math.round(viewport.height * backingScale);
+        canvas.style.width = Math.round(viewport.width) + 'px';
+        canvas.style.height = Math.round(viewport.height) + 'px';
+
+        frame.appendChild(canvas);
+        container.appendChild(frame);
+
+        var ctx = canvas.getContext('2d');
+        ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+        await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+      }
+
+      postMsg({
+        type: 'PDF_RENDERED',
+        totalPages: pdfDoc.numPages,
+        zoom: zoomFactor,
+        fitMode: fitMode
+      });
+    }
+
+    window.commitPdfBase64AndRender = async function(initialFitMode) {
+      try {
+        currentFitMode = initialFitMode || 'width';
+        currentZoom = 1.0;
+        var rawB64 = base64Buffer.join('');
+        base64Buffer = [];
+        var binaryStr = atob(rawB64);
+        var bytes = new Uint8Array(binaryStr.length);
+        for (var i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+
+        pdfDoc = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        var firstPage = await pdfDoc.getPage(1);
+        var vp1 = firstPage.getViewport({ scale: 1.0 });
+        page1BaseWidth = vp1.width;
+        page1BaseHeight = vp1.height;
+
+        document.getElementById('status').style.display = 'none';
+        postMsg({ type: 'PDF_LOADED', totalPages: pdfDoc.numPages });
+        await renderAllPages(currentZoom, currentFitMode);
+      } catch (err) {
+        var msg = (err && err.message) ? err.message : 'PDF rendering error';
+        document.getElementById('status').innerText = 'Could not render PDF: ' + msg;
+        postMsg({ type: 'PDF_ERROR', message: msg });
+      }
+    };
+
+    window.setViewerScale = function(nextZoom, nextFitMode) {
+      currentZoom = Math.max(0.5, Math.min(4.0, nextZoom || 1.0));
+      if (nextFitMode) currentFitMode = nextFitMode;
+      renderAllPages(currentZoom, currentFitMode);
+    };
+
+    window.scrollToPage = function(pageNum) {
+      var el = document.getElementById('pdf-page-' + pageNum);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    };
+
+    // Track two-finger pinch zoom inside viewport cleanly
+    (function setupPinch() {
+      var scroller = document.getElementById('scroller');
+      var pinchStartDist = 0;
+      var pinchStartZoom = 1.0;
+      var pinchTimer = null;
+
+      scroller.addEventListener('touchstart', function(e) {
+        if (e.touches && e.touches.length === 2) {
+          var dx = e.touches[0].clientX - e.touches[1].clientX;
+          var dy = e.touches[0].clientY - e.touches[1].clientY;
+          pinchStartDist = Math.hypot(dx, dy);
+          pinchStartZoom = currentZoom;
+        }
+      }, { passive: true });
+
+      scroller.addEventListener('touchmove', function(e) {
+        if (e.touches && e.touches.length === 2 && pinchStartDist > 10) {
+          var dx = e.touches[0].clientX - e.touches[1].clientX;
+          var dy = e.touches[0].clientY - e.touches[1].clientY;
+          var dist = Math.hypot(dx, dy);
+          var candidate = Math.max(0.5, Math.min(4.0, pinchStartZoom * (dist / pinchStartDist)));
+          currentZoom = Math.round(candidate * 100) / 100;
+          if (pinchTimer) clearTimeout(pinchTimer);
+          pinchTimer = setTimeout(function() {
+            renderAllPages(currentZoom, currentFitMode);
+            postMsg({ type: 'PDF_ZOOM_SYNC', zoom: currentZoom });
+          }, 120);
+        }
+      }, { passive: true });
+    })();
+  </script>
+</body>
+</html>`;
 }
 
 export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
   visible,
   pdfUri,
-  title,
+  storagePath,
+  bucket,
+  fileName,
+  title = 'PDF Document',
   onClose,
   onScanOcr,
 }) => {
-  const insets = useSafeAreaInsets();
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [pdfBase64, setPdfBase64] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [zoomLevel, setZoomLevel] = useState(1.0);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const webViewRef = useRef<WebView>(null);
+  const webViewRef = useRef<WebView | null>(null);
+  const shellHtml = useRef(buildPdfShellHtml()).current;
 
-  // Android Back Button
+  const [isLoading, setIsLoading] = useState(true);
+  const [webReady, setWebReady] = useState(false);
+  const [pdfBase64, setPdfBase64] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [totalPages, setTotalPages] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [zoomScale, setZoomScale] = useState(1.0);
+  const [fitMode, setFitMode] = useState<'width' | 'page'>('width');
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadStatusMsg, setDownloadStatusMsg] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!visible) return;
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+    if (!visible) {
+      setWebReady(false);
+      return;
+    }
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       onClose();
       return true;
     });
-    return () => backHandler.remove();
+    return () => sub.remove();
   }, [visible, onClose]);
 
-  // Read local PDF or fetch remote signed URL to Base64 for guaranteed offline & cross-platform rendering
   useEffect(() => {
-    if (!visible || !pdfUri) {
-      setPdfBase64(null);
-      setIsLoading(true);
-      setLoadError(null);
-      return;
-    }
+    if (!visible || !pdfUri) return;
 
-    let isMounted = true;
+    let active = true;
+    setIsLoading(true);
+    setErrorMsg(null);
+    setPdfBase64(null);
+    setCurrentPage(1);
+    setZoomScale(1.0);
+    setFitMode('width');
+    setDownloadStatusMsg(null);
 
-    async function loadPdfData() {
-      setIsLoading(true);
-      setLoadError(null);
+    const loadPdfBytes = async () => {
       try {
-        let b64: string;
-        if (pdfUri.startsWith('http://') || pdfUri.startsWith('https://')) {
-          const tempFile = `${FileSystem.cacheDirectory}temp_pdf_viewer_${Date.now()}.pdf`;
-          const downloadRes = await FileSystem.downloadAsync(pdfUri, tempFile);
-          if (downloadRes.status !== 200) {
-            throw new Error(`Failed to load PDF (HTTP ${downloadRes.status})`);
-          }
-          const safeRemote = await readUriBytesAndBase64Safely(tempFile, {
-            mimeType: 'application/pdf',
-            validateAsPdf: true,
-          });
-          FileSystem.deleteAsync(tempFile, { idempotent: true }).catch(() => {});
-          if (!safeRemote.success || !safeRemote.base64) {
-            throw new Error(safeRemote.errorMessage || 'Downloaded PDF could not be read.');
-          }
-          b64 = safeRemote.base64;
-        } else {
-          const safeLocal = await readUriBytesAndBase64Safely(pdfUri, {
-            fileName: title,
-            mimeType: 'application/pdf',
-            validateAsPdf: true,
-          });
-          if (!safeLocal.success || !safeLocal.base64) {
-            throw new Error(safeLocal.errorMessage || 'PDF file could not be read from device storage.');
-          }
-          b64 = safeLocal.base64;
+        if (pdfUri.startsWith('data:application/pdf;base64,')) {
+          if (active) setPdfBase64(pdfUri.split(',')[1]);
+          return;
         }
 
-        if (isMounted) {
-          setPdfBase64(b64);
-          setIsLoading(false);
+        const safeRead = await readUriBytesAndBase64Safely(pdfUri, {
+          mimeType: 'application/pdf',
+          validateAsPdf: true,
+          fileName: fileName || title,
+        });
+
+        if (safeRead.success && safeRead.base64) {
+          if (active) setPdfBase64(safeRead.base64);
+        } else {
+          throw new Error(safeRead.errorMessage || 'Could not read authentic PDF document bytes.');
         }
       } catch (err: any) {
-        console.warn('[UniversalPdfViewer] Load error:', err);
-        if (isMounted) {
-          setLoadError(err?.message || 'Could not load PDF document.');
+        if (active) {
+          setErrorMsg(err?.message || 'Unable to load PDF file.');
           setIsLoading(false);
         }
       }
-    }
-
-    loadPdfData();
-
-    return () => {
-      isMounted = false;
     };
-  }, [visible, pdfUri]);
 
-  // Handle messages from embedded PDF.js
-  const handleMessage = useCallback((event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'PAGE_INFO') {
-        setCurrentPage(data.page || 1);
-        setTotalPages(data.totalPages || 1);
-      } else if (data.type === 'LOAD_SUCCESS') {
-        setTotalPages(data.totalPages || 1);
-        setCurrentPage(1);
-        setIsLoading(false);
-      } else if (data.type === 'LOAD_ERROR') {
-        setLoadError(data.error || 'Failed to parse PDF document.');
-        setIsLoading(false);
-      }
-    } catch {
+    loadPdfBytes();
+    return () => {
+      active = false;
+    };
+  }, [visible, pdfUri, fileName, title]);
+
+  // Stream base64 into loaded WebView cleanly without giant template string duplication
+  useEffect(() => {
+    if (!visible || !webReady || !pdfBase64 || !webViewRef.current) return;
+
+    const CHUNK_SIZE = 256 * 1024;
+    webViewRef.current.injectJavaScript('window.resetPdfPayload(); true;');
+    for (let i = 0; i < pdfBase64.length; i += CHUNK_SIZE) {
+      const slice = pdfBase64.slice(i, i + CHUNK_SIZE);
+      webViewRef.current.injectJavaScript(`window.pushPdfBase64Chunk(${JSON.stringify(slice)}); true;`);
     }
-  }, []);
+    webViewRef.current.injectJavaScript(
+      `window.commitPdfBase64AndRender(${JSON.stringify(fitMode)}); true;`
+    );
+  }, [visible, webReady, pdfBase64]);
 
-  const sendWebviewCommand = (action: string, payload?: any) => {
+  const applyZoomOrFit = (nextZoom: number, nextFitMode: 'width' | 'page') => {
+    const clampedZoom = Math.max(0.5, Math.min(4.0, Math.round(nextZoom * 100) / 100));
+    setZoomScale(clampedZoom);
+    setFitMode(nextFitMode);
     if (webViewRef.current) {
-      const code = `if (window.handlePdfAction) { window.handlePdfAction('${action}', ${JSON.stringify(payload || {})}); } true;`;
-      webViewRef.current.injectJavaScript(code);
+      webViewRef.current.injectJavaScript(
+        `window.setViewerScale(${clampedZoom}, ${JSON.stringify(nextFitMode)}); true;`
+      );
     }
   };
 
   const handlePrevPage = () => {
-    if (currentPage > 1) {
-      sendWebviewCommand('PREV_PAGE');
-    }
+    const next = Math.max(1, currentPage - 1);
+    setCurrentPage(next);
+    webViewRef.current?.injectJavaScript(`window.scrollToPage(${next}); true;`);
   };
 
   const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      sendWebviewCommand('NEXT_PAGE');
-    }
+    const next = Math.min(totalPages, currentPage + 1);
+    setCurrentPage(next);
+    webViewRef.current?.injectJavaScript(`window.scrollToPage(${next}); true;`);
   };
 
-  const handleZoomIn = () => {
-    const next = Math.min(zoomLevel + 0.25, 3.0);
-    setZoomLevel(next);
-    sendWebviewCommand('SET_ZOOM', { scale: next });
-  };
-
-  const handleZoomOut = () => {
-    const next = Math.max(zoomLevel - 0.25, 0.75);
-    setZoomLevel(next);
-    sendWebviewCommand('SET_ZOOM', { scale: next });
-  };
-
-  const handleFitWidth = () => {
-    setZoomLevel(1.0);
-    sendWebviewCommand('FIT_WIDTH');
-  };
-
-  // Download / Save to Device
-  const handleDownload = async () => {
+  /**
+   * Downloads ONLY the authentic original `.pdf` bytes from vault/storage.
+   * NEVER captures or downloads rendered page canvas PNGs.
+   */
+  const handleDownloadOriginalPdf = async () => {
     if (isDownloading) return;
     setIsDownloading(true);
+    setDownloadStatusMsg('Preparing original PDF...');
+
     try {
-      let targetFileUri = pdfUri;
-      if (pdfUri.startsWith('http://') || pdfUri.startsWith('https://')) {
-        const cleanName = `${(title || 'document').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
-        const localDest = `${FileSystem.documentDirectory}${cleanName}`;
-        const dl = await FileSystem.downloadAsync(pdfUri, localDest);
-        targetFileUri = dl.uri;
+      const result = await downloadOriginalFile({
+        uri: pdfUri,
+        storagePath,
+        bucket,
+        fileName: fileName || title,
+        title,
+        mimeType: 'application/pdf',
+        isPdf: true,
+        onProgress: (p) => setDownloadStatusMsg(p.message),
+      });
+
+      if (result.cancelled) {
+        setDownloadStatusMsg(null);
+        return;
       }
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(targetFileUri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `Download / Save ${title}`,
-          UTI: 'com.adobe.pdf',
-        });
-      } else {
-        Alert.alert('Saved', 'Document is saved in your local app storage.');
+      if (!result.success) {
+        // Explicit fallback prompt if Sharing.shareAsync desired when Android SAF had a limitation
+        if (await Sharing.isAvailableAsync() && pdfUri.startsWith('file:')) {
+          Alert.alert(
+            'PDF Download Failed',
+            result.error || 'Could not save PDF directly to folder.',
+            [
+              { text: 'Close', style: 'cancel' },
+              {
+                text: 'Share / Save via Sheet',
+                onPress: () => {
+                  Sharing.shareAsync(pdfUri, {
+                    mimeType: 'application/pdf',
+                    dialogTitle: `Save Original PDF: ${title}`,
+                    UTI: 'com.adobe.pdf',
+                  }).catch(() => {});
+                },
+              },
+            ]
+          );
+        } else {
+          Alert.alert('PDF Download Failed', result.error || 'Could not download original PDF.');
+        }
+        return;
       }
+
+      const sizeKb = result.byteSize ? `${(result.byteSize / 1024).toFixed(1)} KB` : '';
+      const shortHash = result.sha256 ? result.sha256.slice(0, 10) : '';
+      Alert.alert(
+        'Original PDF Downloaded',
+        `Saved authentic PDF "${result.fileName}"${sizeKb ? ` (${sizeKb})` : ''}${shortHash ? `\nVerified SHA-256: ${shortHash}…` : ''}`
+      );
     } catch (err: any) {
-      Alert.alert('Download Error', err?.message || 'Could not download PDF.');
+      Alert.alert('Download Notice', err?.message || 'Could not download original PDF.');
     } finally {
       setIsDownloading(false);
+      setDownloadStatusMsg(null);
     }
   };
 
-  // Generate self-contained offline PDF.js HTML renderer
-  const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #121212; color: #fff; font-family: -apple-system, Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; min-height: 100vh; overflow-x: auto; padding: 12px 0 60px 0; }
-    #canvas-container { display: flex; justify-content: center; width: 100%; }
-    canvas { max-width: 96%; height: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.6); border-radius: 4px; background: #fff; margin-bottom: 16px; }
-    #loading { color: #888; font-size: 14px; margin-top: 40px; }
-  </style>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-</head>
-<body>
-  <div id="loading">Rendering document...</div>
-  <div id="canvas-container">
-    <canvas id="pdf-canvas"></canvas>
-  </div>
-
-  <script>
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-    let pdfDoc = null;
-    let pageNum = 1;
-    let pageRendering = false;
-    let pageNumPending = null;
-    let scale = 1.0;
-    const canvas = document.getElementById('pdf-canvas');
-    const ctx = canvas.getContext('2d');
-
-    function renderPage(num) {
-      pageRendering = true;
-      pdfDoc.getPage(num).then(function(page) {
-        const viewport = page.getViewport({ scale: scale * 1.5 });
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-
-        const renderContext = {
-          canvasContext: ctx,
-          viewport: viewport
-        };
-        const renderTask = page.render(renderContext);
-
-        renderTask.promise.then(function() {
-          pageRendering = false;
-          document.getElementById('loading').style.display = 'none';
-          if (pageNumPending !== null) {
-            renderPage(pageNumPending);
-            pageNumPending = null;
-          }
-        });
-      });
-
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({
-          type: 'PAGE_INFO',
-          page: num,
-          totalPages: pdfDoc.numPages
-        }));
-      }
-    }
-
-    function queueRenderPage(num) {
-      if (pageRendering) {
-        pageNumPending = num;
-      } else {
-        renderPage(num);
-      }
-    }
-
-    window.handlePdfAction = function(action, payload) {
-      if (!pdfDoc) return;
-      if (action === 'PREV_PAGE') {
-        if (pageNum <= 1) return;
-        pageNum--;
-        queueRenderPage(pageNum);
-      } else if (action === 'NEXT_PAGE') {
-        if (pageNum >= pdfDoc.numPages) return;
-        pageNum++;
-        queueRenderPage(pageNum);
-      } else if (action === 'SET_ZOOM') {
-        scale = payload.scale || 1.0;
-        queueRenderPage(pageNum);
-      } else if (action === 'FIT_WIDTH') {
-        scale = 1.0;
-        queueRenderPage(pageNum);
-      }
-    };
-
+  const handleMessage = (event: any) => {
     try {
-      const rawB64 = "${pdfBase64 || ''}";
-      if (!rawB64) {
-        throw new Error("No PDF content provided");
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type === 'PDF_LOADED') {
+        setTotalPages(msg.totalPages || 1);
+      } else if (msg.type === 'PDF_RENDERED') {
+        setTotalPages(msg.totalPages || 1);
+        setIsLoading(false);
+      } else if (msg.type === 'PDF_ZOOM_SYNC' && typeof msg.zoom === 'number') {
+        setZoomScale(msg.zoom);
+      } else if (msg.type === 'PDF_ERROR') {
+        setErrorMsg(msg.message || 'Failed to parse PDF document.');
+        setIsLoading(false);
       }
-      const rawData = atob(rawB64);
-      const uint8Array = new Uint8Array(rawData.length);
-      for (let i = 0; i < rawData.length; i++) {
-        uint8Array[i] = rawData.charCodeAt(i);
-      }
-
-      pdfjsLib.getDocument({ data: uint8Array }).promise.then(function(doc) {
-        pdfDoc = doc;
-        document.getElementById('loading').style.display = 'none';
-        if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'LOAD_SUCCESS',
-            totalPages: doc.numPages
-          }));
-        }
-        renderPage(pageNum);
-      }).catch(function(err) {
-        document.getElementById('loading').innerText = "Failed to render PDF: " + err.message;
-        if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'LOAD_ERROR',
-            error: err.message
-          }));
-        }
-      });
-    } catch (e) {
-      document.getElementById('loading').innerText = "Load error: " + e.message;
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({
-          type: 'LOAD_ERROR',
-          error: e.message
-        }));
-      }
-    }
-  </script>
-</body>
-</html>
-  `;
+    } catch {}
+  };
 
   return (
-    <Modal visible={visible} transparent={false} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.container, { paddingTop: Math.max(insets.top, 16) }]}>
-        {/* Header Bar */}
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <StatusBar barStyle="light-content" backgroundColor="#0B1120" />
+      <View style={styles.container}>
+        {/* Top Toolbar */}
         <View style={styles.header}>
-          <View style={styles.titleContainer}>
-            <View style={styles.pdfBadge}>
-              <MaterialIcons name="picture-as-pdf" size={14} color="#EF4444" />
-              <Text style={styles.pdfBadgeText}>PDF</Text>
-            </View>
+          <TouchableOpacity
+            onPress={onClose}
+            style={styles.iconBtn}
+            activeOpacity={0.7}
+            accessibilityLabel="Close PDF reader"
+          >
+            <MaterialIcons name="close" size={22} color="#FFFFFF" />
+          </TouchableOpacity>
+
+          <View style={styles.titleBlock}>
             <Text style={styles.titleText} numberOfLines={1}>
               {title}
+            </Text>
+            <Text style={styles.subtitleText}>
+              {errorMsg
+                ? 'Load Issue'
+                : `${totalPages} ${totalPages === 1 ? 'Page' : 'Pages'} · ${Math.round(zoomScale * 100)}% · PDF`}
             </Text>
           </View>
 
           <View style={styles.headerActions}>
             {onScanOcr && (
               <TouchableOpacity
-                style={styles.headerButton}
                 onPress={onScanOcr}
-                activeOpacity={0.7}
-                accessibilityLabel="Scan with OCR"
+                style={styles.actionPill}
+                activeOpacity={0.8}
               >
-                <MaterialIcons name="document-scanner" size={18} color="#FFFFFF" />
+                <MaterialIcons name="document-scanner" size={16} color="#FFFFFF" />
+                <Text style={styles.actionPillText}>OCR</Text>
               </TouchableOpacity>
             )}
 
             <TouchableOpacity
-              style={styles.headerButton}
-              onPress={handleDownload}
+              onPress={handleDownloadOriginalPdf}
+              style={[styles.iconBtn, styles.downloadBtn]}
+              activeOpacity={0.75}
               disabled={isDownloading}
-              activeOpacity={0.7}
-              accessibilityLabel="Download PDF"
+              accessibilityLabel="Download original PDF"
             >
               {isDownloading ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <MaterialIcons name="file-download" size={20} color="#FFFFFF" />
+                <MaterialIcons name="download" size={20} color="#FFFFFF" />
               )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.headerButton, styles.closeButton]}
-              onPress={onClose}
-              activeOpacity={0.7}
-              accessibilityLabel="Close PDF"
-            >
-              <MaterialIcons name="close" size={20} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* PDF Webview Viewer or Loading/Error State */}
-        <View style={styles.body}>
-          {loadError ? (
-            <View style={styles.centerBox}>
-              <MaterialIcons name="error-outline" size={44} color="#EF4444" />
-              <Text style={styles.errorTitle}>Could Not Open PDF</Text>
-              <Text style={styles.errorSubtitle}>{loadError}</Text>
-              <TouchableOpacity style={styles.retryButton} onPress={handleDownload}>
-                <MaterialIcons name="share" size={16} color="#FFFFFF" />
-                <Text style={styles.retryButtonText}>Open in External Viewer</Text>
+        {downloadStatusMsg && (
+          <View style={styles.statusStrip}>
+            <ActivityIndicator size="small" color="#93C5FD" />
+            <Text style={styles.statusStripText}>{downloadStatusMsg}</Text>
+          </View>
+        )}
+
+        {/* PDF Canvas Viewport */}
+        <View style={styles.viewerArea}>
+          {errorMsg ? (
+            <View style={styles.errorBox}>
+              <MaterialIcons name="error-outline" size={44} color="#F87171" />
+              <Text style={styles.errorTitle}>PDF Preview Unavailable</Text>
+              <Text style={styles.errorDesc}>{errorMsg}</Text>
+              <TouchableOpacity
+                onPress={handleDownloadOriginalPdf}
+                style={styles.errorDownloadBtn}
+              >
+                <MaterialIcons name="download" size={18} color="#FFFFFF" />
+                <Text style={styles.errorDownloadBtnText}>Download Original PDF</Text>
               </TouchableOpacity>
             </View>
-          ) : isLoading || !pdfBase64 ? (
-            <View style={styles.centerBox}>
-              <ActivityIndicator size="large" color={SereneColors.primary} />
-              <Text style={styles.loadingText}>Loading PDF pages...</Text>
-            </View>
           ) : (
-            <WebView
-              ref={webViewRef}
-              originWhitelist={['*']}
-              source={{ html: htmlContent }}
-              onMessage={handleMessage}
-              style={styles.webview}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              startInLoadingState={false}
-              scalesPageToFit={true}
-              bounces={false}
-            />
+            <>
+              <WebView
+                ref={webViewRef}
+                originWhitelist={['*']}
+                source={{ html: shellHtml }}
+                style={styles.webview}
+                onLoadEnd={() => setWebReady(true)}
+                onMessage={handleMessage}
+                javaScriptEnabled
+                domStorageEnabled
+                allowFileAccess
+                allowFileAccessFromFileURLs
+                allowUniversalAccessFromFileURLs
+                mixedContentMode="always"
+              />
+              {isLoading && (
+                <View style={styles.loadingOverlay} pointerEvents="none">
+                  <ActivityIndicator size="large" color="#3B82F6" />
+                  <Text style={styles.loadingLabel}>Rendering high-DPI PDF pages...</Text>
+                </View>
+              )}
+            </>
           )}
         </View>
 
-        {/* Bottom Pagination & Zoom Controller */}
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-          {/* Zoom Controls */}
+        {/* Bottom Floating Control Strip */}
+        <View style={styles.bottomControls}>
+          {/* Page Controls */}
           <View style={styles.controlGroup}>
-            <TouchableOpacity style={styles.iconButton} onPress={handleZoomOut} activeOpacity={0.7}>
-              <MaterialIcons name="zoom-out" size={20} color="#FFFFFF" />
+            <TouchableOpacity
+              onPress={handlePrevPage}
+              disabled={currentPage <= 1}
+              style={[styles.navBtn, currentPage <= 1 && styles.navBtnDisabled]}
+            >
+              <MaterialIcons name="chevron-left" size={22} color="#FFFFFF" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.fitWidthButton} onPress={handleFitWidth} activeOpacity={0.7}>
-              <Text style={styles.fitWidthText}>{Math.round(zoomLevel * 100)}%</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.iconButton} onPress={handleZoomIn} activeOpacity={0.7}>
-              <MaterialIcons name="zoom-in" size={20} color="#FFFFFF" />
+
+            <Text style={styles.pageText}>
+              {currentPage} / {totalPages}
+            </Text>
+
+            <TouchableOpacity
+              onPress={handleNextPage}
+              disabled={currentPage >= totalPages}
+              style={[styles.navBtn, currentPage >= totalPages && styles.navBtnDisabled]}
+            >
+              <MaterialIcons name="chevron-right" size={22} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
 
-          {/* Page Indicator & Navigator */}
+          {/* Fit Mode Toggle */}
+          <TouchableOpacity
+            onPress={() => {
+              const nextFit = fitMode === 'width' ? 'page' : 'width';
+              applyZoomOrFit(1.0, nextFit);
+            }}
+            style={styles.fitModeBtn}
+            activeOpacity={0.8}
+          >
+            <MaterialIcons
+              name={fitMode === 'width' ? 'fit-screen' : 'fullscreen-exit'}
+              size={16}
+              color="#93C5FD"
+            />
+            <Text style={styles.fitModeText}>
+              {fitMode === 'width' ? 'Fit Width' : 'Fit Page'}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Floating Zoom Controls */}
           <View style={styles.controlGroup}>
             <TouchableOpacity
-              style={[styles.iconButton, currentPage <= 1 && styles.buttonDisabled]}
-              onPress={handlePrevPage}
-              disabled={currentPage <= 1}
-              activeOpacity={0.7}
+              onPress={() => applyZoomOrFit(zoomScale - 0.35, fitMode)}
+              disabled={zoomScale <= 0.55}
+              style={[styles.navBtn, zoomScale <= 0.55 && styles.navBtnDisabled]}
+              accessibilityLabel="Zoom out PDF"
             >
-              <MaterialIcons name="chevron-left" size={22} color={currentPage <= 1 ? '#666' : '#FFF'} />
+              <MaterialIcons name="remove" size={20} color="#FFFFFF" />
             </TouchableOpacity>
 
-            <View style={styles.pageBadge}>
-              <Text style={styles.pageText}>
-                {currentPage} / {totalPages}
-              </Text>
-            </View>
+            <TouchableOpacity
+              onPress={() => applyZoomOrFit(1.0, fitMode)}
+              style={styles.zoomResetBtn}
+              accessibilityLabel="Reset PDF zoom"
+            >
+              <Text style={styles.zoomText}>{Math.round(zoomScale * 100)}%</Text>
+            </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.iconButton, currentPage >= totalPages && styles.buttonDisabled]}
-              onPress={handleNextPage}
-              disabled={currentPage >= totalPages}
-              activeOpacity={0.7}
+              onPress={() => applyZoomOrFit(zoomScale + 0.35, fitMode)}
+              disabled={zoomScale >= 3.95}
+              style={[styles.navBtn, zoomScale >= 3.95 && styles.navBtnDisabled]}
+              accessibilityLabel="Zoom in PDF"
             >
-              <MaterialIcons name="chevron-right" size={22} color={currentPage >= totalPages ? '#666' : '#FFF'} />
+              <MaterialIcons name="add" size={20} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
         </View>
@@ -471,152 +640,195 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
-    justifyContent: 'space-between',
+    backgroundColor: '#0B1120',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingTop: Platform.OS === 'ios' ? 52 : 34,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    backgroundColor: '#1E293B',
     borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    borderBottomColor: 'rgba(255,255,255,0.1)',
   },
-  titleContainer: {
+  iconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  downloadBtn: {
+    backgroundColor: '#2563EB',
+  },
+  titleBlock: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginRight: 12,
-  },
-  pdfBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#374151',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    gap: 3,
-  },
-  pdfBadgeText: {
-    color: '#F87171',
-    fontSize: 10,
-    fontWeight: 'bold',
+    paddingHorizontal: 10,
   },
   titleText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  subtitleText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
   },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  headerButton: {
-    width: 36,
-    height: 36,
+  actionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: SereneColors.primary,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
     borderRadius: 18,
-    backgroundColor: '#1E293B',
+  },
+  actionPillText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statusStrip: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#172554',
+    paddingVertical: 6,
   },
-  closeButton: {
-    backgroundColor: '#334155',
+  statusStripText: {
+    color: '#DBEAFE',
+    fontSize: 12,
+    fontWeight: '600',
   },
-  body: {
+  viewerArea: {
     flex: 1,
-    backgroundColor: '#121212',
+    position: 'relative',
   },
   webview: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#0B1120',
   },
-  centerBox: {
-    flex: 1,
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(11, 17, 32, 0.85)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
-    gap: 12,
+    gap: 10,
   },
-  loadingText: {
-    color: '#94A3B8',
-    fontSize: 13,
-  },
-  errorTitle: {
-    color: '#EF4444',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  errorSubtitle: {
-    color: '#94A3B8',
-    fontSize: 12,
-    textAlign: 'center',
-  },
-  retryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: SereneColors.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    marginTop: 8,
-  },
-  retryButtonText: {
-    color: '#FFFFFF',
+  loadingLabel: {
+    color: '#CBD5E1',
     fontSize: 13,
     fontWeight: '600',
   },
-  footer: {
+  errorBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    gap: 12,
+  },
+  errorTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  errorDesc: {
+    color: '#94A3B8',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  errorDownloadBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  errorDownloadBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  bottomControls: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#0F172A',
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 16,
+    backgroundColor: '#1E293B',
     borderTopWidth: 1,
-    borderTopColor: '#1E293B',
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    gap: 6,
   },
   controlGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
   },
-  iconButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 6,
-    backgroundColor: '#1E293B',
+  navBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonDisabled: {
-    opacity: 0.4,
-  },
-  fitWidthButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#1E293B',
-  },
-  fitWidthText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    fontWeight: '600',
-  },
-  pageBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#1E293B',
+  navBtnDisabled: {
+    opacity: 0.35,
   },
   pageText: {
-    color: '#FFFFFF',
+    color: '#F1F5F9',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
+    minWidth: 38,
+    textAlign: 'center',
+  },
+  fitModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(59, 130, 246, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(147, 197, 253, 0.3)',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 14,
+  },
+  fitModeText: {
+    color: '#BFDBFE',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  zoomResetBtn: {
+    paddingHorizontal: 6,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  zoomText: {
+    color: '#F1F5F9',
+    fontSize: 12,
+    fontWeight: '700',
+    minWidth: 40,
+    textAlign: 'center',
   },
 });

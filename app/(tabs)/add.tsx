@@ -726,8 +726,9 @@ export default function AddOrEditItemScreen() {
         quality: 1.0,
       });
       if (!res.canceled && res.assets && res.assets[0]) {
-        const uri = res.assets[0].uri;
-        const persistRes = await persistProductPhotoToVault(uri, 'product_photo.jpg');
+        const asset = res.assets[0];
+        const uri = asset.uri;
+        const persistRes = await persistProductPhotoToVault(uri, asset.fileName || undefined);
         const finalUri = persistRes.persisted && persistRes.uri ? persistRes.uri : uri;
         setProductPhotos((prev) => [...prev, finalUri]);
       }
@@ -756,7 +757,7 @@ export default function AddOrEditItemScreen() {
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
         for (const asset of res.assets) {
-          const persistRes = await persistProductPhotoToVault(asset.uri, 'product_photo.jpg');
+          const persistRes = await persistProductPhotoToVault(asset.uri, asset.fileName || undefined);
           const finalUri = persistRes.persisted && persistRes.uri ? persistRes.uri : asset.uri;
           setProductPhotos((prev) => [...prev, finalUri]);
         }
@@ -2442,6 +2443,8 @@ export default function AddOrEditItemScreen() {
         <UniversalPdfViewer
           visible={Boolean(previewModalUri)}
           pdfUri={previewModalUri || ''}
+          storagePath={attachedReceiptPath}
+          fileName={attachedReceiptName || previewModalTitle}
           title={previewModalTitle}
           onClose={() => setPreviewModalUri(null)}
         />
@@ -2454,6 +2457,8 @@ export default function AddOrEditItemScreen() {
                   {
                     uri: previewModalUri,
                     title: previewModalTitle,
+                    fileName: attachedReceiptName || previewModalTitle,
+                    storagePath: attachedReceiptPath,
                   },
                 ]
               : []

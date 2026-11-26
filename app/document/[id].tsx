@@ -33,6 +33,7 @@ import {
   getVaultDocumentSignedUrl,
   BUCKET_VAULT_DOCUMENTS,
   BUCKET_ITEM_DOCUMENTS,
+  StorageBucket,
 } from '../../src/services/storageService';
 import { HighResImageViewer, ImageViewerImage } from '../../src/components/ui/HighResImageViewer';
 import { UniversalPdfViewer } from '../../src/components/documents/UniversalPdfViewer';
@@ -41,6 +42,7 @@ import { scanVaultDocument, DocumentScanResult } from '../../src/services/docume
 import * as Sharing from 'expo-sharing';
 import { isStoragePath } from '../../src/utils/storageUtils';
 import * as FileSystem from 'expo-file-system/legacy';
+import { downloadOriginalFile } from '../../src/services/originalDownloadService';
 
 export default function DocumentDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -70,7 +72,26 @@ export default function DocumentDetailsScreen() {
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [ocrModalVisible, setOcrModalVisible] = useState(false);
   const [isScanningOcr, setIsScanningOcr] = useState(false);
+  const [isDownloadingOriginal, setIsDownloadingOriginal] = useState(false);
   const [ocrResult, setOcrResult] = useState<DocumentScanResult | null>(null);
+
+  const preferredBucket: StorageBucket = (doc?.itemId ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS) as StorageBucket;
+  const sp1 =
+    doc?.storagePath && isStoragePath(doc.storagePath)
+      ? doc.storagePath
+      : doc?.filePath && isStoragePath(doc.filePath)
+      ? doc.filePath
+      : doc?.fileUrl && isStoragePath(doc.fileUrl)
+      ? doc.fileUrl
+      : null;
+  const sp2 =
+    doc?.storagePathBack && isStoragePath(doc.storagePathBack)
+      ? doc.storagePathBack
+      : doc?.filePathBack && isStoragePath(doc.filePathBack)
+      ? doc.filePathBack
+      : doc?.fileUrlBack && isStoragePath(doc.fileUrlBack)
+      ? doc.fileUrlBack
+      : null;
 
   // Load photos (local or private Supabase signed URL)
   useEffect(() => {
@@ -78,16 +99,6 @@ export default function DocumentDetailsScreen() {
 
     async function resolvePhotos() {
       if (!doc) return;
-
-      const preferredBucket = doc.itemId ? BUCKET_ITEM_DOCUMENTS : BUCKET_VAULT_DOCUMENTS;
-
-      const sp1 = (doc.storagePath && isStoragePath(doc.storagePath))
-        ? doc.storagePath
-        : (doc.filePath && isStoragePath(doc.filePath))
-        ? doc.filePath
-        : (doc.fileUrl && isStoragePath(doc.fileUrl))
-        ? doc.fileUrl
-        : null;
 
       let raw1 = doc.filePath ? getCanonicalDocumentUri(doc.filePath) : null;
       let norm1 = raw1 && !isStoragePath(raw1) ? safeNormalizeRouteUri(raw1) : null;
@@ -120,14 +131,6 @@ export default function DocumentDetailsScreen() {
         if (isMounted) setFileExists(false);
       }
 
-      const sp2 = (doc.storagePathBack && isStoragePath(doc.storagePathBack))
-        ? doc.storagePathBack
-        : (doc.filePathBack && isStoragePath(doc.filePathBack))
-        ? doc.filePathBack
-        : (doc.fileUrlBack && isStoragePath(doc.fileUrlBack))
-        ? doc.fileUrlBack
-        : null;
-
       let raw2 = doc.filePathBack ? getCanonicalDocumentUri(doc.filePathBack) : null;
       let norm2 = raw2 && !isStoragePath(raw2) ? safeNormalizeRouteUri(raw2) : null;
       let p2Exists = norm2 ? await verifyDocumentFileExists(norm2) : false;
@@ -147,7 +150,7 @@ export default function DocumentDetailsScreen() {
     return () => {
       isMounted = false;
     };
-  }, [doc?.id, doc?.filePath, doc?.filePathBack, doc?.storagePath, doc?.storagePathBack]);
+  }, [doc?.id, doc?.filePath, doc?.filePathBack, sp1, sp2, preferredBucket]);
 
   if (!doc) {
     return (
@@ -346,22 +349,43 @@ export default function DocumentDetailsScreen() {
   };
 
   const handleDownloadOriginal = async () => {
+    if (isDownloadingOriginal) return;
+    const isBack = activePhotoTab === 'back';
+    const targetUri = isBack ? photo2Url : photo1Url;
+    const targetSp = isBack ? sp2 : sp1;
+    const activeIsPdf = Boolean(isPdf && !isBack);
+
+    if (!targetUri && !targetSp) {
+      Alert.alert('Notice', 'No original file available to download.');
+      return;
+    }
+
+    setIsDownloadingOriginal(true);
     try {
-      const targetUri = activePhotoTab === 'back' ? photo2Url : photo1Url;
-      if (!targetUri) {
-        Alert.alert('Notice', 'No file available to download.');
+      const res = await downloadOriginalFile({
+        uri: targetUri,
+        storagePath: targetSp,
+        bucket: preferredBucket,
+        fileName: isBack ? `${doc.title}_Back` : doc.title,
+        title: doc.title,
+        mimeType: activeIsPdf ? 'application/pdf' : doc.mimeType,
+        isPdf: activeIsPdf,
+      });
+
+      if (res.cancelled) return;
+      if (!res.success) {
+        Alert.alert('Download Failed', res.error || 'Could not download original document.');
         return;
       }
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(targetUri, {
-          mimeType: doc.mimeType || (isPdf ? 'application/pdf' : 'image/jpeg'),
-          dialogTitle: `Download / Save ${doc.title}`,
-        });
-      } else {
-        Alert.alert('Downloaded', 'Document is saved in your local vault storage.');
-      }
+
+      Alert.alert(
+        'Original Downloaded',
+        `Saved authentic ${activeIsPdf ? 'PDF' : 'document'} "${res.fileName}"${res.byteSize ? ` (${(res.byteSize / 1024).toFixed(1)} KB)` : ''}.`
+      );
     } catch (err: any) {
       Alert.alert('Download Notice', err?.message || 'Could not download document.');
+    } finally {
+      setIsDownloadingOriginal(false);
     }
   };
 
@@ -675,20 +699,34 @@ export default function DocumentDetailsScreen() {
             </View>
           )}
 
-          <View className="flex-row items-center justify-between pt-1">
-            <Text className="text-[11px] text-serene-on-surface-variant font-mono">
+          <View className="flex-row items-center justify-between pt-1 gap-2">
+            <Text className="text-[11px] text-serene-on-surface-variant font-mono flex-1" numberOfLines={1}>
               {fileSize ? `${(fileSize / 1024).toFixed(0)} KB · ` : ''}
               {activePhotoTab === 'back' ? 'Back side' : (doc.mimeType || 'Document')}
             </Text>
 
             {(activePhotoTab === 'back' ? photo2Url : photo1Url) && (
-              <TouchableOpacity
-                className="bg-serene-surface-container-high px-3.5 py-1.5 rounded-serene-md flex-row items-center gap-1"
-                onPress={handleOpenDoc}
-              >
-                <MaterialIcons name={isPdf && activePhotoTab === 'front' ? 'picture-as-pdf' : 'fullscreen'} size={16} color={SereneColors.primary} />
-                <Text className="text-[12px] font-semibold text-serene-primary">{isPdf && activePhotoTab === 'front' ? 'Open PDF Reader' : 'Open Full Doc'}</Text>
-              </TouchableOpacity>
+              <View className="flex-row items-center gap-1.5">
+                <TouchableOpacity
+                  className="bg-serene-surface-container px-3 py-1.5 rounded-serene-md flex-row items-center gap-1 border border-serene-subtle-border"
+                  onPress={handleDownloadOriginal}
+                  disabled={isDownloadingOriginal}
+                >
+                  {isDownloadingOriginal ? (
+                    <ActivityIndicator size="small" color={SereneColors.primary} />
+                  ) : (
+                    <MaterialIcons name="download" size={15} color={SereneColors.primary} />
+                  )}
+                  <Text className="text-[12px] font-semibold text-serene-primary">Download</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  className="bg-serene-surface-container-high px-3.5 py-1.5 rounded-serene-md flex-row items-center gap-1"
+                  onPress={handleOpenDoc}
+                >
+                  <MaterialIcons name={isPdf && activePhotoTab === 'front' ? 'picture-as-pdf' : 'fullscreen'} size={16} color={SereneColors.primary} />
+                  <Text className="text-[12px] font-semibold text-serene-primary">{isPdf && activePhotoTab === 'front' ? 'Open PDF Reader' : 'Open Full Doc'}</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         </View>
@@ -945,17 +983,53 @@ export default function DocumentDetailsScreen() {
       <HighResImageViewer
         visible={previewModalVisible}
         images={[
-          ...(photo1Url ? [{ uri: photo1Url, title: `${doc.title} · Front`, subtitle: 'Photo 1' }] : []),
-          ...(photo2Url ? [{ uri: photo2Url, title: `${doc.title} · Back`, subtitle: 'Photo 2' }] : []),
+          ...(photo1Url
+            ? [
+                {
+                  uri: photo1Url,
+                  title: `${doc.title} · Front`,
+                  subtitle: 'Photo 1',
+                  fileName: doc.title,
+                  storagePath: sp1,
+                  bucket: preferredBucket,
+                  mimeType: doc.mimeType,
+                  enhancedUri: doc.enhancedPath,
+                },
+              ]
+            : []),
+          ...(photo2Url
+            ? [
+                {
+                  uri: photo2Url,
+                  title: `${doc.title} · Back`,
+                  subtitle: 'Photo 2',
+                  fileName: `${doc.title}_Back`,
+                  storagePath: sp2,
+                  bucket: preferredBucket,
+                  mimeType: doc.mimeType,
+                  enhancedUri: doc.enhancedBackPath,
+                },
+              ]
+            : []),
         ]}
         initialIndex={activePhotoTab === 'back' && photo2Url ? 1 : 0}
         onClose={() => setPreviewModalVisible(false)}
+        onEnhanceSaved={(res, _img, idx) => {
+          const isBackSlot = idx === 1 || (!photo1Url && Boolean(photo2Url));
+          updateDocument(
+            doc.id,
+            isBackSlot ? { enhancedBackPath: res.enhancedUri } : { enhancedPath: res.enhancedUri }
+          );
+        }}
       />
 
       {isPdf && photo1Url ? (
         <UniversalPdfViewer
           visible={pdfViewerVisible}
           pdfUri={photo1Url}
+          storagePath={sp1}
+          bucket={preferredBucket}
+          fileName={doc.title}
           title={doc.title}
           onClose={() => setPdfViewerVisible(false)}
           onScanOcr={handleRunOcr}
