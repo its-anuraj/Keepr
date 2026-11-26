@@ -903,10 +903,15 @@ export async function prepareImageForAnalysis(
   };
 
   try {
+    const detected = detectFormatFromUriOrName(imageUri);
     const resolved = await resolveLikelyPdf();
 
     // 1. If document is a PDF (by MIME, filename, URI, or %PDF- magic bytes), bypass image downsampling completely
-    if (resolved.isPdf) {
+    if (
+      detected.mimeType === 'application/pdf' ||
+      imageUri.toLowerCase().includes('.pdf') ||
+      resolved.isPdf
+    ) {
       if (existingBase64) {
         const clean = existingBase64.includes(',') ? existingBase64.split(',')[1] : existingBase64;
         return { base64: clean, mimeType: 'application/pdf' };

@@ -386,7 +386,6 @@ export function extractTextOperatorsFromStreamContent(streamContent: string): st
  */
 function tryInflateFlateStreamsInNode(rawLatin1: string): string[] {
   const inflated: string[] = [];
-  // Detect Node runtime dynamically without giving Metro bundler a static require target
   const isNode =
     typeof process !== 'undefined' &&
     Boolean(process.versions && process.versions.node);
@@ -394,20 +393,38 @@ function tryInflateFlateStreamsInNode(rawLatin1: string): string[] {
 
   let zlibModule: { inflateSync?: (buf: Uint8Array) => Uint8Array } | null = null;
   try {
-    const req = (0, eval)('require') as (id: string) => { inflateSync?: (buf: Uint8Array) => Uint8Array };
-    zlibModule = req('node:zlib');
+    const getBuiltin = (process as any).getBuiltinModule;
+    if (typeof getBuiltin === 'function') {
+      zlibModule = getBuiltin('node:zlib');
+    } else if (typeof (globalThis as any).require === 'function') {
+      zlibModule = (globalThis as any).require('node:zlib');
+    } else {
+      const req = (0, eval)('require') as (id: string) => { inflateSync?: (buf: Uint8Array) => Uint8Array };
+      zlibModule = req('node:zlib');
+    }
   } catch {
     return inflated;
   }
   if (!zlibModule?.inflateSync) return inflated;
 
-  const streamRegex = /<<([\s\S]*?)>>\s*stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  // Locate each `stream` keyword and inspect ONLY its immediately preceding `<< ... >>` dictionary
+  const streamHeaderRegex = />>\s*stream(?:\r\n|\r|\n)/g;
   let match: RegExpExecArray | null;
-  while ((match = streamRegex.exec(rawLatin1)) !== null) {
-    const dict = match[1] || '';
-    const body = match[2] || '';
-    if (!body) continue;
+  while ((match = streamHeaderRegex.exec(rawLatin1)) !== null) {
+    const dictEnd = match.index;
+    const dictStart = rawLatin1.lastIndexOf('<<', dictEnd);
+    if (dictStart === -1) continue;
+    const dict = rawLatin1.slice(dictStart, dictEnd);
     if (/\/Subtype\s*\/Image\b/.test(dict)) continue;
+
+    const dataStart = match.index + match[0].length;
+    const endStreamIdx = rawLatin1.indexOf('endstream', dataStart);
+    if (endStreamIdx === -1) continue;
+
+    let body = rawLatin1.slice(dataStart, endStreamIdx);
+    if (body.endsWith('\r\n')) body = body.slice(0, -2);
+    else if (body.endsWith('\n') || body.endsWith('\r')) body = body.slice(0, -1);
+    if (!body) continue;
 
     if (/\/FlateDecode\b/.test(dict)) {
       try {

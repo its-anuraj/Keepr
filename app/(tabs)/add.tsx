@@ -926,7 +926,6 @@ export default function AddOrEditItemScreen() {
   };
 
   const handleUploadPdfEntry = async () => {
-    isPickerActiveRef.current = true;
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
@@ -969,10 +968,6 @@ export default function AddOrEditItemScreen() {
     } catch (err) {
       console.warn('[AddScreen] Upload PDF error:', err);
       Alert.alert('PDF Notice', 'Could not open PDF document picker on this device.');
-    } finally {
-      setTimeout(() => {
-        isPickerActiveRef.current = false;
-      }, 500);
     }
   };
 

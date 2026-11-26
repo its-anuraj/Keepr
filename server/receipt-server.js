@@ -23,10 +23,12 @@ const PORT = process.env.PORT || 3001;
 
 // Verified active Gemini multimodal candidate cascade
 const candidateModels = [
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
   'gemini-flash-latest',
-  'gemini-2.0-flash',
 ];
 
 const systemPrompt = `
@@ -507,8 +509,18 @@ const server = http.createServer(async (req, res) => {
             lastErrorText = errText;
 
             if (candidateResp.status === 400) {
-              response = candidateResp;
-              break;
+              res.writeHead(422, { 'Content-Type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  error:
+                    resolvedMime === 'application/pdf'
+                      ? 'This PDF could not be processed. Please ensure it is unlocked and not corrupted.'
+                      : 'Invalid image format or corrupted file.',
+                  errorCode: resolvedMime === 'application/pdf' ? 'UNREADABLE_PDF' : 'UNREADABLE_RECEIPT',
+                  requestId,
+                })
+              );
+              return;
             }
 
             if (candidateResp.status === 503 || candidateResp.status === 429) {
