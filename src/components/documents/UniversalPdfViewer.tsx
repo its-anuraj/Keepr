@@ -1,12 +1,12 @@
 /**
  * KEEPR DIGITAL OWNERSHIP VAULT: UniversalPdfViewer Component
  *
- * Enterprise PDF reader supporting:
- * - Authentic PDF.js canvas rendering WITHOUT CSS max-width clamp (crisp DPR-scaled zooming up to 400%)
- * - True Fit-to-Width vs Fit-to-Page toggle + floating Zoom Out (-), Zoom In (+), Reset
- * - Smooth vertical multi-page scroll & zoomed horizontal/vertical panning + two-finger pinch zoom
- * - Original PDF binary download via originalDownloadService (NEVER exports canvas PNGs!)
- * - Direct integration with Document OCR extraction & Android BackHandler
+ * Enterprise multi-page PDF reader with smooth focal zoom & 2D panning:
+ * - Fixes flexbox negative-X overflow trap so zoomed PDF edges & all 4 corners are 100% scrollable
+ * - In-place lazy DPR canvas rendering (never clears DOM or snaps scroll back to 0,0 during zoom!)
+ * - Focal-point two-finger pinch zoom & zoom +/-/reset controls preserving reading coordinates
+ * - Consistent multi-page zoom persistence when navigating pages + live current-page tracking
+ * - Authentic original `.pdf` byte download via originalDownloadService (never PNG canvas exports)
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -25,12 +25,8 @@ import {
 import { WebView } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
-import {
-  readUriBytesAndBase64Safely,
-} from '../../services/pdfFileAccessService';
-import {
-  downloadOriginalFile,
-} from '../../services/originalDownloadService';
+import { readUriBytesAndBase64Safely } from '../../services/pdfFileAccessService';
+import { downloadOriginalFile } from '../../services/originalDownloadService';
 import type { StorageBucket } from '../../services/storageService';
 import { SereneColors } from '../../constants/theme';
 
@@ -65,24 +61,27 @@ function buildPdfShellHtml(): string {
       overflow: auto;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-x pan-y;
-      padding: 12px 8px 36px 8px;
+      overscroll-behavior: contain;
     }
+    /* CRITICAL: Never use flex align-items:center on wide overflow content — negative left coordinates clip edges! */
     #pdf-pages {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
+      display: block;
+      width: max-content;
       min-width: 100%;
-      gap: 14px;
+      padding: 12px 10px 44px 10px;
     }
     .page-frame {
       background: #ffffff;
       border-radius: 4px;
       box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
       overflow: hidden;
-      flex-shrink: 0;
+      margin: 0 auto 14px auto;
+      position: relative;
     }
     .page-frame canvas {
       display: block;
+      width: 100%;
+      height: 100%;
     }
     #status {
       color: #cbd5e1;
@@ -108,7 +107,11 @@ function buildPdfShellHtml(): string {
     var currentFitMode = 'width';
     var page1BaseWidth = 612;
     var page1BaseHeight = 792;
+    var pageSlots = [];
+    var activeEffectiveScale = 1.0;
     var renderEpoch = 0;
+    var isRenderingQueue = false;
+    var scrollRenderTimer = null;
 
     function postMsg(obj) {
       if (window.ReactNativeWebView) {
@@ -124,58 +127,135 @@ function buildPdfShellHtml(): string {
       if (chunk) base64Buffer.push(chunk);
     };
 
-    function computeEffectiveScale(zoomFactor, fitMode) {
+    function computeBaseFitScale(pageW, pageH, fitMode) {
       var scroller = document.getElementById('scroller');
-      var vw = Math.max(280, (scroller ? scroller.clientWidth : window.innerWidth) - 20);
+      var vw = Math.max(280, (scroller ? scroller.clientWidth : window.innerWidth) - 24);
       var vh = Math.max(320, (scroller ? scroller.clientHeight : window.innerHeight) - 36);
-      var widthFit = vw / Math.max(1, page1BaseWidth);
-      var pageFit = Math.min(widthFit, vh / Math.max(1, page1BaseHeight));
-      var baseScale = fitMode === 'page' ? pageFit : widthFit;
-      return Math.max(0.25, Math.min(6.0, baseScale * zoomFactor));
+      var widthFit = vw / Math.max(1, pageW);
+      var pageFit = Math.min(widthFit, vh / Math.max(1, pageH));
+      return fitMode === 'page' ? pageFit : widthFit;
     }
 
-    async function renderAllPages(zoomFactor, fitMode) {
-      if (!pdfDoc) return;
+    function computeEffectiveScale(zoomFactor, fitMode) {
+      var base = computeBaseFitScale(page1BaseWidth, page1BaseHeight, fitMode);
+      return Math.max(0.2, Math.min(8.0, base * zoomFactor));
+    }
+
+    function getVisiblePageWindow() {
+      var scroller = document.getElementById('scroller');
+      var top = scroller.scrollTop;
+      var bottom = top + scroller.clientHeight;
+      var bestPage = 1;
+      var bestVisibleOverlap = -1;
+
+      for (var i = 0; i < pageSlots.length; i++) {
+        var slot = pageSlots[i];
+        var elTop = slot.frame.offsetTop;
+        var elBottom = elTop + slot.frame.offsetHeight;
+        var overlap = Math.min(bottom, elBottom) - Math.max(top, elTop);
+        if (overlap > bestVisibleOverlap) {
+          bestVisibleOverlap = overlap;
+          bestPage = slot.pageNumber;
+        }
+      }
+      return bestPage;
+    }
+
+    function isSlotNearViewport(slot) {
+      var scroller = document.getElementById('scroller');
+      var top = scroller.scrollTop - scroller.clientHeight * 1.1;
+      var bottom = scroller.scrollTop + scroller.clientHeight * 2.1;
+      var elTop = slot.frame.offsetTop;
+      var elBottom = elTop + slot.frame.offsetHeight;
+      return elBottom >= top && elTop <= bottom;
+    }
+
+    async function renderVisiblePagesCrisp() {
+      if (!pdfDoc || isRenderingQueue) return;
+      isRenderingQueue = true;
       var epoch = ++renderEpoch;
-      var container = document.getElementById('pdf-pages');
-      container.innerHTML = '';
 
-      var effectiveScale = computeEffectiveScale(zoomFactor, fitMode);
-      var dpr = Math.min(2.5, window.devicePixelRatio || 1.5);
-      // Keep zoomed canvas crisp without exceeding Android GPU texture limits
-      var backingScale = Math.min(3.5, Math.max(1.25, dpr * Math.min(1.8, Math.max(1, zoomFactor * 0.85))));
+      try {
+        var dpr = Math.min(2.5, window.devicePixelRatio || 1.5);
+        var backingMult = Math.min(3.0, Math.max(1.25, dpr * Math.min(1.6, Math.max(1, currentZoom * 0.85))));
+        var targetQualityScale = activeEffectiveScale;
 
-      for (var p = 1; p <= pdfDoc.numPages; p++) {
-        if (epoch !== renderEpoch) return;
-        var page = await pdfDoc.getPage(p);
-        var viewport = page.getViewport({ scale: effectiveScale });
+        for (var i = 0; i < pageSlots.length; i++) {
+          if (epoch !== renderEpoch) break;
+          var slot = pageSlots[i];
+          if (!isSlotNearViewport(slot) && slot.renderedScale > 0) continue;
+          if (Math.abs(slot.renderedScale - targetQualityScale) < 0.04 && slot.hasDrawn) continue;
 
-        var frame = document.createElement('div');
-        frame.className = 'page-frame';
-        frame.id = 'pdf-page-' + p;
-        frame.style.width = Math.round(viewport.width) + 'px';
-        frame.style.height = Math.round(viewport.height) + 'px';
+          var page = await pdfDoc.getPage(slot.pageNumber);
+          if (epoch !== renderEpoch) break;
 
-        var canvas = document.createElement('canvas');
-        canvas.width = Math.round(viewport.width * backingScale);
-        canvas.height = Math.round(viewport.height * backingScale);
-        canvas.style.width = Math.round(viewport.width) + 'px';
-        canvas.style.height = Math.round(viewport.height) + 'px';
+          var viewport = page.getViewport({ scale: targetQualityScale });
+          var drawW = Math.max(1, Math.round(viewport.width * backingMult));
+          var drawH = Math.max(1, Math.round(viewport.height * backingMult));
 
-        frame.appendChild(canvas);
-        container.appendChild(frame);
+          // Cap canvas texture size to stay fast and safe against GPU texture OOM on Android
+          var maxTex = 2800;
+          if (drawW > maxTex || drawH > maxTex) {
+            var texRatio = Math.min(maxTex / drawW, maxTex / drawH);
+            drawW = Math.round(drawW * texRatio);
+            drawH = Math.round(drawH * texRatio);
+          }
 
-        var ctx = canvas.getContext('2d');
-        ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0);
-        await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+          var actualScaleX = drawW / Math.max(1, viewport.width);
+          var actualScaleY = drawH / Math.max(1, viewport.height);
+
+          slot.canvas.width = drawW;
+          slot.canvas.height = drawH;
+          var ctx = slot.canvas.getContext('2d');
+          ctx.setTransform(actualScaleX, 0, 0, actualScaleY, 0, 0);
+          await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+          slot.renderedScale = targetQualityScale;
+          slot.hasDrawn = true;
+        }
+      } finally {
+        isRenderingQueue = false;
+      }
+    }
+
+    function applyZoomInstant(nextZoom, nextFitMode, focalX, focalY) {
+      if (!pdfDoc || pageSlots.length === 0) return;
+      var scroller = document.getElementById('scroller');
+      var clampedZoom = Math.max(0.5, Math.min(4.5, nextZoom || 1.0));
+      var prevEffectiveScale = activeEffectiveScale || computeEffectiveScale(currentZoom, currentFitMode);
+
+      currentZoom = clampedZoom;
+      if (nextFitMode) currentFitMode = nextFitMode;
+
+      var newEffectiveScale = computeEffectiveScale(currentZoom, currentFitMode);
+      activeEffectiveScale = newEffectiveScale;
+      var ratio = newEffectiveScale / Math.max(0.01, prevEffectiveScale);
+
+      var fx = typeof focalX === 'number' ? focalX : scroller.clientWidth / 2;
+      var fy = typeof focalY === 'number' ? focalY : scroller.clientHeight / 2;
+      var prevLeft = scroller.scrollLeft;
+      var prevTop = scroller.scrollTop;
+
+      // Resize page frames in-place WITHOUT clearing canvases — instant focal scaling with zero flash!
+      for (var i = 0; i < pageSlots.length; i++) {
+        var s = pageSlots[i];
+        var dispW = Math.max(40, Math.round(s.baseWidth * newEffectiveScale));
+        var dispH = Math.max(40, Math.round(s.baseHeight * newEffectiveScale));
+        s.frame.style.width = dispW + 'px';
+        s.frame.style.height = dispH + 'px';
       }
 
-      postMsg({
-        type: 'PDF_RENDERED',
-        totalPages: pdfDoc.numPages,
-        zoom: zoomFactor,
-        fitMode: fitMode
-      });
+      if (clampedZoom <= 1.01 && nextFitMode) {
+        scroller.scrollLeft = 0;
+      } else {
+        scroller.scrollLeft = Math.max(0, (prevLeft + fx) * ratio - fx);
+      }
+      scroller.scrollTop = Math.max(0, (prevTop + fy) * ratio - fy);
+
+      if (scrollRenderTimer) clearTimeout(scrollRenderTimer);
+      scrollRenderTimer = setTimeout(function() {
+        renderVisiblePagesCrisp();
+      }, 110);
     }
 
     window.commitPdfBase64AndRender = async function(initialFitMode) {
@@ -195,10 +275,46 @@ function buildPdfShellHtml(): string {
         var vp1 = firstPage.getViewport({ scale: 1.0 });
         page1BaseWidth = vp1.width;
         page1BaseHeight = vp1.height;
+        activeEffectiveScale = computeEffectiveScale(currentZoom, currentFitMode);
+
+        var container = document.getElementById('pdf-pages');
+        container.innerHTML = '';
+        pageSlots = [];
+
+        for (var p = 1; p <= pdfDoc.numPages; p++) {
+          var pg = p === 1 ? firstPage : await pdfDoc.getPage(p);
+          var vp = pg.getViewport({ scale: 1.0 });
+
+          var frame = document.createElement('div');
+          frame.className = 'page-frame';
+          frame.id = 'pdf-page-' + p;
+          frame.style.width = Math.round(vp.width * activeEffectiveScale) + 'px';
+          frame.style.height = Math.round(vp.height * activeEffectiveScale) + 'px';
+
+          var canvas = document.createElement('canvas');
+          frame.appendChild(canvas);
+          container.appendChild(frame);
+
+          pageSlots.push({
+            pageNumber: p,
+            baseWidth: vp.width,
+            baseHeight: vp.height,
+            frame: frame,
+            canvas: canvas,
+            renderedScale: 0,
+            hasDrawn: false
+          });
+        }
 
         document.getElementById('status').style.display = 'none';
         postMsg({ type: 'PDF_LOADED', totalPages: pdfDoc.numPages });
-        await renderAllPages(currentZoom, currentFitMode);
+        await renderVisiblePagesCrisp();
+        postMsg({
+          type: 'PDF_RENDERED',
+          totalPages: pdfDoc.numPages,
+          zoom: currentZoom,
+          fitMode: currentFitMode
+        });
       } catch (err) {
         var msg = (err && err.message) ? err.message : 'PDF rendering error';
         document.getElementById('status').innerText = 'Could not render PDF: ' + msg;
@@ -207,47 +323,77 @@ function buildPdfShellHtml(): string {
     };
 
     window.setViewerScale = function(nextZoom, nextFitMode) {
-      currentZoom = Math.max(0.5, Math.min(4.0, nextZoom || 1.0));
-      if (nextFitMode) currentFitMode = nextFitMode;
-      renderAllPages(currentZoom, currentFitMode);
+      applyZoomInstant(nextZoom, nextFitMode);
     };
 
     window.scrollToPage = function(pageNum) {
+      var scroller = document.getElementById('scroller');
       var el = document.getElementById('pdf-page-' + pageNum);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (el && scroller) {
+        scroller.scrollTo({
+          top: Math.max(0, el.offsetTop - 8),
+          left: scroller.scrollLeft,
+          behavior: 'smooth'
+        });
+        setTimeout(renderVisiblePagesCrisp, 240);
       }
     };
 
-    // Track two-finger pinch zoom inside viewport cleanly
-    (function setupPinch() {
+    (function setupInteractions() {
       var scroller = document.getElementById('scroller');
-      var pinchStartDist = 0;
-      var pinchStartZoom = 1.0;
-      var pinchTimer = null;
+      var pinchLastDist = 0;
+      var pinchLastMidX = 0;
+      var pinchLastMidY = 0;
+      var pageReportTimer = null;
 
       scroller.addEventListener('touchstart', function(e) {
         if (e.touches && e.touches.length === 2) {
-          var dx = e.touches[0].clientX - e.touches[1].clientX;
-          var dy = e.touches[0].clientY - e.touches[1].clientY;
-          pinchStartDist = Math.hypot(dx, dy);
-          pinchStartZoom = currentZoom;
+          var t0 = e.touches[0], t1 = e.touches[1];
+          pinchLastDist = Math.max(10, Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY));
+          pinchLastMidX = (t0.clientX + t1.clientX) / 2;
+          pinchLastMidY = (t0.clientY + t1.clientY) / 2;
         }
       }, { passive: true });
 
       scroller.addEventListener('touchmove', function(e) {
-        if (e.touches && e.touches.length === 2 && pinchStartDist > 10) {
-          var dx = e.touches[0].clientX - e.touches[1].clientX;
-          var dy = e.touches[0].clientY - e.touches[1].clientY;
-          var dist = Math.hypot(dx, dy);
-          var candidate = Math.max(0.5, Math.min(4.0, pinchStartZoom * (dist / pinchStartDist)));
-          currentZoom = Math.round(candidate * 100) / 100;
-          if (pinchTimer) clearTimeout(pinchTimer);
-          pinchTimer = setTimeout(function() {
-            renderAllPages(currentZoom, currentFitMode);
-            postMsg({ type: 'PDF_ZOOM_SYNC', zoom: currentZoom });
-          }, 120);
+        if (e.touches && e.touches.length === 2 && pinchLastDist >= 10) {
+          if (e.cancelable) e.preventDefault();
+          var t0 = e.touches[0], t1 = e.touches[1];
+          var dist = Math.max(10, Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY));
+          var midX = (t0.clientX + t1.clientX) / 2;
+          var midY = (t0.clientY + t1.clientY) / 2;
+          var ratio = dist / pinchLastDist;
+          var nextZoom = Math.max(0.5, Math.min(4.5, currentZoom * ratio));
+
+          applyZoomInstant(nextZoom, null, midX, midY);
+
+          // Follow midpoint translation cleanly during pinch
+          scroller.scrollLeft = Math.max(0, scroller.scrollLeft - (midX - pinchLastMidX));
+          scroller.scrollTop = Math.max(0, scroller.scrollTop - (midY - pinchLastMidY));
+
+          pinchLastDist = dist;
+          pinchLastMidX = midX;
+          pinchLastMidY = midY;
+          postMsg({ type: 'PDF_ZOOM_SYNC', zoom: Math.round(nextZoom * 100) / 100 });
         }
+      }, { passive: false });
+
+      scroller.addEventListener('touchend', function(e) {
+        if (!e.touches || e.touches.length < 2) {
+          pinchLastDist = 0;
+          if (scrollRenderTimer) clearTimeout(scrollRenderTimer);
+          scrollRenderTimer = setTimeout(renderVisiblePagesCrisp, 90);
+        }
+      }, { passive: true });
+
+      scroller.addEventListener('scroll', function() {
+        if (pageReportTimer) clearTimeout(pageReportTimer);
+        pageReportTimer = setTimeout(function() {
+          if (!pdfDoc || pageSlots.length === 0) return;
+          var activePage = getVisiblePageWindow();
+          postMsg({ type: 'PDF_PAGE_SYNC', currentPage: activePage });
+          renderVisiblePagesCrisp();
+        }, 120);
       }, { passive: true });
     })();
   </script>
@@ -352,7 +498,7 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
   }, [visible, webReady, pdfBase64]);
 
   const applyZoomOrFit = (nextZoom: number, nextFitMode: 'width' | 'page') => {
-    const clampedZoom = Math.max(0.5, Math.min(4.0, Math.round(nextZoom * 100) / 100));
+    const clampedZoom = Math.max(0.5, Math.min(4.5, Math.round(nextZoom * 100) / 100));
     setZoomScale(clampedZoom);
     setFitMode(nextFitMode);
     if (webViewRef.current) {
@@ -401,7 +547,6 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
       }
 
       if (!result.success) {
-        // Explicit fallback prompt if Sharing.shareAsync desired when Android SAF had a limitation
         if (await Sharing.isAvailableAsync() && pdfUri.startsWith('file:')) {
           Alert.alert(
             'PDF Download Failed',
@@ -450,6 +595,8 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
         setIsLoading(false);
       } else if (msg.type === 'PDF_ZOOM_SYNC' && typeof msg.zoom === 'number') {
         setZoomScale(msg.zoom);
+      } else if (msg.type === 'PDF_PAGE_SYNC' && typeof msg.currentPage === 'number') {
+        setCurrentPage(msg.currentPage);
       } else if (msg.type === 'PDF_ERROR') {
         setErrorMsg(msg.message || 'Failed to parse PDF document.');
         setIsLoading(false);
@@ -548,6 +695,10 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
                 allowFileAccessFromFileURLs
                 allowUniversalAccessFromFileURLs
                 mixedContentMode="always"
+                nestedScrollEnabled
+                overScrollMode="never"
+                showsHorizontalScrollIndicator
+                showsVerticalScrollIndicator
               />
               {isLoading && (
                 <View style={styles.loadingOverlay} pointerEvents="none">
@@ -624,8 +775,8 @@ export const UniversalPdfViewer: React.FC<UniversalPdfViewerProps> = ({
 
             <TouchableOpacity
               onPress={() => applyZoomOrFit(zoomScale + 0.35, fitMode)}
-              disabled={zoomScale >= 3.95}
-              style={[styles.navBtn, zoomScale >= 3.95 && styles.navBtnDisabled]}
+              disabled={zoomScale >= 4.45}
+              style={[styles.navBtn, zoomScale >= 4.45 && styles.navBtnDisabled]}
               accessibilityLabel="Zoom in PDF"
             >
               <MaterialIcons name="add" size={20} color="#FFFFFF" />

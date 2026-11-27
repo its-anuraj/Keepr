@@ -387,7 +387,8 @@ export function parseGeminiResponseToExtractedData(
     (geminiResponse.isReceipt === false &&
       !geminiResponse.isDocument &&
       !(geminiResponse as any).documentCategory &&
-      !(geminiResponse as any).document?.category);
+      !(geminiResponse as any).document?.category &&
+      !(Array.isArray(geminiResponse.receipts) && geminiResponse.receipts.length > 0));
 
   if (isExplicitInvalid) {
     const emptyCommon: CommonReceiptInfo = {
@@ -1140,34 +1141,81 @@ export function parseGeminiResponseToExtractedData(
     products: canonicalProducts,
   } : undefined;
 
+  const rawSubReceipts =
+    Array.isArray(geminiResponse.receipts) && geminiResponse.receipts.length > 1
+      ? geminiResponse.receipts
+      : null;
+
+  const extractedReceipts = rawSubReceipts
+    ? rawSubReceipts.map((sub, idx) => {
+        const parsedSub = parseGeminiResponseToExtractedData(
+          {
+            ...sub,
+            receipts: undefined,
+            multipleReceiptsDetected: false,
+            pageProcessingSummary: undefined,
+          },
+          receiptUri,
+          fileName
+        );
+        const pageSuffix =
+          Array.isArray(sub.sourcePageNumbers) && sub.sourcePageNumbers.length > 0
+            ? `p${sub.sourcePageNumbers.join('-')}`
+            : `${idx + 1}`;
+        return {
+          ...parsedSub,
+          id: `${parsedSub.id}-${pageSuffix}-r${idx + 1}`,
+          sourcePageNumbers: sub.sourcePageNumbers ?? parsedSub.sourcePageNumbers,
+          sourceRegionIndex: sub.sourceRegionIndex ?? parsedSub.sourceRegionIndex,
+          warnings: sub.warnings ?? parsedSub.warnings,
+          selected: true,
+          productPhotos: [],
+        };
+      })
+    : undefined;
+
+  const primaryLead =
+    extractedReceipts && extractedReceipts.length > 0 && !isActualReceipt && !isDoc && !isService
+      ? extractedReceipts[0]
+      : null;
+
   return {
     id: `receipt-${Date.now()}`,
     receiptUri,
     receiptImageName: fileName || 'Receipt-Scanned.jpg',
     scannedAt: new Date().toISOString(),
-    entityType,
-    isReceipt: isActualReceipt,
-    isDocument: isDoc,
-    isServiceRepair: isService,
-    classification: classificationResult,
-    documentCategory: reconciledDocCategory || null,
-    documentType: reconciledDocType || null,
-    documentTitle: docTitle,
-    issuerName: derivedIssuer || null,
-    referenceNumber: typeof invoiceNumberField === 'object' && invoiceNumberField !== null ? invoiceNumberField.value : invoiceNumberField || null,
-    documentDate: invoiceDateField || null,
-    expiryDate: normalizedExpiryDate,
-    dueDate: normalizedDueDate,
-    receiptConfidence: classificationResult.confidence,
-    common,
-    category: scannerCat,
-    categoryDetails,
-    items: parsedItems,
-    purchase: purchaseContract,
-    serviceRepair: serviceRepairContract,
-    rawConfidenceScore: Math.round(classificationResult.confidence * 100),
-    overallQuality: classificationResult.confidence >= 0.85 ? 'excellent' : 'good',
+    entityType: primaryLead?.entityType ?? entityType,
+    isReceipt: primaryLead?.isReceipt ?? isActualReceipt,
+    isDocument: primaryLead?.isDocument ?? isDoc,
+    isServiceRepair: primaryLead?.isServiceRepair ?? isService,
+    classification: primaryLead?.classification ?? classificationResult,
+    documentCategory: primaryLead?.documentCategory ?? (reconciledDocCategory || null),
+    documentType: primaryLead?.documentType ?? (reconciledDocType || null),
+    documentTitle: primaryLead?.documentTitle ?? docTitle,
+    issuerName: primaryLead?.issuerName ?? (derivedIssuer || null),
+    referenceNumber:
+      primaryLead?.referenceNumber ??
+      (typeof invoiceNumberField === 'object' && invoiceNumberField !== null ? invoiceNumberField.value : invoiceNumberField || null),
+    documentDate: primaryLead?.documentDate ?? (invoiceDateField || null),
+    expiryDate: primaryLead?.expiryDate ?? normalizedExpiryDate,
+    dueDate: primaryLead?.dueDate ?? normalizedDueDate,
+    receiptConfidence: primaryLead?.receiptConfidence ?? classificationResult.confidence,
+    common: primaryLead?.common ?? common,
+    category: primaryLead?.category ?? scannerCat,
+    categoryDetails: primaryLead?.categoryDetails ?? categoryDetails,
+    items: primaryLead?.items ?? parsedItems,
+    purchase: primaryLead?.purchase ?? purchaseContract,
+    serviceRepair: primaryLead?.serviceRepair ?? serviceRepairContract,
+    rawConfidenceScore: primaryLead?.rawConfidenceScore ?? Math.round(classificationResult.confidence * 100),
+    overallQuality: primaryLead?.overallQuality ?? (classificationResult.confidence >= 0.85 ? 'excellent' : 'good'),
     provider: 'gemini',
+    sourcePageNumbers: geminiResponse.sourcePageNumbers,
+    sourceRegionIndex: geminiResponse.sourceRegionIndex,
+    warnings: geminiResponse.warnings,
+    pageProcessingSummary: geminiResponse.pageProcessingSummary,
+    extractedReceipts,
+    selected: true,
+    productPhotos: [],
   };
 }
 

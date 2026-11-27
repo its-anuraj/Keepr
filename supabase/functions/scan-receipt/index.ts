@@ -326,13 +326,13 @@ Return a single strictly valid JSON object matching this schema:
   ]
 }
 
-CRITICAL EXTRACTION ACCURACY & PDF MULTI-PAGE RULES:
+CRITICAL EXTRACTION ACCURACY & PDF MULTI-PAGE / MULTI-RECEIPT RULES:
 1. NEVER invent, guess, or fabricate values that are not clearly visible in the receipt or PDF text. Use null for missing fields.
 2. Keep "invoiceDate" and "purchaseDate" distinct if both are stated separately (for example order date vs invoice billing date). Use YYYY-MM-DD format.
 3. Separate "taxableAmount" (pre-tax base value), "subtotal", "discount", tax components ("cgst", "sgst", "igst", "totalGst" / "taxAmount", "gstPercentage"), and "finalAmountPaid" / "grandTotal".
-4. When processing multi-page PDF documents:
-   - Consolidate line items across all pages without duplicating repeated headers or carry-forward summary rows.
-   - NEVER add carry-forward subtotals from earlier pages to the final page grand total. Use the true invoice grand total.
+4. Inspect EVERY page and EVERY receipt image inside the PDF:
+   - CASE A (Single receipt spanning multiple pages): Consolidate items across pages without duplicating repeated headers or carry-forward subtotals, set "multipleReceiptsDetected": false, and omit/single-entry "receipts".
+   - CASE B (Multiple separate receipts across different pages OR multiple separate receipt images on the same page): Set "multipleReceiptsDetected": true and include a "receipts" array where EACH element contains that distinct receipt's complete object ("classification", "purchase", "document", "serviceRepair", top-level "merchantName", "invoiceNumber", "invoiceDate", "purchaseDate", "subtotal", "discount", "taxableAmount", "gstPercentage", "cgst", "sgst", "igst", "totalGst", "finalAmountPaid", "paymentMethod", "currency", "items", and "sourcePageNumbers": [pageNum]). NEVER merge separate merchants, invoice numbers, or independent purchases into one!
 Return ONLY pure JSON. No markdown backticks, no preamble.
 `;
 
@@ -541,10 +541,12 @@ Deno.serve(async (req: Request) => {
           text: `SEARCHABLE TEXT LAYER:\n${extractedText.slice(0, 80000)}`,
         });
       }
-      for (const page of pageImages.slice(0, 6)) {
+      for (const page of pageImages.slice(0, 8)) {
         const cleanPageB64 = (page?.base64 || "").replace(/^data:[^;]+;base64,/, "").trim();
         if (cleanPageB64) {
-          parts.push({ text: `[Rendered Page ${page.pageNumber || ""}]` });
+          parts.push({
+            text: `[Rendered Page ${page.pageNumber || ""}${page.regionIndex ? ` · Receipt Image Region ${page.regionIndex}` : ""}]`,
+          });
           parts.push({
             inlineData: {
               mimeType: page.mimeType || "image/jpeg",
@@ -766,8 +768,17 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    const normalizedReceipts = Array.isArray(parsedData.receipts) && parsedData.receipts.length > 0
+      ? parsedData.receipts
+      : undefined;
+    const multipleReceiptsDetected = Boolean(
+      parsedData.multipleReceiptsDetected || (normalizedReceipts && normalizedReceipts.length > 1)
+    );
+
     const normalizedPayload = {
       ...parsedData,
+      multipleReceiptsDetected,
+      ...(normalizedReceipts ? { receipts: normalizedReceipts } : {}),
       status,
       classification,
       document: {

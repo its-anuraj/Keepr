@@ -46,6 +46,7 @@ import {
   ProcessingStep,
   FieldValue,
   ReceiptMultiItem,
+  PdfPageInputPayload,
   OcrResult,
   OcrBlock,
   OcrPreprocessedOutput,
@@ -284,6 +285,16 @@ export default function AIReceiptScannerScreen() {
 
   const [isSavingBatch, setIsSavingBatch] = useState(false);
   const [savedBatchCount, setSavedBatchCount] = useState(0);
+
+  const [editingReceiptIdx, setEditingReceiptIdx] = useState<number | null>(null);
+  const [editRecProduct, setEditRecProduct] = useState('');
+  const [editRecMerchant, setEditRecMerchant] = useState('');
+  const [editRecDate, setEditRecDate] = useState('');
+  const [editRecInvoiceNo, setEditRecInvoiceNo] = useState('');
+  const [editRecTotal, setEditRecTotal] = useState('');
+  const [editRecTax, setEditRecTax] = useState('');
+  const [editRecCategoryId, setEditRecCategoryId] = useState('electronics');
+  const [showEditMultiReceiptModal, setShowEditMultiReceiptModal] = useState(false);
 
   const [processingError, setProcessingError] = useState<string | null>(null);
   const [receiptRejection, setReceiptRejection] = useState<{
@@ -985,6 +996,7 @@ export default function AIReceiptScannerScreen() {
         let extractedText = '';
         let pdfType: 'text' | 'scanned' | 'mixed' | 'empty' = validation.pdfType;
         let pageCount = validation.estimatedPageCount;
+        let pdfPagesPayload: PdfPageInputPayload[] = [];
         let pageImagesPayload: Array<{
           pageNumber: number;
           base64: string;
@@ -995,7 +1007,7 @@ export default function AIReceiptScannerScreen() {
         if (pdfProcessorRef.current) {
           const pdfStageStart = Date.now();
           const webRes = await pdfProcessorRef.current.processPdf(pdfBase64, {
-            maxPages: 10,
+            maxPages: 20,
             onProgress: (prog) => {
               if (prog.stage) {
                 setProcessingTitle(prog.stage);
@@ -1022,6 +1034,19 @@ export default function AIReceiptScannerScreen() {
               pdfType: webRes.pdfType,
             }));
 
+            pdfPagesPayload = webRes.pages.map((p) => ({
+              pageNumber: p.pageNumber,
+              text: p.text,
+              charCount: p.charCount,
+              hasImages: p.hasImages,
+              isScannedCandidate: p.isScannedCandidate,
+              imageCount: p.imageCount,
+              renderedImageBase64: p.renderedImageBase64,
+              mimeType: p.renderedImageMimeType || 'image/jpeg',
+              regions: p.regions,
+              error: p.error || null,
+            }));
+
             pageImagesPayload = webRes.pages
               .filter((p) => Boolean(p.renderedImageBase64))
               .map((p) => ({
@@ -1033,7 +1058,7 @@ export default function AIReceiptScannerScreen() {
 
             logScannerStage('PDF_TEXT_EXTRACTION', 'ok', {
               method: pdfType,
-              note: `pages=${webRes.totalPages} textChars=${extractedText.length}`,
+              note: `pages=${webRes.totalPages} textChars=${extractedText.length} failed=${webRes.failedPages?.length || 0}`,
               durationMs: Date.now() - pdfStageStart,
             });
             if (pageImagesPayload.length > 0) {
@@ -1074,7 +1099,13 @@ export default function AIReceiptScannerScreen() {
           extractedText: extractedText || undefined,
           pdfType,
           pageCount,
+          pages: pdfPagesPayload.length > 0 ? pdfPagesPayload : undefined,
           pageImages: pageImagesPayload.length > 0 ? pageImagesPayload : undefined,
+          onProgress: (prog) => {
+            if (prog.stage) {
+              setProcessingTitle(prog.stage);
+            }
+          },
         });
         logScannerStage('RESULT_VALIDATION', 'ok', {
           method: geminiResponse?.source?.model || 'backend',
@@ -1204,6 +1235,7 @@ export default function AIReceiptScannerScreen() {
       const isGeneralDoc = classification.topLevelClassification === 'GENERAL_DOCUMENT';
       const isPurchaseItem = classification.topLevelClassification === 'PURCHASE_ITEM';
       const isServiceRepair = classification.topLevelClassification === 'SERVICE_REPAIR' || routingDecision.action === 'AUTO_ROUTE_SERVICE';
+      const isMultiReceipt = Boolean(parsedData.extractedReceipts && parsedData.extractedReceipts.length > 1);
       const isMultiItem = isPurchaseItem && Boolean(parsedData.items && parsedData.items.length > 1);
       const isUserReview =
         routingDecision.action === 'USER_REVIEW' ||
@@ -1215,7 +1247,9 @@ export default function AIReceiptScannerScreen() {
       const canonicalCategory = String(rawCat).toUpperCase().replace(/[\s&]+/g, '_');
       const canonicalDocType = (docType || classification.documentSubtype || (isServiceRepair ? 'SERVICE_INVOICE' : isPurchaseItem ? 'PURCHASE_INVOICE' : 'DOCUMENT')).toUpperCase().replace(/[\s&]+/g, '_');
       const confLevel = classification.confidence >= 0.85 ? 'high' : classification.confidence >= 0.6 ? 'medium' : 'low';
-      const destination = isUserReview
+      const destination = isMultiReceipt
+        ? 'multi_receipt_review'
+        : isUserReview
         ? 'review_modal'
         : isServiceRepair
         ? '/service/add'
@@ -1226,6 +1260,17 @@ export default function AIReceiptScannerScreen() {
         : '/(tabs)/add';
 
       console.log(`[ScannerDiagnostics] classification completed: entityType=${entityType} category=${canonicalCategory} documentType=${canonicalDocType} confidence=${confLevel} destination=${destination}`);
+
+      // 0. Multi-Receipt PDF (>= 2 distinct receipts in a single PDF): Open multi_receipt_review
+      if (parsedData.extractedReceipts && parsedData.extractedReceipts.length > 1) {
+        console.log(
+          `[ScannerDiagnostics] multi-receipt PDF detected (${parsedData.extractedReceipts.length} receipts), opening multi_receipt_review`
+        );
+        setScreenState('multi_receipt_review');
+        setIsScanning(false);
+        scanInProgressRef.current = false;
+        return;
+      }
 
       // 1. Ambiguous or User-Review Required (confidence < 0.85 or uncertain classification):
       if (
@@ -1571,6 +1616,310 @@ export default function AIReceiptScannerScreen() {
     setNewItemProductType('');
     setNewItemBrand('');
     setShowAddItemModal(false);
+  };
+
+  const mapScannerCategoryToCategoryId = (cat?: string | null): string => {
+    switch (cat) {
+      case 'mobile_laptop':
+      case 'electronics':
+        return 'electronics';
+      case 'home_appliance':
+        return 'appliances';
+      case 'vehicle':
+        return 'vehicles';
+      case 'furniture':
+        return 'furniture';
+      case 'fashion':
+        return 'fashion';
+      case 'sports':
+        return 'sports';
+      case 'beauty':
+        return 'beauty';
+      default:
+        return (cat ? getCategoryIdFromName(cat) : null) || 'other';
+    }
+  };
+
+  const toggleMultiReceiptSelection = (idx: number) => {
+    if (!extractedData?.extractedReceipts) return;
+    const nextReceipts = extractedData.extractedReceipts.map((r, i) =>
+      i === idx ? { ...r, selected: r.selected === false } : r
+    );
+    setExtractedData({ ...extractedData, extractedReceipts: nextReceipts });
+  };
+
+  const handleCaptureMultiReceiptProductPhoto = async (receiptIndex: number) => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Camera Permission', 'Camera access is needed to photograph the purchased item.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 1,
+        allowsEditing: false,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri) {
+        const persisted = await persistProductPhotoToVault(res.assets[0].uri);
+        const stabilized = persisted.uri ? null : await stabilizeReceiptImage(res.assets[0].uri);
+        const finalUri = persisted.uri || stabilized!.uri;
+        setExtractedData((prev) => {
+          if (!prev?.extractedReceipts) return prev;
+          const updated = [...prev.extractedReceipts];
+          const existing = updated[receiptIndex]?.productPhotos || [];
+          updated[receiptIndex] = {
+            ...updated[receiptIndex],
+            productPhotos: [...existing, finalUri],
+          };
+          return { ...prev, extractedReceipts: updated };
+        });
+      }
+    } catch (err) {
+      console.error('[ScanReceipt] Multi-receipt photo capture error:', err);
+      Alert.alert('Camera Error', 'Could not capture product photo. Please try again.');
+    }
+  };
+
+  const handlePickMultiReceiptProductPhoto = async (receiptIndex: number) => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: true,
+        selectionLimit: 5,
+        quality: 1,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const uris: string[] = [];
+        for (const asset of res.assets) {
+          const persisted = await persistProductPhotoToVault(asset.uri);
+          if (persisted.uri) {
+            uris.push(persisted.uri);
+          } else {
+            const stabilized = await stabilizeReceiptImage(asset.uri);
+            uris.push(stabilized.uri);
+          }
+        }
+        setExtractedData((prev) => {
+          if (!prev?.extractedReceipts) return prev;
+          const updated = [...prev.extractedReceipts];
+          const existing = updated[receiptIndex]?.productPhotos || [];
+          updated[receiptIndex] = {
+            ...updated[receiptIndex],
+            productPhotos: [...existing, ...uris],
+          };
+          return { ...prev, extractedReceipts: updated };
+        });
+      }
+    } catch (err) {
+      console.error('[ScanReceipt] Multi-receipt photo pick error:', err);
+      Alert.alert('Gallery Error', 'Could not select product photo.');
+    }
+  };
+
+  const handleRemoveMultiReceiptProductPhoto = (receiptIndex: number, photoIdx: number) => {
+    setExtractedData((prev) => {
+      if (!prev?.extractedReceipts) return prev;
+      const updated = [...prev.extractedReceipts];
+      const existing = updated[receiptIndex]?.productPhotos || [];
+      updated[receiptIndex] = {
+        ...updated[receiptIndex],
+        productPhotos: existing.filter((_, i) => i !== photoIdx),
+      };
+      return { ...prev, extractedReceipts: updated };
+    });
+  };
+
+  const openEditMultiReceiptModal = (receiptIndex: number) => {
+    const rec = extractedData?.extractedReceipts?.[receiptIndex];
+    if (!rec) return;
+    setEditingReceiptIdx(receiptIndex);
+    setEditRecProduct(rec.common.productName?.value || rec.documentTitle || '');
+    setEditRecMerchant(rec.common.merchant?.value || rec.issuerName || '');
+    setEditRecDate(rec.common.purchaseDate?.value || rec.documentDate || '');
+    setEditRecInvoiceNo(rec.common.invoiceNumber?.value || rec.referenceNumber || '');
+    const amt = rec.purchase?.grandTotal ?? rec.common.finalAmount?.value;
+    setEditRecTotal(amt != null ? String(amt) : '');
+    const taxVal = rec.purchase?.taxAmount ?? rec.common.taxGst?.value;
+    setEditRecTax(taxVal != null ? String(taxVal) : '');
+    setEditRecCategoryId(mapScannerCategoryToCategoryId(rec.category));
+    setShowEditMultiReceiptModal(true);
+  };
+
+  const handleSaveMultiReceiptEdit = () => {
+    if (editingReceiptIdx === null || !extractedData?.extractedReceipts) return;
+    const mkField = <T,>(value: T): FieldValue<T> => ({
+      value,
+      confidence: 'high',
+      confidenceScore: 1.0,
+      needsVerification: false,
+    });
+    const totalNum = parseFloat(editRecTotal);
+    const taxNum = parseFloat(editRecTax);
+    const updated = extractedData.extractedReceipts.map((rec, idx) => {
+      if (idx !== editingReceiptIdx) return rec;
+      const cleanTotal = Number.isFinite(totalNum) ? totalNum : rec.common.finalAmount?.value ?? null;
+      const cleanTax = Number.isFinite(taxNum) ? taxNum : rec.common.taxGst?.value ?? null;
+      const updatedCatCode = (canonicalToScannerCode(getCategoryNameFromId(editRecCategoryId) as CanonicalCategory) ||
+        rec.category) as ScannerCategory;
+      return {
+        ...rec,
+        category: updatedCatCode,
+        common: {
+          ...rec.common,
+          productName: mkField(editRecProduct.trim() || null),
+          merchant: mkField(editRecMerchant.trim() || null),
+          purchaseDate: mkField(editRecDate.trim() || null),
+          invoiceNumber: mkField(editRecInvoiceNo.trim() || null),
+          finalAmount: mkField(cleanTotal),
+          taxGst: mkField(cleanTax),
+        },
+        purchase: rec.purchase
+          ? {
+              ...rec.purchase,
+              merchantName: editRecMerchant.trim() || rec.purchase.merchantName,
+              purchaseDate: editRecDate.trim() || rec.purchase.purchaseDate,
+              invoiceNumber: editRecInvoiceNo.trim() || rec.purchase.invoiceNumber,
+              taxAmount: cleanTax,
+              grandTotal: cleanTotal,
+            }
+          : rec.purchase,
+      };
+    });
+    setExtractedData({ ...extractedData, extractedReceipts: updated });
+    setShowEditMultiReceiptModal(false);
+    setEditingReceiptIdx(null);
+  };
+
+  const handleSaveMultiReceipts = async () => {
+    if (!extractedData?.extractedReceipts) return;
+    const selectedReceipts = extractedData.extractedReceipts.filter((r) => r.selected !== false);
+    if (selectedReceipts.length === 0) {
+      Alert.alert('No Receipts Selected', 'Please select at least one receipt to save to Keepr.');
+      return;
+    }
+
+    const missingPhotoRec = selectedReceipts.find(
+      (r) => !r.productPhotos || r.productPhotos.length === 0
+    );
+    if (missingPhotoRec) {
+      const label =
+        missingPhotoRec.common.productName?.value ||
+        missingPhotoRec.common.merchant?.value ||
+        'Receipt';
+      Alert.alert(
+        'Product Photo Required',
+        `Please add at least one photo of the purchased product for "${label}". The complete PDF receipt cannot be used as the product photo.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    try {
+      setIsSavingBatch(true);
+      let finalReceiptUri = extractedData.receiptUri;
+      if (finalReceiptUri) {
+        const persistRes = await persistReceiptToVault(
+          finalReceiptUri,
+          extractedData.receiptImageName,
+          capturedBase64
+        );
+        if (persistRes.persisted && persistRes.uri) {
+          finalReceiptUri = persistRes.uri;
+        } else {
+          Alert.alert(
+            'PDF Persistence Error',
+            "Couldn't store the complete original PDF securely. Please try again."
+          );
+          return;
+        }
+      }
+
+      const createdIds: string[] = [];
+      for (let i = 0; i < selectedReceipts.length; i++) {
+        const rec = selectedReceipts[i];
+        const purchaseDate =
+          rec.common.purchaseDate?.value ||
+          rec.purchase?.purchaseDate ||
+          rec.documentDate ||
+          new Date().toISOString().split('T')[0];
+        const purchasePrice =
+          Number(rec.purchase?.grandTotal ?? rec.common.finalAmount?.value ?? 0) || 0;
+        const itemName =
+          rec.common.productName?.value ||
+          rec.items?.[0]?.productName ||
+          rec.documentTitle ||
+          (rec.common.merchant?.value ? `Purchase from ${rec.common.merchant.value}` : `Receipt #${i + 1}`);
+        const pageNote = rec.sourcePageNumbers?.length
+          ? `PDF Page ${rec.sourcePageNumbers.join(', ')}${rec.sourceRegionIndex ? ` · Image #${rec.sourceRegionIndex}` : ''}`
+          : `PDF Receipt #${i + 1}`;
+
+        const created = await addItem({
+          name: itemName,
+          categoryId: mapScannerCategoryToCategoryId(rec.category),
+          purchaseDate,
+          purchasePrice,
+          subtotal: rec.purchase?.subtotal ?? rec.common.subtotal?.value ?? undefined,
+          discount: rec.purchase?.discount ?? rec.common.discount?.value ?? undefined,
+          currency: rec.common.currency?.value || 'INR',
+          merchant: rec.common.merchant?.value || rec.issuerName || undefined,
+          sellerAddress:
+            rec.common.merchantAddress?.value || rec.common.storeLocation?.value || undefined,
+          gstin: rec.common.gstin?.value || undefined,
+          gstTax:
+            (rec.purchase?.taxAmount ?? rec.common.taxGst?.value) != null
+              ? String(rec.purchase?.taxAmount ?? rec.common.taxGst?.value)
+              : undefined,
+          gstRate: rec.purchase?.gstRate || rec.common.gstRate?.value || undefined,
+          cgst: rec.purchase?.cgst != null ? String(rec.purchase.cgst) : undefined,
+          sgst: rec.purchase?.sgst != null ? String(rec.purchase.sgst) : undefined,
+          igst: rec.purchase?.igst != null ? String(rec.purchase.igst) : undefined,
+          invoiceNumber: rec.common.invoiceNumber?.value || rec.referenceNumber || undefined,
+          brand: rec.common.brand?.value || undefined,
+          model: rec.common.modelNumber?.value || undefined,
+          serialNumber: rec.common.serialNumber?.value || undefined,
+          productPhotos: rec.productPhotos,
+          receiptUri: finalReceiptUri,
+          receiptName: extractedData.receiptImageName || 'Multi-Receipt.pdf',
+          receiptType: 'invoice',
+          products:
+            rec.items && rec.items.length > 0
+              ? rec.items.map((it) => ({
+                  id: it.id,
+                  name: it.productName,
+                  category: typeof it.category === 'string' ? it.category : undefined,
+                  brand: it.brand,
+                  model: it.model,
+                  serialNumber: it.serialNumber,
+                  quantity: it.quantity || 1,
+                  unitPrice: it.unitPrice,
+                  lineTotal: it.price,
+                  warrantyUntil: it.warrantyUntil || null,
+                  returnUntil: it.returnUntil || null,
+                  productPhotos: it.productPhotos || [],
+                }))
+              : undefined,
+          isMultiProduct: (rec.items?.length || 0) > 1,
+          productCount: rec.items?.length || 1,
+          notes: `Extracted from ${pageNote} (${extractedData.receiptImageName})`,
+        });
+        createdIds.push(created.id);
+      }
+
+      setSavedBatchCount(createdIds.length);
+      setSavedItemId(createdIds[0] || null);
+      setScreenState('saved_success');
+    } catch (err) {
+      console.error('[ScanReceipt] Multi-receipt save error:', err);
+      Alert.alert(
+        'Partial or Save Error',
+        err instanceof Error
+          ? err.message
+          : 'Could not complete saving all selected receipts. Please check your vault and retry.'
+      );
+    } finally {
+      setIsSavingBatch(false);
+    }
   };
 
   const handleSaveSelectedMultiItems = async () => {
@@ -3208,6 +3557,489 @@ export default function AIReceiptScannerScreen() {
           ocrResult={ocrResult}
           preprocessed={ocrPreprocessed}
         />
+      </View>
+    );
+  }
+
+  if (screenState === 'multi_receipt_review' && extractedData) {
+    const receiptsList = extractedData.extractedReceipts || [];
+    const selectedReceipts = receiptsList.filter((r) => r.selected !== false);
+    const totalReceipts = receiptsList.length;
+    const selectedTotalAmount = selectedReceipts.reduce(
+      (sum, r) => sum + (Number(r.purchase?.grandTotal ?? r.common.finalAmount?.value) || 0),
+      0
+    );
+    const missingPhotoCount = selectedReceipts.filter(
+      (r) => !r.productPhotos || r.productPhotos.length === 0
+    ).length;
+    const pageSummary = extractedData.pageProcessingSummary;
+    const failedPages = pageSummary?.failedPages || [];
+    const allReceiptsSelected = totalReceipts > 0 && selectedReceipts.length === totalReceipts;
+
+    return (
+      <View
+        className="flex-1 bg-serene-surface"
+        style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+      >
+        <View className="flex-row items-center justify-between px-4 py-3 border-b border-serene-hairline-border bg-serene-surface">
+          <TouchableOpacity
+            className="w-10 h-10 rounded-full bg-serene-surface-container-lowest border border-serene-subtle-border items-center justify-center shadow-sm"
+            onPress={() => setScreenState('preview')}
+            activeOpacity={0.8}
+            accessibilityLabel="Back to preview"
+          >
+            <MaterialIcons name="arrow-back" size={20} color={SereneColors.onSurface} />
+          </TouchableOpacity>
+
+          <View className="items-center flex-1 px-2">
+            <Text className="text-base font-bold text-serene-on-surface" numberOfLines={1}>
+              Review PDF Receipts
+            </Text>
+            <Text className="text-[11px] font-medium text-serene-on-surface-variant" numberOfLines={1}>
+              {totalReceipts} separate receipts · {pageSummary?.totalPages || pdfMeta.pageCount || 1} PDF pages
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            className="px-2.5 py-2 rounded-full bg-serene-surface-container-lowest border border-serene-subtle-border flex-row items-center gap-1 shadow-sm"
+            onPress={() => setShowImageModal(true)}
+            activeOpacity={0.8}
+            accessibilityLabel="View complete original PDF"
+          >
+            <MaterialIcons name="picture-as-pdf" size={16} color={SereneColors.primary} />
+            <Text className="text-[11px] font-bold text-serene-primary">Full PDF</Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView
+          className="flex-1 px-4 pt-3"
+          contentContainerStyle={{ paddingBottom: 130, gap: 12 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {failedPages.length > 0 && (
+            <View className="bg-amber-50 border border-amber-300 rounded-serene-xl p-3.5">
+              <View className="flex-row items-start justify-between gap-2">
+                <View className="flex-row items-start gap-2 flex-1">
+                  <MaterialIcons name="warning-amber" size={18} color="#B45309" />
+                  <View className="flex-1">
+                    <Text className="text-xs font-bold text-amber-900">
+                      Partial Page Extraction ({failedPages.length} {failedPages.length === 1 ? 'page' : 'pages'} failed)
+                    </Text>
+                    <Text className="text-[11px] text-amber-800 mt-0.5 leading-4">
+                      Pages {failedPages.map((p) => p.pageNumber).join(', ')} could not be extracted cleanly. The complete original PDF is still preserved.
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  className="bg-amber-700 px-3 py-1.5 rounded-full"
+                  onPress={() => {
+                    void handleConfirmAndProcessReceipt();
+                  }}
+                >
+                  <Text className="text-[11px] font-bold text-white">Re-scan</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          <View className="bg-serene-surface-container-lowest rounded-serene-xl p-3.5 border border-serene-subtle-border shadow-sm">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-row items-center gap-2.5 flex-1 mr-2">
+                <View className="w-9 h-9 rounded-full bg-blue-50 items-center justify-center">
+                  <MaterialIcons name="collections-bookmark" size={18} color="#115086" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-sm font-bold text-serene-on-surface" numberOfLines={1}>
+                    {extractedData.receiptImageName || 'Multi-Receipt.pdf'}
+                  </Text>
+                  <Text className="text-[11px] text-serene-on-surface-variant">
+                    Saved once & linked to every selected purchase
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                className="flex-row items-center gap-1 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200"
+                onPress={() => setShowImageModal(true)}
+              >
+                <MaterialIcons name="zoom-in" size={13} color="#047857" />
+                <Text className="text-[10px] font-bold text-emerald-800">Inspect PDF</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View className="flex-row items-center justify-between">
+            <TouchableOpacity
+              className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-full bg-serene-surface-container-lowest border border-serene-subtle-border"
+              onPress={() => {
+                const nextVal = !allReceiptsSelected;
+                setExtractedData({
+                  ...extractedData,
+                  extractedReceipts: receiptsList.map((r) => ({ ...r, selected: nextVal })),
+                });
+              }}
+            >
+              <MaterialIcons
+                name={allReceiptsSelected ? 'check-box' : 'check-box-outline-blank'}
+                size={16}
+                color={SereneColors.primary}
+              />
+              <Text className="text-xs font-semibold text-serene-on-surface">
+                {allReceiptsSelected ? 'Deselect All' : 'Select All'} ({selectedReceipts.length}/{totalReceipts})
+              </Text>
+            </TouchableOpacity>
+
+            <View className="items-end">
+              <Text className="text-[10px] uppercase font-semibold text-serene-on-surface-variant">
+                Selected Total
+              </Text>
+              <Text className="text-sm font-bold text-serene-primary">
+                {formatCurrency(selectedTotalAmount)}
+              </Text>
+            </View>
+          </View>
+
+          {receiptsList.map((rec, rIdx) => {
+            const isSelected = rec.selected !== false;
+            const title =
+              rec.common.productName?.value ||
+              rec.items?.[0]?.productName ||
+              rec.documentTitle ||
+              rec.common.merchant?.value ||
+              `Receipt #${rIdx + 1}`;
+            const merchant = rec.common.merchant?.value || rec.issuerName || 'Merchant Unknown';
+            const dateStr = rec.common.purchaseDate?.value || rec.documentDate || 'Date Unknown';
+            const invNo = rec.common.invoiceNumber?.value || rec.referenceNumber;
+            const subtotalVal = rec.purchase?.subtotal ?? rec.common.subtotal?.value;
+            const taxVal = rec.purchase?.taxAmount ?? rec.common.taxGst?.value;
+            const finalAmt = rec.purchase?.grandTotal ?? rec.common.finalAmount?.value;
+            const pageLabel = rec.sourcePageNumbers?.length
+              ? `Page ${rec.sourcePageNumbers.join(', ')}`
+              : `Receipt ${rIdx + 1}`;
+            const photos = rec.productPhotos || [];
+
+            return (
+              <View
+                key={rec.id || `multi-rec-${rIdx}`}
+                className={`rounded-serene-xl p-3.5 border ${
+                  isSelected
+                    ? 'bg-serene-surface-container-lowest border-serene-primary/40 shadow-sm'
+                    : 'bg-serene-surface-container border-serene-hairline-border opacity-70'
+                }`}
+              >
+                <View className="flex-row items-start justify-between gap-2">
+                  <TouchableOpacity
+                    className="flex-row items-start gap-2.5 flex-1"
+                    onPress={() => toggleMultiReceiptSelection(rIdx)}
+                    activeOpacity={0.75}
+                  >
+                    <MaterialIcons
+                      name={isSelected ? 'check-box' : 'check-box-outline-blank'}
+                      size={22}
+                      color={isSelected ? SereneColors.primary : '#64748B'}
+                      style={{ marginTop: 2 }}
+                    />
+                    <View className="flex-1">
+                      <View className="flex-row flex-wrap items-center gap-1.5 mb-1">
+                        <View className="bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                          <Text className="text-[10px] font-bold text-blue-800">{pageLabel}</Text>
+                        </View>
+                        {rec.sourceRegionIndex ? (
+                          <View className="bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200">
+                            <Text className="text-[10px] font-bold text-indigo-800">
+                              Image #{rec.sourceRegionIndex}
+                            </Text>
+                          </View>
+                        ) : null}
+                        {rec.isDocument && !rec.isReceipt ? (
+                          <View className="bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                            <Text className="text-[10px] font-bold text-amber-800">Document Slip</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text className="text-sm font-bold text-serene-on-surface" numberOfLines={2}>
+                        {title}
+                      </Text>
+                      <Text className="text-xs text-serene-on-surface-variant mt-0.5">
+                        {merchant} · {dateStr}
+                        {invNo ? ` · #${invNo}` : ''}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  <View className="items-end">
+                    <Text className="text-base font-bold text-serene-primary">
+                      {finalAmt != null ? formatCurrency(Number(finalAmt)) : '₹—'}
+                    </Text>
+                    {(subtotalVal != null || taxVal != null) && (
+                      <Text className="text-[10px] text-serene-on-surface-variant mt-0.5">
+                        {subtotalVal != null ? `Sub ${formatCurrency(Number(subtotalVal))}` : ''}
+                        {subtotalVal != null && taxVal != null ? ' · ' : ''}
+                        {taxVal != null ? `Tax ${formatCurrency(Number(taxVal))}` : ''}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                {rec.items && rec.items.length > 0 && (
+                  <View className="mt-2.5 pt-2 border-t border-serene-hairline-border gap-1">
+                    {rec.items.slice(0, 4).map((it, liIdx) => (
+                      <View key={it.id || `li-${liIdx}`} className="flex-row justify-between items-center">
+                        <Text className="text-[11px] text-serene-on-surface flex-1 mr-2" numberOfLines={1}>
+                          • {it.productName}
+                          {it.quantity > 1 ? ` ×${it.quantity}` : ''}
+                        </Text>
+                        <Text className="text-[11px] font-semibold text-serene-on-surface-variant">
+                          {formatCurrency(Number(it.price) || 0)}
+                        </Text>
+                      </View>
+                    ))}
+                    {rec.items.length > 4 && (
+                      <Text className="text-[10px] text-serene-primary font-medium">
+                        +{rec.items.length - 4} more items
+                      </Text>
+                    )}
+                  </View>
+                )}
+
+                {rec.warnings && rec.warnings.length > 0 && (
+                  <View className="mt-2 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                    <Text className="text-[10px] text-amber-800">{rec.warnings[0]}</Text>
+                  </View>
+                )}
+
+                {isSelected && (
+                  <View className="mt-2.5 pt-2.5 border-t border-serene-hairline-border">
+                    <View className="flex-row items-center justify-between mb-1.5">
+                      <Text className="text-[11px] font-semibold text-serene-on-surface">
+                        Product Photo {photos.length > 0 ? `(${photos.length})` : '* Required'}
+                      </Text>
+                      <View className="flex-row items-center gap-1.5">
+                        <TouchableOpacity
+                          className="flex-row items-center gap-1 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200"
+                          onPress={() => handleCaptureMultiReceiptProductPhoto(rIdx)}
+                        >
+                          <MaterialIcons name="photo-camera" size={12} color="#115086" />
+                          <Text className="text-[10px] font-bold text-[#115086]">Camera</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          className="flex-row items-center gap-1 px-2.5 py-1 rounded-full bg-serene-surface border border-serene-subtle-border"
+                          onPress={() => handlePickMultiReceiptProductPhoto(rIdx)}
+                        >
+                          <MaterialIcons name="photo-library" size={12} color={SereneColors.onSurface} />
+                          <Text className="text-[10px] font-bold text-serene-on-surface">Gallery</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                    {photos.length > 0 && (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-1">
+                        <View className="flex-row gap-2">
+                          {photos.map((pUri, pIdx) => (
+                            <View key={`${pUri}-${pIdx}`} className="relative w-14 h-14 rounded-lg overflow-hidden border border-serene-subtle-border">
+                              <Image source={{ uri: pUri }} className="w-full h-full" resizeMode="cover" />
+                              <TouchableOpacity
+                                className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 items-center justify-center"
+                                onPress={() => handleRemoveMultiReceiptProductPhoto(rIdx, pIdx)}
+                              >
+                                <MaterialIcons name="close" size={10} color="#FFFFFF" />
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+                        </View>
+                      </ScrollView>
+                    )}
+                  </View>
+                )}
+
+                <View className="flex-row items-center justify-between mt-2.5 pt-2 border-t border-serene-hairline-border">
+                  <TouchableOpacity
+                    className="flex-row items-center gap-1 py-1 px-2"
+                    onPress={() => openEditMultiReceiptModal(rIdx)}
+                  >
+                    <MaterialIcons name="edit" size={14} color={SereneColors.primary} />
+                    <Text className="text-[11px] font-bold text-serene-primary">Edit Details</Text>
+                  </TouchableOpacity>
+
+                  {rec.isDocument && (
+                    <TouchableOpacity
+                      className="flex-row items-center gap-1 py-1 px-2"
+                      onPress={() =>
+                        navigateToDocumentAdd(
+                          normalizeToCanonicalDocumentCategory(rec.documentCategory) || 'Other Important Documents',
+                          normalizeToCanonicalDocumentType(
+                            normalizeToCanonicalDocumentCategory(rec.documentCategory) || 'Other Important Documents',
+                            rec.documentType
+                          ) || 'Document',
+                          rec,
+                          extractedData.receiptUri,
+                          extractedData.receiptImageName
+                        )
+                      }
+                    >
+                      <MaterialIcons name="folder-open" size={14} color="#047857" />
+                      <Text className="text-[11px] font-bold text-emerald-700">Save to Docs</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+
+        <View
+          className="absolute bottom-0 left-0 right-0 bg-serene-surface border-t border-serene-hairline-border px-4 pt-3 pb-4 shadow-lg"
+          style={{ paddingBottom: Math.max(insets.bottom, 16) }}
+        >
+          <TouchableOpacity
+            className={`w-full py-3.5 rounded-serene-xl flex-row items-center justify-center gap-2 shadow-sm ${
+              selectedReceipts.length > 0 && !isSavingBatch
+                ? missingPhotoCount > 0
+                  ? 'bg-amber-600'
+                  : 'bg-serene-primary'
+                : 'bg-serene-outline-variant opacity-60'
+            }`}
+            onPress={handleSaveMultiReceipts}
+            disabled={selectedReceipts.length === 0 || isSavingBatch}
+            activeOpacity={0.88}
+          >
+            <MaterialIcons
+              name={isSavingBatch ? 'hourglass-top' : missingPhotoCount > 0 ? 'add-a-photo' : 'library-add-check'}
+              size={18}
+              color="#FFFFFF"
+            />
+            <Text className="text-sm font-bold text-white">
+              {isSavingBatch
+                ? 'Saving Separate Purchases...'
+                : missingPhotoCount > 0
+                ? `Add Product Photos (${missingPhotoCount} Missing)`
+                : `Save ${selectedReceipts.length} Separate ${selectedReceipts.length === 1 ? 'Purchase' : 'Purchases'}`}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <Modal
+          visible={showEditMultiReceiptModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowEditMultiReceiptModal(false)}
+        >
+          <View className="flex-1 bg-black/60 justify-end">
+            <View
+              className="bg-serene-surface rounded-t-3xl p-5 max-h-[85%]"
+              style={{ paddingBottom: Math.max(insets.bottom, 16) }}
+            >
+              <View className="flex-row items-center justify-between mb-3">
+                <Text className="text-lg font-bold text-serene-on-surface">Edit Extracted Receipt</Text>
+                <TouchableOpacity
+                  onPress={() => setShowEditMultiReceiptModal(false)}
+                  className="w-8 h-8 rounded-full bg-serene-surface-container-high items-center justify-center"
+                >
+                  <MaterialIcons name="close" size={18} color="#1C1C17" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+                <View>
+                  <Text className="text-xs font-bold text-serene-on-surface mb-1">Purchase / Product Title</Text>
+                  <TextInput
+                    className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm font-medium text-serene-on-surface"
+                    value={editRecProduct}
+                    onChangeText={setEditRecProduct}
+                    placeholder="Enter product or receipt title"
+                  />
+                </View>
+
+                <View>
+                  <Text className="text-xs font-bold text-serene-on-surface mb-1">Merchant / Store</Text>
+                  <TextInput
+                    className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm font-medium text-serene-on-surface"
+                    value={editRecMerchant}
+                    onChangeText={setEditRecMerchant}
+                    placeholder="Store or vendor name"
+                  />
+                </View>
+
+                <View className="flex-row gap-3">
+                  <View className="flex-1">
+                    <Text className="text-xs font-bold text-serene-on-surface mb-1">Purchase Date (YYYY-MM-DD)</Text>
+                    <TextInput
+                      className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm text-serene-on-surface"
+                      value={editRecDate}
+                      onChangeText={setEditRecDate}
+                      placeholder="YYYY-MM-DD"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-xs font-bold text-serene-on-surface mb-1">Invoice #</Text>
+                    <TextInput
+                      className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm text-serene-on-surface"
+                      value={editRecInvoiceNo}
+                      onChangeText={setEditRecInvoiceNo}
+                      placeholder="Invoice number"
+                    />
+                  </View>
+                </View>
+
+                <View className="flex-row gap-3">
+                  <View className="flex-1">
+                    <Text className="text-xs font-bold text-serene-on-surface mb-1">Final Total (₹)</Text>
+                    <TextInput
+                      className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm font-bold text-serene-primary"
+                      value={editRecTotal}
+                      onChangeText={setEditRecTotal}
+                      keyboardType="numeric"
+                      placeholder="0.00"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-xs font-bold text-serene-on-surface mb-1">GST / Tax (₹)</Text>
+                    <TextInput
+                      className="bg-white border border-serene-subtle-border rounded-serene-md px-3 py-2.5 text-sm text-serene-on-surface"
+                      value={editRecTax}
+                      onChangeText={setEditRecTax}
+                      keyboardType="numeric"
+                      placeholder="0.00"
+                    />
+                  </View>
+                </View>
+
+                <View>
+                  <Text className="text-xs font-bold text-serene-on-surface mb-1.5">Category</Text>
+                  <View className="flex-row flex-wrap gap-1.5">
+                    {DEFAULT_CATEGORIES.map((cat) => {
+                      const isSel = editRecCategoryId === cat.id;
+                      return (
+                        <TouchableOpacity
+                          key={cat.id}
+                          className={`px-3 py-1.5 rounded-full border ${
+                            isSel
+                              ? 'bg-serene-primary border-serene-primary'
+                              : 'bg-white border-serene-subtle-border'
+                          }`}
+                          onPress={() => setEditRecCategoryId(cat.id)}
+                        >
+                          <Text
+                            className={`text-[11px] font-semibold ${
+                              isSel ? 'text-white' : 'text-serene-on-surface'
+                            }`}
+                          >
+                            {cat.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  className="w-full py-3.5 rounded-serene-xl bg-serene-primary items-center mt-2"
+                  onPress={handleSaveMultiReceiptEdit}
+                >
+                  <Text className="text-sm font-bold text-white">Apply Changes</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }

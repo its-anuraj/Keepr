@@ -2,6 +2,7 @@
 import {
   GeminiReceiptResponse,
   GeminiMultimodalInput,
+  PdfPageInputPayload,
 } from '../types/scanner';
 import {
   uriToBase64,
@@ -15,6 +16,8 @@ import { prepareImageForAnalysis } from './receiptFileService';
 import {
   base64ToUint8Array,
   consolidateMultiPageExtractions,
+  consolidatePdfReceiptGroups,
+  detectPageTextBoundaryHints,
   validatePdfBytes,
 } from './pdfReceiptProcessor';
 import { validateExtractedReceiptPayload } from '../schemas/receiptExtractionSchema';
@@ -173,57 +176,19 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
       }
     }
 
-    // Controlled batching for multi-page scanned PDFs (> 4 rendered pages)
-    if (input.pageImages && input.pageImages.length > 4) {
-      const batchSize = 4;
-      const batchResults: Array<{ pageNumber: number; extraction: Record<string, unknown> }> = [];
-
-      for (let i = 0; i < input.pageImages.length; i += batchSize) {
-        const batch = input.pageImages.slice(i, i + batchSize);
-        const batchText = batch
-          .filter((p) => p.extractedText && p.extractedText.trim())
-          .map((p) => `--- PAGE ${p.pageNumber} ---\n${p.extractedText!.trim()}`)
-          .join('\n\n');
-
-        const batchPayload = await this.dispatchBackendScanPayload(
-          {
-            mimeType: 'application/pdf',
-            fileName: input.fileName,
-            extractedText: batchText || input.extractedText,
-            pdfType: input.pdfType || 'mixed',
-            pageCount: input.pageCount || input.pageImages.length,
-            pageImages: batch,
-            requestId: `${requestId}-b${Math.floor(i / batchSize) + 1}`,
-          },
-          startTime
-        );
-        batchResults.push({
-          pageNumber: batch[0].pageNumber,
-          extraction: batchPayload as unknown as Record<string, unknown>,
-        });
+    // Multi-page & multi-region PDF orchestration:
+    // 1. Inspect page count, embedded regions (multiple receipts on 1 page), and text boundaries.
+    // 2. Dispatch controlled batches/units cleanly (avoiding blind merging of distinct receipts).
+    // 3. Retry failed page units independently without re-scanning succeeded pages.
+    // 4. Run consolidatePdfReceiptGroups to merge true multi-page continuations while separating distinct receipts.
+    if (isPdfRequest && ((input.pages && input.pages.length > 0) || (input.pageImages && input.pageImages.length > 1))) {
+      const orchestrated = await this.analyzeStructuredPdfDocument(input, base64Data, requestId, startTime);
+      if (orchestrated) {
+        return orchestrated;
       }
-
-      const consolidated = consolidateMultiPageExtractions(batchResults);
-      const mergedResponse = {
-        ...consolidated.consolidated,
-        isReceipt: true,
-        merchantName: consolidated.consolidated.storeName,
-        merchantAddress: consolidated.consolidated.storeAddress,
-        merchantGstin: consolidated.consolidated.gstin,
-        taxAmount: consolidated.consolidated.totalGst,
-        taxRate: consolidated.consolidated.gstPercentage,
-        grandTotal: consolidated.consolidated.finalAmountPaid,
-        total: consolidated.consolidated.finalAmountPaid,
-        source: {
-          receiptImageRequired: true,
-          provider: 'keepr-multipage-pdf',
-          requestId,
-        },
-      };
-      return this.parseAndValidateResponse(mergedResponse, 'keepr-multipage-pdf');
     }
 
-    // For Type A text-based PDFs with rich searchable text, omit oversized raw binary > 4MB to stay fast and under Edge limits
+    // Standard single-page / image / fallback analysis
     const shouldIncludeRawBinary =
       Boolean(base64Data) &&
       !(
@@ -249,6 +214,294 @@ export class GeminiMultimodalReceiptService implements IGeminiReceiptService {
     );
 
     return this.parseAndValidateResponse(rawResult, providerName);
+  }
+
+  private async analyzeStructuredPdfDocument(
+    input: GeminiMultimodalInput,
+    pdfBase64: string,
+    requestId: string,
+    startTime: number
+  ): Promise<GeminiReceiptResponse | null> {
+    const pages: PdfPageInputPayload[] = input.pages && input.pages.length > 0
+      ? input.pages
+      : (input.pageImages || []).map((img) => ({
+          pageNumber: img.pageNumber,
+          text: img.extractedText || '',
+          charCount: (img.extractedText || '').replace(/\s+/g, '').length,
+          hasImages: true,
+          isScannedCandidate: true,
+          renderedImageBase64: img.base64,
+          mimeType: img.mimeType,
+        }));
+
+    if (pages.length === 0) return null;
+
+    const totalPages = input.pageCount || pages.length;
+    const failedPages: Array<{ pageNumber: number; error: string }> = [];
+
+    // Build extraction units:
+    // - If a page detected multiple cropped receipt regions (`regions.length >= 2`), extract each region independently!
+    // - Otherwise inspect each page (keeping text-only single-invoice short PDFs fast when no boundaries exist).
+    type ExtractionUnit = {
+      unitId: string;
+      pageNumber: number;
+      regionIndex?: number;
+      text?: string;
+      imageBase64?: string;
+      mimeType: string;
+    };
+
+    const anyMultiRegion = pages.some((p) => p.regions && p.regions.length >= 2);
+    const anyVisualPage = pages.some((p) => Boolean(p.renderedImageBase64) || p.isScannedCandidate);
+    const textHints = detectPageTextBoundaryHints(
+      pages.map((p) => ({
+        pageNumber: p.pageNumber,
+        text: p.text || '',
+        charCount: p.charCount || 0,
+        hasImages: Boolean(p.hasImages),
+        isScannedCandidate: Boolean(p.isScannedCandidate),
+      }))
+    );
+
+    // Fast path ONLY for pure 1-page PDF with <= 1 image region: 1 backend request (supports multi-receipt JSON natively too)
+    if (pages.length === 1 && !anyMultiRegion) {
+      return null;
+    }
+
+    // Fast path ONLY when pure text PDF clearly shows single-invoice continuation markers & <= 4 pages
+    if (!anyMultiRegion && !anyVisualPage && pages.length <= 4 && !textHints.likelyMultipleReceipts) {
+      const { rawResult, providerName } = await this.dispatchBackendScanPayloadWithMeta(
+        {
+          imageBase64: pdfBase64 && pdfBase64.length <= 3_500_000 ? pdfBase64 : undefined,
+          mimeType: 'application/pdf',
+          fileName: input.fileName,
+          extractedText: input.extractedText,
+          pdfType: input.pdfType || 'text',
+          pageCount: totalPages,
+          requestId,
+        },
+        startTime
+      );
+      if (rawResult?.multipleReceiptsDetected && Array.isArray(rawResult.receipts) && rawResult.receipts.length > 1) {
+        return this.buildConsolidatedMultiReceiptResponse(
+          rawResult.receipts.map((r: any, idx: number) => ({
+            pageNumber: Array.isArray(r.sourcePageNumbers) ? r.sourcePageNumbers[0] || 1 : idx + 1,
+            regionIndex: r.sourceRegionIndex,
+            extraction: r,
+          })),
+          totalPages,
+          pages.length,
+          failedPages,
+          providerName,
+          requestId
+        );
+      }
+      return this.parseAndValidateResponse(rawResult, providerName);
+    }
+
+    // Controlled page-by-page / region-by-region extraction units (handles ALL pages & embedded images accurately!)
+    const units: ExtractionUnit[] = [];
+    for (const p of pages) {
+      if (p.error) {
+        failedPages.push({ pageNumber: p.pageNumber, error: p.error });
+        continue;
+      }
+
+      if (p.regions && p.regions.length >= 2) {
+        for (const reg of p.regions) {
+          units.push({
+            unitId: `p${p.pageNumber}_r${reg.regionIndex}`,
+            pageNumber: p.pageNumber,
+            regionIndex: reg.regionIndex,
+            text: p.text || undefined,
+            imageBase64: reg.base64,
+            mimeType: reg.mimeType || 'image/jpeg',
+          });
+        }
+      } else if (p.renderedImageBase64) {
+        units.push({
+          unitId: `p${p.pageNumber}`,
+          pageNumber: p.pageNumber,
+          text: p.text || undefined,
+          imageBase64: p.renderedImageBase64,
+          mimeType: p.mimeType || 'image/jpeg',
+        });
+      } else if ((p.text || '').trim().length > 0) {
+        units.push({
+          unitId: `p${p.pageNumber}`,
+          pageNumber: p.pageNumber,
+          text: p.text.trim(),
+          mimeType: 'application/pdf',
+        });
+      }
+    }
+
+    if (units.length === 0) {
+      return null;
+    }
+
+    const concurrency = 2;
+    const extractedUnits: Array<{
+      pageNumber: number;
+      regionIndex?: number;
+      extraction: Record<string, unknown>;
+    }> = [];
+    let completedCount = 0;
+
+    const runUnitWithRetry = async (unit: ExtractionUnit): Promise<void> => {
+      const payloadForUnit = unit.imageBase64
+        ? {
+            imageBase64: unit.imageBase64,
+            mimeType: unit.mimeType,
+            fileName: `${input.fileName || 'receipt'}_page_${unit.pageNumber}${unit.regionIndex ? `_r${unit.regionIndex}` : ''}.jpg`,
+            extractedText: unit.text,
+            pdfType: input.pdfType || 'scanned',
+            pageCount: 1,
+            requestId: `${requestId}-${unit.unitId}`,
+          }
+        : {
+            mimeType: 'application/pdf',
+            fileName: input.fileName,
+            extractedText: unit.text,
+            pdfType: 'text',
+            pageCount: 1,
+            requestId: `${requestId}-${unit.unitId}`,
+          };
+
+      let lastErr: any = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const { rawResult } = await this.dispatchBackendScanPayloadWithMeta(payloadForUnit, startTime);
+          completedCount++;
+          input.onProgress?.({
+            stage: `Extracted page ${unit.pageNumber} of ${totalPages}${unit.regionIndex ? ` (Receipt #${unit.regionIndex})` : ''}`,
+            currentPage: unit.pageNumber,
+            totalPages,
+          });
+
+          // If this single page/region itself returned multiple receipts (`receipts: [...]`), expand each!
+          if (rawResult?.multipleReceiptsDetected && Array.isArray(rawResult.receipts) && rawResult.receipts.length > 1) {
+            rawResult.receipts.forEach((sub: any, sIdx: number) => {
+              extractedUnits.push({
+                pageNumber: unit.pageNumber,
+                regionIndex: sub.sourceRegionIndex ?? (unit.regionIndex ? unit.regionIndex * 10 + sIdx + 1 : sIdx + 1),
+                extraction: sub,
+              });
+            });
+          } else {
+            extractedUnits.push({
+              pageNumber: unit.pageNumber,
+              regionIndex: unit.regionIndex,
+              extraction: rawResult,
+            });
+          }
+          return;
+        } catch (err: any) {
+          lastErr = err;
+          // Auth or explicit non-retryable rejection shouldn't retry blindly
+          if (err instanceof ScannerError && (err.code === 'AUTH_REQUIRED' || err.code === 'SESSION_EXPIRED')) {
+            throw err;
+          }
+          if (attempt === 1) {
+            await new Promise((r) => setTimeout(r, 900));
+          }
+        }
+      }
+
+      failedPages.push({
+        pageNumber: unit.pageNumber,
+        error: lastErr?.message || `Page ${unit.pageNumber} could not be extracted.`,
+      });
+    };
+
+    for (let i = 0; i < units.length; i += concurrency) {
+      const batch = units.slice(i, i + concurrency);
+      await Promise.all(batch.map((u) => runUnitWithRetry(u)));
+    }
+
+    if (extractedUnits.length === 0) {
+      throw new ScannerError(
+        failedPages[0]?.error || toUserFacingErrorMessage('UNREADABLE_PDF'),
+        'UNREADABLE_PDF',
+        requestId,
+        422
+      );
+    }
+
+    return this.buildConsolidatedMultiReceiptResponse(
+      extractedUnits,
+      totalPages,
+      pages.length,
+      failedPages,
+      'keepr-multipage-pdf',
+      requestId
+    );
+  }
+
+  private buildConsolidatedMultiReceiptResponse(
+    extractedUnits: Array<{
+      pageNumber: number;
+      regionIndex?: number;
+      extraction: Record<string, unknown>;
+    }>,
+    totalPages: number,
+    processedPages: number,
+    failedPages: Array<{ pageNumber: number; error: string }>,
+    providerName: string,
+    requestId: string
+  ): GeminiReceiptResponse {
+    const grouped = consolidatePdfReceiptGroups(extractedUnits);
+
+    if (grouped.receipts.length === 0) {
+      return this.parseAndValidateResponse(extractedUnits[0].extraction, providerName);
+    }
+
+    const toResponseObj = (grp: (typeof grouped.receipts)[number]): GeminiReceiptResponse => {
+      const mergedPayload = {
+        ...grp.rawMergedPayload,
+        isReceipt: grp.rawMergedPayload.isReceipt !== false,
+        merchantName: grp.consolidated.storeName,
+        merchantAddress: grp.consolidated.storeAddress,
+        merchantGstin: grp.consolidated.gstin,
+        taxAmount: grp.consolidated.totalGst,
+        taxRate:
+          grp.consolidated.gstPercentage != null
+            ? `${grp.consolidated.gstPercentage}%`
+            : (grp.rawMergedPayload.taxRate as string | undefined),
+        grandTotal: grp.consolidated.finalAmountPaid,
+        total: grp.consolidated.finalAmountPaid,
+        sourcePageNumbers: grp.sourcePageNumbers,
+        sourceRegionIndex: grp.sourceRegionIndex,
+        warnings: grp.warnings,
+        source: {
+          receiptImageRequired: true,
+          provider: providerName,
+          requestId,
+        },
+      };
+      return this.parseAndValidateResponse(mergedPayload, providerName);
+    };
+
+    const parsedList = grouped.receipts.map(toResponseObj);
+    const primary = parsedList[0];
+
+    return {
+      ...primary,
+      multipleReceiptsDetected: parsedList.length > 1,
+      receipts: parsedList,
+      warnings: Array.from(new Set([...(primary.warnings || []), ...grouped.warnings])),
+      pageProcessingSummary: {
+        totalPages,
+        processedPages,
+        failedPages,
+        detectedReceiptsCount: parsedList.length,
+      },
+      source: {
+        receiptImageRequired: true,
+        provider: providerName,
+        requestId,
+      },
+    };
   }
 
   private async dispatchBackendScanPayload(

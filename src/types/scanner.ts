@@ -298,6 +298,34 @@ export interface OcrPreprocessedOutput {
   cleanedTextLength: number;
 }
 
+export interface PdfPageRegionPayload {
+  pageNumber: number;
+  regionIndex: number;
+  base64: string;
+  mimeType: string;
+  bbox?: { x: number; y: number; width: number; height: number };
+}
+
+export interface PdfPageInputPayload {
+  pageNumber: number;
+  text: string;
+  charCount: number;
+  hasImages: boolean;
+  isScannedCandidate: boolean;
+  imageCount?: number;
+  renderedImageBase64?: string | null;
+  mimeType?: string;
+  regions?: PdfPageRegionPayload[];
+  error?: string | null;
+}
+
+export interface PageProcessingSummary {
+  totalPages: number;
+  processedPages: number;
+  failedPages: Array<{ pageNumber: number; error: string }>;
+  detectedReceiptsCount: number;
+}
+
 export interface GeminiMultimodalInput {
   imageUri: string;
   base64?: string;
@@ -306,14 +334,17 @@ export interface GeminiMultimodalInput {
   extractedText?: string;
   pdfType?: 'text' | 'scanned' | 'mixed' | 'empty';
   pageCount?: number;
+  pages?: PdfPageInputPayload[];
   pageImages?: Array<{
     pageNumber: number;
     base64: string;
     mimeType: string;
     extractedText?: string;
+    regionIndex?: number;
   }>;
   ocrBlocks?: OcrBlock[];
   fileName?: string;
+  onProgress?: (progress: { stage: string; currentPage?: number; totalPages?: number }) => void;
 }
 
 export interface ReceiptMultiItem {
@@ -543,6 +574,13 @@ export interface ExtractedReceiptData {
   rawConfidenceScore: number; // 0 to 100
   overallQuality: 'excellent' | 'good' | 'fair';
   provider?: 'gemini' | 'offline_neural';
+  sourcePageNumbers?: number[];
+  sourceRegionIndex?: number;
+  warnings?: string[];
+  pageProcessingSummary?: PageProcessingSummary;
+  extractedReceipts?: ExtractedReceiptData[];
+  selected?: boolean;
+  productPhotos?: string[];
 }
 
 export interface GeminiReceiptResponse {
@@ -552,6 +590,18 @@ export interface GeminiReceiptResponse {
   document?: DocumentOcrExtraction | null;
   isReceipt?: boolean;
   isDocument?: boolean;
+  multipleReceiptsDetected?: boolean;
+  receipts?: Array<
+    GeminiReceiptResponse & {
+      sourcePageNumbers?: number[];
+      sourceRegionIndex?: number;
+      warnings?: string[];
+    }
+  >;
+  sourcePageNumbers?: number[];
+  sourceRegionIndex?: number;
+  warnings?: string[];
+  pageProcessingSummary?: PageProcessingSummary;
   receiptConfidence?: number | null;
   classification?: DocumentClassificationResult;
   rejectionReason?: string | null;
@@ -659,6 +709,7 @@ export type ScannerScreenState =
   | 'save_confirm' // Screen 5: Save to Keepr Summary
   | 'saved_success' // Screen 6: Saved State & Reminder
   | 'multi_item_review' // Multi-Item Review & Selection Screen
+  | 'multi_receipt_review' // Multi-Receipt PDF Review & Separate Purchase Save Screen
   | 'review_type'; // Review Document Type Modal / View
 
 export interface ProcessingStep {

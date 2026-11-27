@@ -5,7 +5,7 @@ import {
 } from '../schemas/receiptExtractionSchema';
 
 export const MAX_PDF_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB ceiling
-export const DEFAULT_MAX_PDF_PAGES = 10;
+export const DEFAULT_MAX_PDF_PAGES = 20;
 export const TEXT_DENSE_MIN_CHARS_PER_PAGE = 45;
 
 export type PdfDocumentType = 'text' | 'scanned' | 'mixed' | 'empty';
@@ -37,6 +37,25 @@ export interface PdfPageTextInfo {
   charCount: number;
   hasImages: boolean;
   isScannedCandidate: boolean;
+  imageCount?: number;
+  error?: string | null;
+}
+
+export interface ConsolidatedReceiptGroup {
+  groupId: string;
+  sourcePageNumbers: number[];
+  sourceRegionIndex?: number;
+  consolidated: ValidatedReceiptExtraction;
+  rawMergedPayload: Record<string, unknown>;
+  deduplicatedItemCount: number;
+  warnings: string[];
+}
+
+export interface MultiReceiptConsolidationResult {
+  receipts: ConsolidatedReceiptGroup[];
+  isMultipleReceipts: boolean;
+  processedUnits: number;
+  warnings: string[];
 }
 
 export interface ConsolidatedMultiPageResult {
@@ -503,6 +522,66 @@ export function classifyPdfPages(pages: PdfPageTextInfo[]): PdfDocumentType {
  * Deduplicate and consolidate line items and financial totals across multiple pages of a single PDF invoice.
  * Ensures carry-forward subtotals or repeated headers on Page 1..N never double-count the grand total.
  */
+function normalizeExtractionInputForValidation(raw: Record<string, unknown>): Record<string, unknown> {
+  const p = (raw.purchase && typeof raw.purchase === 'object' ? raw.purchase : {}) as Record<string, unknown>;
+  const unwrap = (v: unknown) =>
+    v && typeof v === 'object' && 'value' in (v as any) ? (v as any).value : v;
+  const storeName =
+    unwrap(raw.storeName) ??
+    unwrap(raw.merchantName) ??
+    unwrap(p.merchantName) ??
+    unwrap(raw.issuerName);
+  const merchantName = unwrap(raw.merchantName) ?? unwrap(p.merchantName) ?? storeName;
+  const invoiceNumber =
+    unwrap(raw.invoiceNumber) ??
+    unwrap(p.invoiceNumber) ??
+    unwrap(raw.receiptNumber) ??
+    unwrap(raw.referenceNumber);
+  const purchaseDate =
+    unwrap(raw.purchaseDate) ??
+    unwrap(p.purchaseDate) ??
+    unwrap(raw.invoiceDate) ??
+    unwrap(p.invoiceDate);
+  const finalAmountPaid =
+    unwrap(raw.finalAmountPaid) ??
+    unwrap(raw.totalAmount) ??
+    unwrap(raw.grandTotal) ??
+    unwrap(raw.total) ??
+    unwrap(p.grandTotal);
+  const totalGst =
+    unwrap(raw.totalGst) ??
+    unwrap(raw.taxAmount) ??
+    unwrap(raw.tax) ??
+    unwrap(p.taxAmount);
+  const items =
+    Array.isArray(raw.items) && raw.items.length > 0
+      ? raw.items
+      : Array.isArray(p.products)
+      ? p.products
+      : [];
+
+  return {
+    ...raw,
+    storeName: storeName ?? raw.storeName,
+    merchantName: merchantName ?? raw.merchantName,
+    invoiceNumber: invoiceNumber ?? raw.invoiceNumber,
+    purchaseDate: purchaseDate ?? raw.purchaseDate,
+    invoiceDate: unwrap(raw.invoiceDate) ?? unwrap(p.invoiceDate) ?? purchaseDate ?? raw.invoiceDate,
+    subtotal: unwrap(raw.subtotal) ?? unwrap(p.subtotal),
+    discount: unwrap(raw.discount) ?? unwrap(p.discount),
+    taxableAmount: unwrap(raw.taxableAmount) ?? unwrap(p.taxableAmount),
+    cgst: unwrap(raw.cgst) ?? unwrap(p.cgst),
+    sgst: unwrap(raw.sgst) ?? unwrap(p.sgst),
+    igst: unwrap(raw.igst) ?? unwrap(p.igst),
+    totalGst,
+    taxAmount: totalGst,
+    finalAmountPaid,
+    totalAmount: finalAmountPaid,
+    paymentMethod: unwrap(raw.paymentMethod) ?? unwrap(p.paymentMethod),
+    items,
+  };
+}
+
 export function consolidateMultiPageExtractions(
   pageExtractions: Array<{
     pageNumber: number;
@@ -523,7 +602,9 @@ export function consolidateMultiPageExtractions(
   }
 
   if (sorted.length === 1) {
-    const single = validateExtractedReceiptPayload(sorted[0].extraction);
+    const single = validateExtractedReceiptPayload(
+      normalizeExtractionInputForValidation(sorted[0].extraction)
+    );
     return {
       consolidated: single.data,
       processedPages: 1,
@@ -534,7 +615,9 @@ export function consolidateMultiPageExtractions(
 
   const validatedPages = sorted.map((entry) => ({
     pageNumber: entry.pageNumber,
-    ...validateExtractedReceiptPayload(entry.extraction).data,
+    ...validateExtractedReceiptPayload(
+      normalizeExtractionInputForValidation(entry.extraction)
+    ).data,
   }));
 
   // 1. Consolidate header fields (prefer first clear non-null occurrence)
@@ -685,6 +768,314 @@ export function consolidateMultiPageExtractions(
     consolidated: finalValidated.data,
     processedPages: validatedPages.length,
     deduplicatedItemCount: consolidatedItems.length,
-    warnings: finalValidated.warnings,
+    warnings: Array.from(new Set([...warnings, ...finalValidated.warnings])),
+  };
+}
+
+function normalizeIdentifierForComparison(val?: string | null): string {
+  if (!val || typeof val !== 'string') return '';
+  return val
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeStoreName(val?: string | null): string {
+  if (!val || typeof val !== 'string') return '';
+  return val
+    .toLowerCase()
+    .replace(/\b(pvt|ltd|limited|private|inc|llc|store|india|retail|llp|co)\b/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function storesMatchOrCompatible(a?: string | null, b?: string | null): boolean {
+  const na = normalizeStoreName(a);
+  const nb = normalizeStoreName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.length >= 4 && nb.includes(na)) return true;
+  if (nb.length >= 4 && na.includes(nb)) return true;
+  return false;
+}
+
+/**
+ * Inspects multi-page PDF text layers for boundary hints (distinct invoice numbers or stores)
+ * to decide whether text pages likely contain multiple separate invoices or one multi-page invoice.
+ */
+export function detectPageTextBoundaryHints(pages: PdfPageTextInfo[]): {
+  likelyMultipleReceipts: boolean;
+  detectedInvoiceNumbers: string[];
+  hasContinuationMarkers: boolean;
+} {
+  const invSet = new Set<string>();
+  let hasContinuationMarkers = false;
+
+  for (const p of pages) {
+    const txt = p.text || '';
+    if (!txt) continue;
+
+    if (/\b(?:page\s+\d+\s+of\s+\d+|continued|contd\.?|carry\s*forward|brought\s*forward)\b/i.test(txt)) {
+      hasContinuationMarkers = true;
+    }
+
+    const invMatches = txt.matchAll(
+      /\b(?:invoice|bill|receipt)[^\S\r\n]*(?:no\.?|number|id|#)[^\S\r\n]*[:\-#]?[^\S\r\n]*([A-Z0-9][A-Z0-9\-/]{3,24})|\b(?:inv|invoice|bill|receipt)[^\S\r\n]*[:#][^\S\r\n]*([A-Z0-9][A-Z0-9\-/]{3,24})/gi
+    );
+    for (const m of invMatches) {
+      const candidate = (m[1] || m[2] || '').trim();
+      const norm = normalizeIdentifierForComparison(candidate);
+      if (norm.length >= 4 && /\d/.test(norm)) {
+        invSet.add(norm);
+      }
+    }
+  }
+
+  return {
+    likelyMultipleReceipts: invSet.size >= 2,
+    detectedInvoiceNumbers: Array.from(invSet),
+    hasContinuationMarkers,
+  };
+}
+
+/**
+ * Determines whether two adjacent extracted PDF units belong to the SAME multi-page receipt
+ * (continuation/summary page) or MUST stay SEPARATE as independent receipts.
+ */
+export function shouldMergeAdjacentReceiptExtractions(
+  prevUnit: {
+    pageNumber: number;
+    regionIndex?: number;
+    extraction: Record<string, unknown>;
+  },
+  nextUnit: {
+    pageNumber: number;
+    regionIndex?: number;
+    extraction: Record<string, unknown>;
+  }
+): boolean {
+  // Different cropped receipt regions on the same page are strictly independent receipts!
+  if (
+    prevUnit.pageNumber === nextUnit.pageNumber &&
+    prevUnit.regionIndex !== undefined &&
+    nextUnit.regionIndex !== undefined &&
+    prevUnit.regionIndex !== nextUnit.regionIndex
+  ) {
+    return false;
+  }
+
+  const prevVal = validateExtractedReceiptPayload(prevUnit.extraction).data;
+  const nextVal = validateExtractedReceiptPayload(nextUnit.extraction).data;
+
+  const prevInv = normalizeIdentifierForComparison(prevVal.invoiceNumber);
+  const nextInv = normalizeIdentifierForComparison(nextVal.invoiceNumber);
+
+  // Explicit distinct invoice numbers -> NEVER merge!
+  if (prevInv && nextInv && prevInv !== nextInv) {
+    return false;
+  }
+
+  // Exact matching non-empty invoice number -> same multi-page invoice!
+  if (prevInv && nextInv && prevInv === nextInv) {
+    return true;
+  }
+
+  // Distinct merchants/stores with separate totals -> NEVER merge!
+  const prevStore = prevVal.storeName || prevVal.merchantName || null;
+  const nextStore = nextVal.storeName || nextVal.merchantName || null;
+  const sameStore = storesMatchOrCompatible(prevStore, nextStore);
+
+  if (prevStore && nextStore && !sameStore) {
+    return false;
+  }
+
+  // Explicit summary/continuation page without a brand-new standalone receipt header
+  if ((nextVal as any).isSummaryPage === true && (!nextInv || prevInv === nextInv)) {
+    return true;
+  }
+
+  const nextHasOwnTotal =
+    typeof nextVal.finalAmountPaid === 'number' && Number.isFinite(nextVal.finalAmountPaid) && nextVal.finalAmountPaid > 0;
+  const prevHasOwnTotal =
+    typeof prevVal.finalAmountPaid === 'number' && Number.isFinite(prevVal.finalAmountPaid) && prevVal.finalAmountPaid > 0;
+  const nextHasOwnHeader = Boolean(nextStore && (nextInv || nextVal.purchaseDate || nextVal.invoiceDate));
+
+  // If page N is a fragment with no store header (e.g. table continuation + GST summary), merge with page N-1
+  if (!nextStore && (!nextInv || nextInv === prevInv)) {
+    return true;
+  }
+
+  // Same store, different pages: if BOTH look like complete standalone receipts with different totals & dates/items -> keep separate
+  if (sameStore && nextHasOwnTotal && prevHasOwnTotal) {
+    if (
+      prevVal.purchaseDate &&
+      nextVal.purchaseDate &&
+      prevVal.purchaseDate !== nextVal.purchaseDate
+    ) {
+      return false;
+    }
+    // Identical or subtotal-to-grandTotal escalation without new store header -> likely continuation
+    if (
+      nextVal.finalAmountPaid !== prevVal.finalAmountPaid &&
+      nextHasOwnHeader &&
+      (nextVal.items?.length || 0) > 0 &&
+      (prevVal.items?.length || 0) > 0 &&
+      nextVal.taxableAmount !== null &&
+      prevVal.taxableAmount !== null
+    ) {
+      return false;
+    }
+  }
+
+  // Default: merge only if continuation signal is clear, else keep distinct receipts safe from silent loss
+  if (sameStore && (!nextHasOwnTotal || !prevHasOwnTotal)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Consolidates a sequence of extracted PDF page/region payloads into 1 or more clean receipts:
+ * - Multi-page invoices are combined without duplicating line items, GST, or carry-forward totals.
+ * - Independent receipts across pages or on the same page remain strictly separated!
+ */
+export function consolidatePdfReceiptGroups(
+  units: Array<{
+    pageNumber: number;
+    regionIndex?: number;
+    extraction: Record<string, unknown>;
+  }>
+): MultiReceiptConsolidationResult {
+  const validUnits = units
+    .filter((u) => {
+      if (!u || !u.extraction) return false;
+      const ex = u.extraction as any;
+      if (ex.status === 'invalid_document' || ex.isReceipt === false && !ex.isDocument && !ex.serviceRepair && (!ex.items || ex.items.length === 0)) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber;
+      return (a.regionIndex ?? 0) - (b.regionIndex ?? 0);
+    });
+
+  if (validUnits.length === 0) {
+    return {
+      receipts: [],
+      isMultipleReceipts: false,
+      processedUnits: 0,
+      warnings: ['No readable receipt or document content was found across PDF pages.'],
+    };
+  }
+
+  // Partition into receipt clusters
+  const clusters: Array<typeof validUnits> = [];
+  for (const unit of validUnits) {
+    const currentCluster = clusters[clusters.length - 1];
+    if (!currentCluster) {
+      clusters.push([unit]);
+      continue;
+    }
+    const lastUnitInCluster = currentCluster[currentCluster.length - 1];
+    if (shouldMergeAdjacentReceiptExtractions(lastUnitInCluster, unit)) {
+      currentCluster.push(unit);
+    } else {
+      clusters.push([unit]);
+    }
+  }
+
+  const allWarnings: string[] = [];
+  const receipts: ConsolidatedReceiptGroup[] = clusters.map((cluster, idx) => {
+    const merged = consolidateMultiPageExtractions(
+      cluster.map((u) => ({
+        pageNumber: u.pageNumber,
+        extraction: u.extraction,
+      }))
+    );
+
+    const pageNumbers = Array.from(new Set(cluster.map((c) => c.pageNumber))).sort((a, b) => a - b);
+    const baseEx = cluster[0].extraction;
+    const lastEx = cluster[cluster.length - 1].extraction;
+    const rawMergedPayload: Record<string, unknown> = {
+      ...baseEx,
+      ...lastEx,
+      storeName: merged.consolidated.storeName,
+      merchantName: merged.consolidated.storeName,
+      merchantAddress: merged.consolidated.storeAddress,
+      merchantPhone: merged.consolidated.storePhone,
+      merchantGstin: merged.consolidated.gstin,
+      invoiceNumber: merged.consolidated.invoiceNumber,
+      invoiceDate: merged.consolidated.invoiceDate,
+      purchaseDate: merged.consolidated.purchaseDate,
+      subtotal: merged.consolidated.subtotal,
+      discount: merged.consolidated.discount,
+      taxableAmount: merged.consolidated.taxableAmount,
+      gstPercentage: merged.consolidated.gstPercentage,
+      taxRate: merged.consolidated.gstPercentage != null ? `${merged.consolidated.gstPercentage}%` : (lastEx as any).taxRate,
+      cgst: merged.consolidated.cgst,
+      sgst: merged.consolidated.sgst,
+      igst: merged.consolidated.igst,
+      totalGst: merged.consolidated.totalGst,
+      taxAmount: merged.consolidated.totalGst,
+      finalAmountPaid: merged.consolidated.finalAmountPaid,
+      grandTotal: merged.consolidated.finalAmountPaid,
+      total: merged.consolidated.finalAmountPaid,
+      paymentMethod: merged.consolidated.paymentMethod,
+      currency: merged.consolidated.currency,
+      items: merged.consolidated.items,
+      purchase: {
+        ...((lastEx as any).purchase || (baseEx as any).purchase || {}),
+        merchantName: merged.consolidated.storeName,
+        merchantAddress: merged.consolidated.storeAddress,
+        invoiceNumber: merged.consolidated.invoiceNumber,
+        invoiceDate: merged.consolidated.invoiceDate,
+        purchaseDate: merged.consolidated.purchaseDate,
+        subtotal: merged.consolidated.subtotal,
+        discount: merged.consolidated.discount,
+        taxableAmount: merged.consolidated.taxableAmount,
+        cgst: merged.consolidated.cgst,
+        sgst: merged.consolidated.sgst,
+        igst: merged.consolidated.igst,
+        taxAmount: merged.consolidated.totalGst,
+        grandTotal: merged.consolidated.finalAmountPaid,
+        paymentMethod: merged.consolidated.paymentMethod,
+        products: merged.consolidated.items.map((it) => ({
+          name: it.name,
+          description: it.description,
+          category: it.category,
+          brand: it.brand,
+          model: it.model,
+          serialNumber: it.serialNumber,
+          quantity: it.quantity ?? 1,
+          unitPrice: it.unitPrice,
+          lineTotal: it.lineTotal ?? it.unitPrice ?? 0,
+        })),
+      },
+      sourcePageNumbers: pageNumbers,
+      sourceRegionIndex: cluster.length === 1 ? cluster[0].regionIndex : undefined,
+      warnings: merged.warnings,
+    };
+
+    allWarnings.push(...merged.warnings);
+
+    return {
+      groupId: `pdf_receipt_group_${idx + 1}`,
+      sourcePageNumbers: pageNumbers,
+      sourceRegionIndex: cluster.length === 1 ? cluster[0].regionIndex : undefined,
+      consolidated: merged.consolidated,
+      rawMergedPayload,
+      deduplicatedItemCount: merged.deduplicatedItemCount,
+      warnings: merged.warnings,
+    };
+  });
+
+  return {
+    receipts,
+    isMultipleReceipts: receipts.length > 1,
+    processedUnits: validUnits.length,
+    warnings: Array.from(new Set(allWarnings)),
   };
 }

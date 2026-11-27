@@ -320,7 +320,10 @@ Return a single strictly valid JSON object matching this schema:
     }
   ]
 }
-NEVER invent missing values (use null). Keep invoiceDate distinct from purchaseDate when both exist. Consolidate multi-page PDF items without double-counting totals.
+NEVER invent missing values (use null). Keep invoiceDate distinct from purchaseDate when both exist.
+Inspect EVERY page and EVERY receipt image in a PDF:
+- If one receipt spans multiple pages: combine items without duplicating headers or carry-forward subtotals, set "multipleReceiptsDetected": false.
+- If multiple separate receipts exist across pages or on the same page: set "multipleReceiptsDetected": true and include "receipts": [ ... ] where each entry has store/merchantName, invoiceNumber, invoiceDate, purchaseDate, subtotal, discount, taxableAmount, gstPercentage, cgst, sgst, igst, totalGst, finalAmountPaid, paymentMethod, currency, items, classification, purchase, document, serviceRepair, and sourcePageNumbers. Never merge separate merchants or invoices.
 Return ONLY pure JSON. No markdown backticks, no preamble.
 `;
 
@@ -445,10 +448,10 @@ const server = http.createServer(async (req, res) => {
           if (hasExtractedText) {
             parts.push({ text: `SEARCHABLE TEXT LAYER:\n${extractedText.slice(0, 80000)}` });
           }
-          for (const page of pageImages.slice(0, 6)) {
+          for (const page of pageImages.slice(0, 8)) {
             const pB64 = (page?.base64 || '').replace(/^data:[^;]+;base64,/, '').trim();
             if (pB64) {
-              parts.push({ text: `[Rendered Page ${page.pageNumber || ''}]` });
+              parts.push({ text: `[Rendered Page ${page.pageNumber || ''}${page.regionIndex ? ` · Receipt Region ${page.regionIndex}` : ''}]` });
               parts.push({ inlineData: { mimeType: page.mimeType || 'image/jpeg', data: pB64 } });
             }
           }
@@ -579,8 +582,17 @@ const server = http.createServer(async (req, res) => {
           }
         }
 
+        const normalizedReceipts = Array.isArray(parsedData.receipts) && parsedData.receipts.length > 0
+          ? parsedData.receipts
+          : undefined;
+        const multipleReceiptsDetected = Boolean(
+          parsedData.multipleReceiptsDetected || (normalizedReceipts && normalizedReceipts.length > 1)
+        );
+
         const normalizedPayload = {
           ...parsedData,
+          multipleReceiptsDetected,
+          ...(normalizedReceipts ? { receipts: normalizedReceipts } : {}),
           status,
           document: {
             category: rawCat || null,
